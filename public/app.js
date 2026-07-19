@@ -202,6 +202,38 @@ const state = {
 };
 
 // ---------- 工具 ----------
+// 平台修饰键：macOS 显示 ⌘，Windows/Linux 显示 Ctrl+
+function isMacOS() {
+  return state.platform === 'darwin' || (window.fanboxEnv && window.fanboxEnv.platform === 'darwin');
+}
+function isWindows() {
+  return state.platform === 'win32' || (window.fanboxEnv && window.fanboxEnv.platform === 'win32');
+}
+function modKey() { return isMacOS() ? '⌘' : 'Ctrl+'; }
+function fileManagerName() { return isMacOS() ? '访达' : isWindows() ? '资源管理器' : '文件管理器'; }
+function trashName() { return isWindows() ? '回收站' : '废纸篓'; }
+function applyPlatformChrome() {
+  // 搜索框 kbd + html 平台 class（Windows 标题栏按钮在右侧需让位）
+  try {
+    const root = document.documentElement;
+    root.classList.toggle('win32', isWindows());
+    root.classList.toggle('darwin', isMacOS());
+    document.querySelectorAll('kbd').forEach((k) => {
+      if (k.dataset.modFixed) return;
+      const t = k.textContent || '';
+      if (t.includes('⌘')) { k.textContent = t.replace(/⌘/g, modKey()); k.dataset.modFixed = '1'; }
+    });
+    const hint = document.getElementById('cmdk-hint');
+    if (hint && !hint.dataset.modFixed) {
+      hint.innerHTML = hint.innerHTML.replace(/⌘/g, modKey());
+      hint.dataset.modFixed = '1';
+    }
+    const sideBtn = document.getElementById('btn-sidebar');
+    if (sideBtn && sideBtn.title && sideBtn.title.includes('⌘')) {
+      sideBtn.title = sideBtn.title.replace(/⌘/g, modKey());
+    }
+  } catch { /* */ }
+}
 function fmtSize(n) {
   if (!n) return '';
   const u = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -744,9 +776,9 @@ function renderPreviewActions(e) {
     ...(e.kind === 'text' ? [{ icon: ic('gitbranch', 'currentColor', 15), title: '查看改动（HEAD vs 当前）', fn: () => showDiff(e) }] : []),
     ...(e.kind === 'image' ? [{ icon: ic('edit3', 'currentColor', 15), title: '编辑图片', fn: () => enterImageEdit(e) }] : []),
     { icon: ic('term', 'currentColor', 15), title: '在编辑器打开', fn: () => openWith(e.path, 'editor') },
-    { icon: ic('folder', 'currentColor', 15), title: '在访达显示', fn: () => openWith(e.path, 'reveal') },
+    { icon: ic('folder', 'currentColor', 15), title: `在${fileManagerName()}显示`, fn: () => openWith(e.path, 'reveal') },
     ...(e.kind === 'image' && clip ? [{ icon: ic('image', 'currentColor', 15), title: '复制图片（可粘贴到其它应用）', fn: () => copyImage(e.path) }] : []),
-    ...(clip ? [{ icon: ic('copy', 'currentColor', 15), title: '复制文件（访达里可粘贴）', fn: () => copyFile(e.path) }] : []),
+    ...(clip ? [{ icon: ic('copy', 'currentColor', 15), title: `复制文件（${fileManagerName()}里可粘贴）`, fn: () => copyFile(e.path) }] : []),
     { icon: ic('clip', 'currentColor', 15), title: '复制路径', fn: () => copyPath(e.path) },
   ];
   acts.forEach((a) => {
@@ -773,7 +805,7 @@ function renderPreviewFoot(e) {
   f.innerHTML = `<span title="大小">${e.size ? fmtSize(e.size) : '0 B'}</span><span title="创建时间">创建 ${fmtDateTime(e.btime)}</span><span title="修改时间">改 ${fmtDateTime(e.mtime)}</span>`;
 }
 async function copyImage(p) { const r = await window.fanboxClipboard.copyImage(p); toast(r.ok ? '已复制图片，可粘贴到其它应用' : '复制图片失败：' + (r.error || ''), !r.ok); }
-async function copyFile(p) { const r = await window.fanboxClipboard.copyFile(p); toast(r.ok ? '已复制文件，可在访达里粘贴' : '复制文件失败', !r.ok); }
+async function copyFile(p) { const r = await window.fanboxClipboard.copyFile(p); toast(r.ok ? `已复制文件，可在${fileManagerName()}里粘贴` : '复制文件失败', !r.ok); }
 async function closePreview() {
   if (!await guardDirty()) return;
   mona.disposeIfAny(); crepe.disposeIfAny(); imgEditState = null;
@@ -1471,12 +1503,15 @@ async function doRename(e) {
 async function doTrash(e) {
   // 文件秒删（花叔的选择），但删整个文件夹给一次轻确认——误删项目目录代价高
   if (e.isDir) {
-    const ok = await confirmDialog(`把文件夹「${e.name}」移到废纸篓？可从废纸篓恢复。`);
+    const ok = await confirmDialog(`把文件夹「${e.name}」移到${trashName()}？可从${trashName()}恢复。`);
     if (!ok) return;
   }
   const r = await apiPost('/api/trash', { path: e.path });
-  if (r.error) { toast('删除失败：' + r.error + '（首次需在弹窗里允许控制 Finder）', true); return; }
-  toast('已移到废纸篓，可从废纸篓恢复');
+  if (r.error) {
+    toast('删除失败：' + r.error + (isMacOS() ? '（首次需在弹窗里允许控制 Finder）' : ''), true);
+    return;
+  }
+  toast(`已移到${trashName()}，可从${trashName()}恢复`);
   if (state.selected === e.path) closePreview();
   await refresh();
 }
@@ -1759,12 +1794,13 @@ async function diskPanel(dirPath) {
     body.innerHTML = '<div class="cmdk-loading">计算中…（大目录会慢几秒）</div>';
     const d = await api('/api/du?path=' + encodeURIComponent(p));
     if (!d.ok) { body.innerHTML = `<div class="empty-state">${escapeHtml(d.error || '读取失败')}</div>`; return; }
-    const max = d.items.length ? d.items[0].size : 1;
+    const max = d.items.length ? (d.items[0].size || 1) : 1;
     const up = p !== '/' ? `<div class="disk-row disk-up" data-dir="${escapeHtml(dirOf(p))}"><span class="disk-name">↑ 上一级</span></div>` : '';
+    // size=null：Windows 上没算出来的目录（超时/无权限），显示 — 而不是冒充 0 B
     body.innerHTML = `<div class="disk-total">共 ${fmtSize(d.total)}${d.more ? ` · 只显示前 ${d.items.length} 项` : ''}</div>` + up +
       d.items.map((it) => `<div class="disk-row${it.isDir ? ' is-dir' : ''}" data-dir="${it.isDir ? escapeHtml(p + '/' + it.name) : ''}">
-        <i class="disk-bar" style="width:${Math.max(1, Math.round(it.size / max * 100))}%"></i>
-        <span class="disk-name">${it.isDir ? '📁 ' : ''}${escapeHtml(it.name)}</span><span class="disk-size">${fmtSize(it.size)}</span></div>`).join('');
+        <i class="disk-bar" style="width:${it.size == null ? 0 : Math.max(1, Math.round(it.size / max * 100))}%"></i>
+        <span class="disk-name">${it.isDir ? '📁 ' : ''}${escapeHtml(it.name)}</span><span class="disk-size"${it.size == null ? ' title="没算出来（超时或无权限）"' : ''}>${it.size == null ? '—' : fmtSize(it.size)}</span></div>`).join('');
     body.querySelectorAll('.disk-row[data-dir]').forEach((r) => {
       if (r.dataset.dir) r.onclick = () => load(r.dataset.dir);
     });
@@ -1787,12 +1823,12 @@ function showContextMenu(ev, e) {
   if (e.kind === 'text') items.push({ label: '编辑文本', fn: () => enterEditMode(e) });
   if (e.kind === 'image') items.push({ label: '编辑图片', fn: () => enterImageEdit(e) });
   items.push({ label: '在编辑器打开', fn: () => openWith(e.path, 'editor') });
-  items.push({ label: '在 Finder 显示', fn: () => openWith(e.path, 'reveal') });
+  items.push({ label: `在 ${fileManagerName()} 显示`, fn: () => openWith(e.path, 'reveal') });
   items.push({ label: '复制路径', fn: () => copyPath(e.path) });
   items.push({ sep: true });
   items.push({ label: isFav(e.path) ? '取消收藏' : '收藏', fn: () => toggleFav(e) });
   items.push({ label: '重命名…', fn: () => doRename(e) });
-  items.push({ label: '移到废纸篓', danger: true, fn: () => doTrash(e) });
+  items.push({ label: `移到${trashName()}`, danger: true, fn: () => doTrash(e) });
   popupMenu(ev, items);
 }
 // 在鼠标位置弹一个菜单（右键菜单与空白处双击菜单共用）
@@ -1856,6 +1892,7 @@ async function loadRoots() {
   state.home = data.home;
   state.platform = data.platform;
   state.sep = data.sep || '/';
+  applyPlatformChrome();
   const ul = $('#roots-list');
   ul.innerHTML = '';
   data.roots.forEach((r) => ul.appendChild(navDirLi(r.name, r.path)));
@@ -2300,13 +2337,18 @@ const wechatView = {
   syncAwake() {
     const e = this.el(); if (!e) return;
     const btn = e.querySelector('#wx-awake'); if (!btn) return;
-    const mac = (this.platform || (window.fanboxEnv && window.fanboxEnv.platform)) === 'darwin';
-    btn.classList.toggle('hidden', !mac); // 仅 macOS 支持（pmset 禁休眠）
+    const plat = this.platform || (window.fanboxEnv && window.fanboxEnv.platform) || state.platform || '';
+    const supported = plat === 'darwin' || plat === 'win32';
+    btn.classList.toggle('hidden', !supported); // macOS (pmset) / Windows (powerSaveBlocker)
     btn.classList.toggle('on', this.stayAwake);
     btn.textContent = this.stayAwake ? '🌙 离开不待机 · 开' : '🌙 离开不待机';
     btn.title = this.stayAwake
-      ? '已开启：微信连着时，合盖 / 息屏也不休眠，离开电脑也能远程操控。点击关闭'
-      : '开启后离开电脑也能用微信遥控：合盖 / 息屏不休眠（断开微信自动恢复）';
+      ? (plat === 'win32'
+        ? '已开启：微信连着时尽量不睡眠，离开电脑也能远程操控。点击关闭'
+        : '已开启：微信连着时，合盖 / 息屏也不休眠，离开电脑也能远程操控。点击关闭')
+      : (plat === 'win32'
+        ? '开启后离开电脑也能用微信遥控：系统尽量不睡眠（断开微信自动恢复）'
+        : '开启后离开电脑也能用微信遥控：合盖 / 息屏不休眠（断开微信自动恢复）');
   },
   async toggleAwake() {
     const r = await window.fanboxWechat.setStayAwake(!this.stayAwake).catch(() => ({}));
@@ -2439,20 +2481,45 @@ const wechatView = {
 // 三层：① AGENT_REGISTRY 内置 11 个主流 agent（图标在 /assets/agents/）
 //      ② 设置面板（⚙ 滑杆按钮）勾选启用哪些，存 config.json 的 enabledAgents，默认 claude + codex
 //      ③ config.json 的 agents 数组做高级自定义：同 id 覆盖内置命令，新 id 追加按钮
-// app: true 的是桌面应用（无终端 CLI 形态，官方确认），按钮改为 open -a 拉起，检测走 open -Ra
+// app: true 的是桌面应用（无终端 CLI 形态，官方确认），按钮改为 open -a / Start-Process 拉起
 const AGENT_REGISTRY = [
   { id: 'claude', label: 'Claude Code', cmd: 'claude --dangerously-skip-permissions', bin: 'claude', install: 'npm install -g @anthropic-ai/claude-code' },
   { id: 'codex', label: 'Codex', cmd: 'codex', bin: 'codex', install: 'npm install -g @openai/codex' },
   { id: 'hermes', label: 'Hermes Agent', cmd: 'hermes', bin: 'hermes', install: 'curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash' },
   { id: 'openclaw', label: 'OpenClaw', cmd: 'openclaw', bin: 'openclaw', install: 'npm install -g openclaw' },
   { id: 'kimi', label: 'Kimi Code', cmd: 'kimi', bin: 'kimi', install: 'curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash' },
-  { id: 'zcode', label: 'ZCode', cmd: 'open -a ZCode', app: 'ZCode', install: 'https://zcode.z.ai （桌面应用，官网下载 dmg）' },
+  { id: 'zcode', label: 'ZCode', cmd: 'open -a ZCode', app: 'ZCode', install: 'https://zcode.z.ai （桌面应用，官网下载）' },
   { id: 'opencode', label: 'opencode', cmd: 'opencode', bin: 'opencode', install: 'curl -fsSL https://opencode.ai/install | bash' },
   { id: 'pi', label: 'pi', cmd: 'pi', bin: 'pi', install: 'curl -fsSL https://pi.dev/install.sh | sh' },
   { id: 'codebuddy', label: 'CodeBuddy', cmd: 'codebuddy', bin: 'codebuddy', install: 'npm install -g @tencent-ai/codebuddy-code' },
   { id: 'workbuddy', label: 'WorkBuddy', cmd: 'open -a WorkBuddy', app: 'WorkBuddy', install: 'https://codebuddy.cn/work （桌面应用，官网下载）' },
   { id: 'qoder', label: 'Qoder CLI', cmd: 'qodercli', bin: 'qodercli', install: 'curl -fsSL https://qoder.com/install | bash' },
 ];
+// 按平台解析 agent 启动命令（终端里可敲的那种）
+function agentLaunchCmd(a) {
+  if (!a) return '';
+  if (a.app) {
+    // Windows 桌面应用不走这里（见 launchDesktopAgentWin）：Start-Process '<名字>' 按 PATH/App Paths
+    // 解析，找不到 LOCALAPPDATA\Programs 里的安装；shell 若是 cmd 连 Start-Process 都不认识
+    if (isMacOS()) return `open -a ${a.app}`;
+    return a.cmd;
+  }
+  return a.cmd;
+}
+
+// Windows 桌面应用：不往终端打命令，用检测时找到的 exe 全路径直接拉起（检测和启动同一条解析，
+// 按钮亮着就一定能启动）。GUI 应用也确实不需要终端。
+async function launchDesktopAgentWin(a) {
+  let w = agentsPop.which;
+  if (!w || !(a.app in w)) {
+    try { w = agentsPop.which = await api(`/api/agents/which?apps=${encodeURIComponent(a.app)}`); } catch { w = {}; }
+  }
+  const exe = w && typeof w[a.app] === 'string' ? w[a.app] : '';
+  if (!exe) { toast(`没找到 ${a.label} 的安装位置（设置里可确认是否已装）`, true); return; }
+  const r = await apiPost('/api/open', { path: exe });
+  if (r && r.ok) toast(`已启动 ${a.label}`);
+  else toast(`启动 ${a.label} 失败：` + ((r && r.error) || ''), true);
+}
 const AGENT_DEFAULTS = ['claude', 'codex'];
 const agentState = { enabled: null, custom: [] };
 const agentIconCache = new Map();
@@ -2507,7 +2574,11 @@ async function renderAgentButtons() {
     b.id = 'term-' + String(a.id).replace(/[^\w-]/g, '');
     b.title = a.app ? `打开 ${a.label} 桌面应用（该产品无终端 CLI 形态）` : `启动 ${a.label}：空闲终端就地启动，正跑着任务则新开标签`;
     b.innerHTML = (await agentIconHtml(a.id)) || `<span class="agent-abbr">${escapeHtml(String(a.label || a.id).slice(0, 2))}</span>`;
-    b.onclick = () => { wechatView.close(); term.launchAgent(a.cmd); };
+    b.onclick = () => {
+      wechatView.close();
+      if (a.app && isWindows()) { launchDesktopAgentWin(a); return; } // 桌面应用直接拉起 exe，不进终端
+      term.launchAgent(agentLaunchCmd(a));
+    };
     anchor.parentElement.insertBefore(b, anchor);
   }
 }
@@ -3108,7 +3179,7 @@ async function exportReplay(p) {
     const name = `终端录像-${tag}-${fmtStamp()}`;
     // 渲染层永远产 WebM，交给主进程按 fmt 用 ffmpeg 转 mp4/gif（无 ffmpeg 自动退回 webm）
     const r = await window.fanboxRec.export(name, buf, fmt).catch(() => null);
-    if (r && r.ok) { toast('已导出 ' + baseOf(r.path) + (r.fellBack ? '（' + r.fellBack + '）' : '') + '，在访达打开'); window.fanboxRec.reveal(r.path); }
+    if (r && r.ok) { toast('已导出 ' + baseOf(r.path) + (r.fellBack ? '（' + r.fellBack + '）' : '') + `，在${fileManagerName()}打开`); window.fanboxRec.reveal(r.path); }
     else { toast('导出失败' + (r && r.error ? '：' + r.error : ''), true); }
   } finally {
     try { cancelAnimationFrame(framePump); } catch { /* */ }
@@ -3258,7 +3329,12 @@ const term = {
   async isPlainShell(s) {
     try {
       const r = await window.fanboxPty.proc(s.id);
-      if (!r || !r.ok || !r.proc) return false;
+      if (!r || !r.ok) return false;
+      // Windows：node-pty 的 proc 是 spawn 时写死的静态值（永远像个 shell 名），按名字判会把
+      // claude 正跑着的标签当空闲、把启动命令打进 TUI 会话里。主进程改用「shell 有无子进程」
+      // 探测，busy===false 才算空闲；null（探测不到）按忙
+      if (isWindows()) return r.busy === false;
+      if (!r.proc) return false;
       const name = String(r.proc).split('/').pop().replace(/^-/, '').toLowerCase();
       return ['zsh', 'bash', 'fish', 'sh', 'dash', 'tcsh', 'nu', 'pwsh', 'powershell.exe', 'cmd.exe'].includes(name);
     } catch { return false; }
@@ -3296,12 +3372,14 @@ const term = {
     let p = String(raw).replace(/^['"]+/, '').replace(/[)\]'"`,:;]+$/, '');
     let cwd = state.cwd;
     let candidate = p;
-    const isRel = !p.startsWith('/') && !p.startsWith('~');
+    // 绝对路径：POSIX 的 / 和 ~，Windows 的盘符（C:\ 或 C:/）和 UNC（\\server\share）——
+    // 少认了盘符会把 C:\Users\me\x.md 当相对路径拼到 cwd 后面，stat 必败
+    const isRel = !(p.startsWith('/') || p.startsWith('~') || /^[A-Za-z]:[\\/]/.test(p) || p.startsWith('\\\\'));
     if (isRel) {
       try { const r = await window.fanboxPty.cwd(id); if (r && r.ok && r.cwd) cwd = r.cwd; } catch { /* */ }
-      candidate = (cwd || '').replace(/\/$/, '') + '/' + p.replace(/^\.\//, '');
+      candidate = (cwd || '').replace(/[\\/]+$/, '') + '/' + p.replace(/^\.[\\/]/, '');
     }
-    const name = p.replace(/\/+$/, '').split('/').pop(); // 去掉目录结尾 / 再取 basename，否则名为空 basename 搜索失效
+    const name = p.replace(/[\\/]+$/, '').split(/[\\/]/).pop(); // 去掉目录结尾分隔符再取 basename（两种斜杠都算），否则名为空 basename 搜索失效
     // 回扫 scrollback：agent 生成文件时几乎总打印过全路径（裸文件名常常不在 cwd 下），比模糊搜索可信
     const alt = isRel ? this.scanScrollbackFor(id, name, rowHint) : '';
     // 活跃项目根（浏览目录 + 各终端项目目录）作 basename 搜索的额外根
@@ -3317,15 +3395,15 @@ const term = {
     applySelection(r.path); openPreview(e); recordRecent(r.path);
     toast(r.viaSearch ? '未精确命中，已打开最接近的「' + baseOf(r.path) + '」' : (r.viaScrollback ? '已按会话里出现过的路径打开' : '已打开'));
   },
-  // 从 fromRow 往上回扫 scrollback（最多 2000 物理行），收集含该 basename 的绝对路径（/ 或 ~ 开头，
-  // 最近出现在前，≤3 个），交给 /api/locate 逐个 stat 验证。折行沿 isWrapped 拼回逻辑行；
+  // 从 fromRow 往上回扫 scrollback（最多 2000 物理行），收集含该 basename 的绝对路径（/ ~ 盘符
+  // 或 UNC 开头，最近出现在前，≤3 个），交给 /api/locate 逐个 stat 验证。折行沿 isWrapped 拼回逻辑行；
   // 含 … 的截断路径、URL（// 开头或紧跟冒号）跳过，继续往上找干净的
   scanScrollbackFor(id, name, fromRow) {
     const s = this.sessions.find((x) => x.id === id);
     if (!s || !name) return '';
     const buf = s.xterm.buffer.active;
     const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const re = new RegExp('(?:~|/)(?:[^\\s\'"`()]*/)?' + esc + '(?=$|[\\s\'"`)\\],:;。，）】、？！；：])', 'gu');
+    const re = new RegExp('(?:~|/|[A-Za-z]:[\\\\/]|\\\\\\\\)(?:[^\\s\'"`()]*[\\\\/])?' + esc + '(?=$|[\\s\'"`)\\],:;。，）】、？！；：])', 'gu');
     const hits = [];
     let row = Math.min(fromRow == null ? buf.length - 1 : fromRow, buf.length - 1);
     let budget = 2000;
@@ -3545,14 +3623,17 @@ const term = {
           const reQ = /'([^']{3,})'|"([^"]{3,})"/g;
           while ((m = reQ.exec(t)) !== null) {
             const inner = m[1] || m[2];
-            if (!inner.includes('/') && !/\.[A-Za-z0-9]{1,8}$/.test(inner)) continue;
+            if (!/[\\/]/.test(inner) && !/\.[A-Za-z0-9]{1,8}$/.test(inner)) continue; // Windows 反斜杠路径也算
             push(m.index + 1, m.index + 1 + inner.length, inner, '');
           }
           // 2. 含斜杠的 token：宽进严出——整个 token 都收（.claude/x、写作/01-xx、/abs、~/x 全覆盖），
           // 配不配下划线交给服务端 stat 验证（散文里的「分发/产品演示——……」会被验证刷掉）。
           // 全角胶水标点（：、，。等）必须进切断集：它们出现在路径「前面」时（看看效果：/tmp/x.png、
           // 顿号列举的第二项），后置 split 救不回来——要么整段散文粘进候选 stat 必败，要么首段为空整条丢弃
-          const reP = /[^\s'"`:()（）「」【】<>：；，。、？！]*\/[^\s'"`:()（）「」【】<>：；，。、？！]*/g;
+          // 分隔符两种斜杠都认；盘符前缀单独放行（token 字符集排除了半角冒号挡 url:xx 之类的粘连，
+          // 但 C:\ 的冒号是合法路径头——只认「单字母+冒号」，且前面不能是字母数字：
+          // 否则 foo:bar/baz 会从中间的 o: 起匹配成 o:bar/baz，白丢 bar/baz 这个相对路径候选）
+          const reP = /(?<![A-Za-z0-9])(?:[A-Za-z]:)?[^\s'"`:()（）「」【】<>：；，。、？！]*[\\/][^\s'"`:()（）「」【】<>：；，。、？！]*/g;
           const r2 = [];
           const truncated = [];
           while ((m = reP.exec(t)) !== null) {
@@ -3562,9 +3643,9 @@ const term = {
             // 后面没有 / 的才是粘连散文或尾部截断（basename 已残，搜也搜不到），从右往左切掉
             let raw = m[0].split(/[，。、？！—]+/)[0];
             let gi;
-            while ((gi = raw.lastIndexOf('…')) !== -1 && !raw.slice(gi + 1).includes('/')) raw = raw.slice(0, gi);
+            while ((gi = raw.lastIndexOf('…')) !== -1 && !/[\\/]/.test(raw.slice(gi + 1))) raw = raw.slice(0, gi);
             raw = raw.replace(/[)\],.:;]+$/, '');
-            if (raw.length < 3 || !raw.includes('/') || /^https?:\/\//.test(raw)) continue;
+            if (raw.length < 3 || !/[\\/]/.test(raw) || /^https?:\/\//.test(raw)) continue;
             if (overlaps(m.index, m.index + raw.length)) continue;
             const tail = t.slice(m.index + raw.length).split(/['"`]/)[0].slice(0, 160);
             // 截断路径（.../…）：完整字符串通不过 stat 验证，但 basename 搜索通常能定位，
@@ -3578,7 +3659,7 @@ const term = {
           // 目录候选（结尾 /）：和带扩展名的裸文件名享受同等兜底——验证通过则用精确路径，
           // 验证失败（终端 cwd 与打印的相对路径基准不一致时常见）也保留链接，点开走 basename 搜索。
           // 文件靠扩展名白名单兜底，目录没扩展名，全靠结尾 / 这个强信号（散文几乎不这么写）。
-          const dirCands = r2.filter((x) => x.cand.endsWith('/'));
+          const dirCands = r2.filter((x) => /[\\/]$/.test(x.cand));
           const finish = () => {
             // 3. 裸文件名：unicode 字符类（调研.md 能点）+ 扩展名白名单（e.g/node.js 不误报）。
             // 紧跟斜杠路径、只隔空格的裸名多半是同一带空格路径的后半段：点哪段都按完整串定位
@@ -4056,7 +4137,7 @@ const skillsView = {
               ${it.residue ? '' : '<button data-act="invoke" class="primary">▶ 终端调用</button>'}
               <button data-act="reveal">在文件区显示</button>
               ${it.residue ? '' : '<button data-act="edit">编辑 SKILL.md</button>'}
-              <button data-act="trash" class="danger">移到废纸篓</button>
+              <button data-act="trash" class="danger">移到${trashName()}</button>
             </div>
           </div>
           <dl class="fd-meta">
@@ -4100,10 +4181,10 @@ const skillsView = {
           const e2 = state.entries.find((x) => x.name === 'SKILL.md');
           if (e2) { state.selected = e2.path; openPreview(e2); renderFiles(); }
         } else if (act.dataset.act === 'trash') {
-          const ok = await confirmDialog(`把「${it.name}」移到废纸篓？（系统废纸篓里随时可恢复）`);
+          const ok = await confirmDialog(`把「${it.name}」移到${trashName()}？（系统${trashName()}里随时可恢复）`);
           if (!ok) return;
           const r = await apiPost('/api/skills/trash', { dir });
-          if (r.ok) { toast('已移到废纸篓'); this.open.delete(dir); this.reload(); }
+          if (r.ok) { toast(`已移到${trashName()}`); this.open.delete(dir); this.reload(); }
           else toast('删除失败：' + (r.error || ''), true);
         }
         return;
@@ -4561,7 +4642,7 @@ function followArtifactCard(e) {
       <div class="big">${iconSvg(real, 48)}</div>
       <div class="art-name">${escapeHtml(e.name)}</div>
       <div class="art-sub">agent 刚生成${sizeStr ? ' · ' + sizeStr : ''}</div>
-      <div class="art-btns"><button class="ghost-btn" data-act="reveal">在访达显示</button><button class="ghost-btn" data-act="open">打开</button></div>
+      <div class="art-btns"><button class="ghost-btn" data-act="reveal">在${fileManagerName()}显示</button><button class="ghost-btn" data-act="open">打开</button></div>
     </div>`;
   body.querySelector('[data-act="reveal"]').onclick = () => openWith(e.path, 'reveal');
   body.querySelector('[data-act="open"]').onclick = () => openWith(e.path, 'default');
@@ -4845,8 +4926,15 @@ if (window.fanboxFs) {
 
 // ---------- 启动 ----------
 async function init() {
-  // 桌面 app：标记 body，给顶部交通灯留位、顶部可拖拽
-  if (window.fanboxEnv && window.fanboxEnv.isDesktopApp) document.documentElement.classList.add('desktop');
+  // 桌面 app：标记 html，给顶部交通灯/标题栏留位、顶部可拖拽
+  if (window.fanboxEnv && window.fanboxEnv.isDesktopApp) {
+    document.documentElement.classList.add('desktop');
+    if (window.fanboxEnv.platform) {
+      document.documentElement.classList.add(window.fanboxEnv.platform);
+      state.platform = window.fanboxEnv.platform;
+    }
+  }
+  applyPlatformChrome();
   try { window.fanboxWin?.trafficLights(true); } catch { /* 重载后兜底恢复系统按钮，防上次全屏藏了没显回来 */ }
   applyTheme(state.theme, false);
   if (state.sidebarCollapsed) { $('#app').classList.add('sidebar-collapsed'); $('#btn-sidebar')?.classList.add('on'); }

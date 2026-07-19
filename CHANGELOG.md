@@ -11,6 +11,18 @@
 
 ## [Unreleased]
 
+### Added
+- **Windows 移植（对齐官方 v2.6.3）**：`windows` 分支从零适配 Windows 10/11 x64，不参考旧社区移植
+  - 打包：`npm run dist:win` → NSIS 安装包 + portable（`build/icon.ico`）
+  - 终端：node-pty ConPTY，默认 PowerShell；GUI 启动时合并用户/系统 PATH 注册表
+  - 环境/代理：PowerShell 环境抓取 + Internet Settings 系统代理兜底（微信 ClawBot / Claude 限额 curl）
+  - 截图直通车：监听 `Pictures\Screenshots`、桌面、OneDrive 截图目录
+  - 保持唤醒：Electron `powerSaveBlocker`（菜单「有任务时保持唤醒」+ 微信「离开不待机」）
+  - 文件：回收站删除、资源管理器定位、剪贴板复制文件（`Set-Clipboard -Path`）
+  - 磁盘占用：PowerShell `Measure-Object`（替代 `du`）
+  - 缩略图：ImageMagick / ffmpeg 可选回退（无则矢量图标）
+  - UI：`Ctrl` 快捷键文案、Windows 标题栏 overlay 右侧让位、访达→资源管理器 文案
+
 ## [2.6.3] - 2026-07-17
 
 ### Changed

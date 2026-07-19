@@ -5,10 +5,12 @@
  * 复用零依赖后端 server.js（文件能力），叠加 node-pty 内嵌终端，
  * 让 TUI coding agent（Claude Code / Codex / Aider…）在界面里直接跑起来。
  */
-const { app, BrowserWindow, ipcMain, shell, nativeImage, Menu, clipboard, dialog, net, session } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, nativeImage, Menu, clipboard, dialog, net, session, powerSaveBlocker } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const IS_MAC = process.platform === 'darwin';
+const IS_WIN = process.platform === 'win32';
 
 // 复用现有后端：require 即 listen 127.0.0.1:PORT，不自动开浏览器
 process.env.FANBOX_NO_OPEN = '1';
@@ -40,28 +42,41 @@ function saveBounds() {
 
 function createWindow() {
   const b = loadBounds();
-  win = new BrowserWindow({
+  // macOS：hiddenInset + vibrancy；Windows：hidden + titleBarOverlay（保留原生右上角按钮）
+  const winOpts = {
     width: b.width, height: b.height, x: b.x, y: b.y,
     minWidth: 920, minHeight: 600,
-    titleBarStyle: 'hiddenInset',
     backgroundColor: '#0b0c0a',
-    vibrancy: 'sidebar',
-    visualEffectState: 'active',
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
-  });
+  };
+  if (IS_MAC) {
+    winOpts.titleBarStyle = 'hiddenInset';
+    winOpts.vibrancy = 'sidebar';
+    winOpts.visualEffectState = 'active';
+  } else if (IS_WIN) {
+    winOpts.titleBarStyle = 'hidden';
+    winOpts.titleBarOverlay = { color: '#0b0c0a', symbolColor: '#c8c8c8', height: 36 };
+    winOpts.autoHideMenuBar = true;
+  } else {
+    winOpts.autoHideMenuBar = true;
+  }
+  win = new BrowserWindow(winOpts);
   // 拖动/缩放后防抖记忆，关窗再存一次兜底
   let bt = null;
   const remember = () => { clearTimeout(bt); bt = setTimeout(saveBounds, 400); };
   win.on('resize', remember);
   win.on('move', remember);
+  win.once('ready-to-show', () => { if (win && !win.isDestroyed()) win.show(); });
   // macOS：点左上角红叉只隐藏到 Dock（保活渲染进程，所有界面/终端状态原样保留），真正退出走 ⌘Q。
+  // Windows/Linux：关窗即退出（系统托盘未实现）。
   win.on('close', (e) => {
     saveBounds();
-    if (process.platform === 'darwin' && !isQuitting) { e.preventDefault(); win.hide(); }
+    if (IS_MAC && !isQuitting) { e.preventDefault(); win.hide(); }
   });
 
   // 等后端起来再加载（首次 listen 有几十毫秒延迟）
@@ -79,7 +94,7 @@ function createWindow() {
 
 app.whenReady().then(() => {
   // 开发模式下 macOS 默认显示 Electron 图标——换成翻箱自己的（打包后由 electron-builder 的 icon 接管）
-  if (process.platform === 'darwin' && app.dock) {
+  if (IS_MAC && app.dock) {
     try { app.dock.setIcon(nativeImage.createFromPath(path.join(__dirname, '..', 'build', 'icon.png'))); } catch { /* */ }
   }
   app.setName('FanBox');
@@ -89,7 +104,7 @@ app.whenReady().then(() => {
   // 合盖继续运行：恢复上次的开关意图；启动时把残留的禁休眠清掉（防上次崩溃没恢复），有终端跑起来再按需重新生效
   lidIntent = !!readConfig().lidStayAwake;
   wechatStayAwake = !!readConfig().wechatStayAwake;
-  if (process.platform === 'darwin') trySetDisableSleep(false);
+  trySetDisableSleep(false);
   buildMenu();
   try {
     const m = Menu.getApplicationMenu();
@@ -110,44 +125,62 @@ app.whenReady().then(() => {
 });
 
 // ---------- 截图直通车：监听系统截屏落盘，新截图推给渲染层浮出直通卡 ----------
-function screenshotDir() {
+function screenshotDirs() {
+  if (IS_WIN) {
+    const home = os.homedir();
+    return [
+      path.join(home, 'Pictures', 'Screenshots'),
+      path.join(home, 'OneDrive', 'Pictures', 'Screenshots'),
+      path.join(home, 'OneDrive', '图片', 'Screenshots'),
+      path.join(home, 'Pictures', '屏幕截图'),
+      path.join(home, 'Desktop'),
+      path.join(home, '桌面'),
+    ].filter((d) => { try { return fs.existsSync(d); } catch { return false; } });
+  }
+  // macOS：读系统截屏目录配置，默认桌面
   try {
     const out = require('child_process').execSync('defaults read com.apple.screencapture location 2>/dev/null', { encoding: 'utf8' }).trim();
-    if (out) return out.startsWith('~') ? path.join(os.homedir(), out.slice(1)) : out;
+    if (out) return [out.startsWith('~') ? path.join(os.homedir(), out.slice(1)) : out];
   } catch { /* 未自定义 → 默认桌面 */ }
-  return path.join(os.homedir(), 'Desktop');
+  return [path.join(os.homedir(), 'Desktop')];
 }
-let shotWatcher = null;
+const shotWatchers = [];
 const shotSent = new Map(); // path -> t，fs.watch 同一文件会连发多个事件，3s 内去重
-function startShotWatch() {
-  if (process.platform !== 'darwin' || shotWatcher) return;
-  const dir = screenshotDir();
-  if (!fs.existsSync(dir)) return;
-  try {
-    shotWatcher = fs.watch(dir, { persistent: false }, (evt, filename) => {
-      const name = filename ? filename.toString() : '';
-      // 截屏写盘有「.截屏xxx.png」点前缀的中间态，跳过；只认系统截屏的命名习惯
-      if (!/^(截屏|截圖|截图|Screenshot|Screen Shot|CleanShot|SCR-)/i.test(name) || !/\.(png|jpe?g)$/i.test(name)) return;
-      const fp = path.join(dir, name);
-      // 等写盘「真正完成」再通知：Retina 全屏截图有几 MB，固定等 600ms 可能文件还在写，
-      // 缩略图会拿到半截文件生成失败→裂图。改成轮询直到大小连续两次不变（最多 ~3s）。
-      const waitStable = (tries, lastSize) => {
-        fs.stat(fp, (err, st) => {
-          if (err || !st.isFile()) return;
-          if (st.size >= 1000 && st.size === lastSize) { // 大小稳定 = 写完
-            const last = shotSent.get(fp) || 0;
-            if (Date.now() - last < 3000) return;
-            shotSent.set(fp, Date.now());
-            if (shotSent.size > 50) { const k = shotSent.keys().next().value; shotSent.delete(k); }
-            if (win && !win.isDestroyed()) win.webContents.send('shot:new', { path: fp, name, size: st.size });
-            return;
-          }
-          if (tries > 0) setTimeout(() => waitStable(tries - 1, st.size), 250); // 还在涨，再等
-        });
-      };
-      setTimeout(() => waitStable(12, -1), 350);
+const SHOT_NAME_RE = /^(截屏|截圖|截图|Screenshot|Screen Shot|CleanShot|SCR-|Snipaste|屏幕截图)/i;
+function onShotFile(dir, filename) {
+  const name = filename ? filename.toString() : '';
+  // 截屏写盘有「.截屏xxx.png」点前缀的中间态，跳过；只认系统截屏的命名习惯
+  if (!SHOT_NAME_RE.test(name) || !/\.(png|jpe?g)$/i.test(name)) return;
+  if (name.startsWith('.')) return;
+  const fp = path.join(dir, name);
+  // 等写盘「真正完成」再通知：全屏截图有几 MB，固定等 600ms 可能文件还在写，
+  // 缩略图会拿到半截文件生成失败→裂图。改成轮询直到大小连续两次不变（最多 ~3s）。
+  const waitStable = (tries, lastSize) => {
+    fs.stat(fp, (err, st) => {
+      if (err || !st.isFile()) return;
+      if (st.size >= 1000 && st.size === lastSize) { // 大小稳定 = 写完
+        const last = shotSent.get(fp) || 0;
+        if (Date.now() - last < 3000) return;
+        shotSent.set(fp, Date.now());
+        if (shotSent.size > 50) { const k = shotSent.keys().next().value; shotSent.delete(k); }
+        if (win && !win.isDestroyed()) win.webContents.send('shot:new', { path: fp, name, size: st.size });
+        return;
+      }
+      if (tries > 0) setTimeout(() => waitStable(tries - 1, st.size), 250); // 还在涨，再等
     });
-  } catch { /* 无权限等，静默放弃 */ }
+  };
+  setTimeout(() => waitStable(12, -1), 350);
+}
+function startShotWatch() {
+  if (shotWatchers.length) return;
+  // macOS / Windows 都监听；Linux 暂不（截图工具命名差异大）
+  if (!IS_MAC && !IS_WIN) return;
+  for (const dir of screenshotDirs()) {
+    try {
+      const w = fs.watch(dir, { persistent: false }, (evt, filename) => onShotFile(dir, filename));
+      shotWatchers.push(w);
+    } catch { /* 无权限等，静默放弃该目录 */ }
+  }
 }
 
 // ---------- 更新检测：查 GitHub Releases，有新版本通知渲染层引导下载 ----------
@@ -159,12 +192,16 @@ function cmpVer(a, b) {
   for (let i = 0; i < 3; i++) { const d = (pa[i] || 0) - (pb[i] || 0); if (d) return d; }
   return 0;
 }
-const REL_PAGE = 'https://github.com/alchaincyf/fanbox/releases/latest';
+// Windows 移植版：检测和下载都指向本 fork 的 Releases——查上游（alchaincyf）会在上游先发版时
+// 弹「有新版」，但 fork 还没有对应的 win 安装包，下载必 404、手动跳过去也没有 win 产物可下。
+// fork 打了 tag 才提示，节奏自己控制。macOS/官方构建保持查上游不变。
+const REL_REPO = IS_WIN ? 'Emberwhirl/fanbox' : 'alchaincyf/fanbox';
+const REL_PAGE = `https://github.com/${REL_REPO}/releases/latest`;
 async function fetchLatestRelease() {
   // 先走 API（信息全）；代理共享出口 IP 很容易吃 GitHub API 的未认证限流（60 次/小时/IP，403），
   // 失败就退回抓 releases/latest 网页重定向——重定向后的 URL 自带 tag，且不占 API 配额
   try {
-    const res = await net.fetch('https://api.github.com/repos/alchaincyf/fanbox/releases/latest', {
+    const res = await net.fetch(`https://api.github.com/repos/${REL_REPO}/releases/latest`, {
       headers: { 'User-Agent': 'fanbox-app', Accept: 'application/vnd.github+json' },
     });
     if (res.ok) {
@@ -206,7 +243,14 @@ async function checkUpdate(opts) {
       const c = dialog.showMessageBoxSync(owner, {
         type: 'info', buttons: [M('去下载', 'Download'), M('取消', 'Cancel')], defaultId: 0, cancelId: 1,
         message: M(`发现新版本 v${pendingUpdate.version}`, `New version v${pendingUpdate.version} available`),
-        detail: M(`当前版本 v${app.getVersion()}。点「去下载」打开发布页，下载后替换 /Applications 里的旧版即可。`, `You are on v${app.getVersion()}. "Download" opens the release page; replace the old app in /Applications.`),
+        detail: M(
+          IS_WIN
+            ? `当前版本 v${app.getVersion()}。点「去下载」打开发布页，下载安装包覆盖安装即可。`
+            : `当前版本 v${app.getVersion()}。点「去下载」打开发布页，下载后替换 /Applications 里的旧版即可。`,
+          IS_WIN
+            ? `You are on v${app.getVersion()}. "Download" opens the release page; install the new package over the old one.`
+            : `You are on v${app.getVersion()}. "Download" opens the release page; replace the old app in /Applications.`,
+        ),
       });
       if (c === 0) shell.openExternal(pendingUpdate.url);
     } else {
@@ -220,39 +264,65 @@ async function checkUpdate(opts) {
 ipcMain.handle('update:open', (e, { url }) => { if (/^https:\/\/github\.com\//.test(String(url))) shell.openExternal(url); });
 ipcMain.handle('update:get', () => pendingUpdate);
 
-// #26 应用内下载更新：按当前架构拼 dmg 资产地址（发布产物统一 FanBox-<版本>-<arch>.dmg），
-// 下到 ~/Downloads 后直接打开挂载，拖进 Applications 即完成。全自动安装（Squirrel）仍要等 Developer ID 签名
+// #26 应用内下载更新：
+//   macOS：FanBox-<版本>-<arch>.dmg → ~/Downloads 后打开挂载
+//   Windows：优先本 fork 的 win 安装包命名，再回退官方 release 页
+// 全自动安装（Squirrel / NSIS silent）后续再接
 let updDownloading = false;
+function updateAssetCandidates(ver, arch) {
+  if (IS_WIN) {
+    // 本仓库 Windows 移植产物命名（package.json win.artifactName）；版本号来自 fork 自己的
+    // release（见 REL_REPO），所以这里的下载地址一定有对应资产，不再需要 dmg「兜底」
+    //（那个 dmg 在 Windows 下面会被下载循环显式跳过，等于零候选）
+    const base = `https://github.com/${REL_REPO}/releases/download/v${ver}`;
+    return [
+      `${base}/FanBox-${ver}-win-${arch}.exe`,
+      `${base}/FanBox-${ver}-win-${arch}-portable.exe`,
+    ];
+  }
+  return [`https://github.com/alchaincyf/fanbox/releases/download/v${ver}/FanBox-${ver}-${arch}.dmg`];
+}
 ipcMain.handle('update:download', async (e, { version }) => {
   if (updDownloading) return { ok: false, error: 'busy' };
   const ver = String(version || '').replace(/^v/, '');
   if (!/^\d+\.\d+\.\d+$/.test(ver)) return { ok: false, error: 'bad version' };
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
-  const url = `https://github.com/alchaincyf/fanbox/releases/download/v${ver}/FanBox-${ver}-${arch}.dmg`;
-  const dest = path.join(app.getPath('downloads'), `FanBox-${ver}-${arch}.dmg`);
+  const candidates = updateAssetCandidates(ver, arch);
   const send = (m) => { if (win && !win.isDestroyed()) win.webContents.send('update:progress', m); };
   updDownloading = true;
-  const tmp = dest + '.part';
+  let lastErr = null;
   try {
-    const res = await net.fetch(url, { headers: { 'User-Agent': 'fanbox-app' } });
-    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
-    const total = Number(res.headers.get('content-length')) || 0;
-    const out = fs.createWriteStream(tmp);
-    let got = 0, lastPct = -1;
-    for await (const chunk of res.body) {
-      const buf = Buffer.from(chunk);
-      if (!out.write(buf)) await new Promise((r) => out.once('drain', r));
-      got += buf.length;
-      const pct = total ? Math.floor((got / total) * 100) : -1;
-      if (pct !== lastPct) { lastPct = pct; send({ state: 'downloading', pct }); }
+    for (const url of candidates) {
+      const ext = (url.match(/\.([a-z0-9]+)$/i) || [, 'bin'])[1];
+      // Windows 跳过误下到的 dmg
+      if (IS_WIN && ext === 'dmg') continue;
+      const dest = path.join(app.getPath('downloads'), path.basename(url));
+      const tmp = dest + '.part';
+      try {
+        const res = await net.fetch(url, { headers: { 'User-Agent': 'fanbox-app' } });
+        if (!res.ok || !res.body) { lastErr = new Error(`HTTP ${res.status}`); continue; }
+        const total = Number(res.headers.get('content-length')) || 0;
+        const out = fs.createWriteStream(tmp);
+        let got = 0, lastPct = -1;
+        for await (const chunk of res.body) {
+          const buf = Buffer.from(chunk);
+          if (!out.write(buf)) await new Promise((r) => out.once('drain', r));
+          got += buf.length;
+          const pct = total ? Math.floor((got / total) * 100) : -1;
+          if (pct !== lastPct) { lastPct = pct; send({ state: 'downloading', pct }); }
+        }
+        await new Promise((resolve, reject) => out.end((err) => (err ? reject(err) : resolve())));
+        await fs.promises.rename(tmp, dest);
+        send({ state: 'done', file: dest });
+        shell.openPath(dest);
+        return { ok: true, file: dest };
+      } catch (err) {
+        lastErr = err;
+        fs.promises.unlink(tmp).catch(() => {});
+      }
     }
-    await new Promise((resolve, reject) => out.end((err) => (err ? reject(err) : resolve())));
-    await fs.promises.rename(tmp, dest);
-    send({ state: 'done', file: dest });
-    shell.openPath(dest);
-    return { ok: true, file: dest };
+    throw lastErr || new Error('no asset');
   } catch (err) {
-    fs.promises.unlink(tmp).catch(() => {});
     send({ state: 'error', error: String((err && err.message) || err) });
     return { ok: false, error: String((err && err.message) || err) };
   } finally { updDownloading = false; }
@@ -282,11 +352,11 @@ function uiLang() {
 }
 const M = (zh, en) => (uiLang() === 'zh' ? zh : en);
 
-// ---------- 合盖继续运行（禁用合盖休眠）----------
-// macOS 的「合盖休眠」是独立机制，caffeinate / powerSaveBlocker 这类 power assertion 都挡不住，
-// 唯一手段是 `pmset -a disablesleep 1`（需 root）。为避免智能模式反复弹密码，首次开启时装一条
-// 仅限 pmset disablesleep 0/1 的 sudoers 免密规则，之后静默切换。
-// 智能模式：只有「开关开 且 有终端在跑」才真正禁休眠；终端全退/退出 app 立即恢复，绝不让 Mac 一直不睡。
+// ---------- 合盖 / 待机继续运行（禁休眠）----------
+// macOS：「合盖休眠」靠 pmset disablesleep（需 root）；首次装 sudoers 免密规则。
+// Windows：Electron powerSaveBlocker（prevent-app-suspension）+ 系统电源计划；
+//   笔记本合盖是否睡仍受「电源选项 → 合上盖子」控制，用户可设为「不采取任何操作」。
+// 智能模式：只有「开关开 且 有终端在跑」才真正禁休眠；终端全退/退出 app 立即恢复。
 const CONFIG = path.join(os.homedir(), '.fanbox', 'config.json');
 function readConfig() { try { return JSON.parse(fs.readFileSync(CONFIG, 'utf8')); } catch { return {}; } }
 function writeConfig(patch) {
@@ -297,18 +367,37 @@ let lidIntent = false; // 用户意图（菜单勾选），跨会话持久
 let lidActive = false; // 当前是否已对系统下达禁休眠
 let wechatStayAwake = false; // 「离开不待机」开关（微信 ClawBot 面板），跨会话持久
 let wechatConnected = false; // 微信 ClawBot 当前是否连着（bridge 回调更新）
+let winPowerBlockerId = null; // Windows powerSaveBlocker id
 
-// 用 sudo -n（非交互）切换；sudoers 没装好就直接失败、绝不在后台弹密码
+// 切换系统禁休眠；失败返回 false
 function trySetDisableSleep(on) {
-  if (process.platform !== 'darwin') return false;
-  // stdio 全静音：免密规则没装时 `sudo -n` 会往 stderr 喷「a password is required」，无害但会误导
-  try { require('child_process').execFileSync('/usr/bin/sudo', ['-n', 'pmset', '-a', 'disablesleep', on ? '1' : '0'], { stdio: 'ignore' }); return true; }
-  catch { return false; }
+  if (IS_MAC) {
+    // stdio 全静音：免密规则没装时 `sudo -n` 会往 stderr 喷「a password is required」，无害但会误导
+    try { require('child_process').execFileSync('/usr/bin/sudo', ['-n', 'pmset', '-a', 'disablesleep', on ? '1' : '0'], { stdio: 'ignore' }); return true; }
+    catch { return false; }
+  }
+  if (IS_WIN) {
+    try {
+      if (on) {
+        if (winPowerBlockerId == null || !powerSaveBlocker.isStarted(winPowerBlockerId)) {
+          winPowerBlockerId = powerSaveBlocker.start('prevent-app-suspension');
+        }
+        return powerSaveBlocker.isStarted(winPowerBlockerId);
+      }
+      if (winPowerBlockerId != null && powerSaveBlocker.isStarted(winPowerBlockerId)) {
+        powerSaveBlocker.stop(winPowerBlockerId);
+      }
+      winPowerBlockerId = null;
+      return true;
+    } catch { return false; }
+  }
+  return false;
 }
 
-// 首次开启时弹一次系统管理员框，装仅限本用户、仅限 pmset disablesleep 0/1 的免密规则
+// 首次开启时弹一次系统管理员框，装仅限本用户、仅限 pmset disablesleep 0/1 的免密规则（macOS only）
 function installSudoers() {
   return new Promise((resolve) => {
+    if (!IS_MAC) return resolve(true);
     const user = (os.userInfo().username || '').replace(/[^a-zA-Z0-9._-]/g, '');
     if (!user) return resolve(false);
     const sh = [
@@ -335,9 +424,10 @@ function installSudoers() {
   });
 }
 
-// 确保 pmset 免密规则就位（探针：设 0 无害；不行就装一次规则）。两个开关共用。
+// 确保禁休眠能力就位。macOS 探针 sudo；Windows 直接可用。
 async function ensurePmsetRule() {
-  if (process.platform !== 'darwin') return false;
+  if (IS_WIN) return true;
+  if (!IS_MAC) return false;
   if (trySetDisableSleep(false)) return true; // 已有免密规则
   return installSudoers();
 }
@@ -345,11 +435,11 @@ async function ensurePmsetRule() {
 // 按「意图 × 触发条件」结算系统状态，幂等。终端起落、微信连断、开关变化都调它。
 //  两条独立诉求 OR 起来：① 合盖继续跑（要有终端在跑）② 离开不待机（微信连着就保持唤醒，断开自动恢复）
 function refreshLidGuard() {
-  if (process.platform !== 'darwin') return;
+  if (!IS_MAC && !IS_WIN) return;
   const want = (lidIntent && terminals.size > 0) || (wechatStayAwake && wechatConnected);
   if (want === lidActive) return;
   const ok = trySetDisableSleep(want);
-  if (want && !ok) { // 免密规则丢了，两个开关都退回关闭，别让用户以为还护着
+  if (want && !ok) { // 免密规则丢了 / blocker 失败，两个开关都退回关闭
     lidIntent = false; wechatStayAwake = false;
     writeConfig({ lidStayAwake: false, wechatStayAwake: false });
     if (win && !win.isDestroyed()) win.webContents.send('wechat:power', { stayAwake: false, active: false });
@@ -361,23 +451,31 @@ function refreshLidGuard() {
 // 菜单勾选/取消的入口
 async function setLidIntent(on) {
   console.log('[lid] setLidIntent called, on =', on);
-  if (process.platform !== 'darwin') return;
+  if (!IS_MAC && !IS_WIN) return;
   if (on) {
     const choice = dialog.showMessageBoxSync(win && !win.isDestroyed() ? win : undefined, {
       type: 'warning', buttons: [M('开启', 'Enable'), M('取消', 'Cancel')], defaultId: 0, cancelId: 1,
-      message: M('合盖后继续运行', 'Keep running with lid closed'),
-      detail: M('开启后，只要还有终端会话在跑，合上盖子也不会休眠——agent 任务能接着干。\n\n注意：合盖期间持续耗电发热，建议接电源。终端全部退出或退出翻箱时自动恢复正常休眠。\n\n首次开启需输入一次管理员密码（装一条仅限电源设置的免密规则）。',
-        'While any terminal session is running, closing the lid won\'t sleep the Mac — your agent tasks keep going.\n\nNote: it keeps drawing power and heat while closed; stay plugged in. Normal sleep is restored once all terminals exit or you quit FanBox.\n\nFirst time needs your admin password once (installs a power-only passwordless rule).'),
+      message: M(IS_WIN ? '有任务时保持唤醒' : '合盖后继续运行', IS_WIN ? 'Keep awake while tasks run' : 'Keep running with lid closed'),
+      detail: IS_WIN
+        ? M(
+          '开启后，只要还有终端会话在跑，系统会尽量不进入睡眠——agent 任务能接着干。\n\n注意：笔记本合盖是否睡眠还取决于「电源选项 → 合上盖子的操作」，建议设为「不采取任何操作」并接电源。终端全部退出或退出 FanBox 时自动恢复。',
+          'While any terminal session is running, Windows will try not to sleep — your agent tasks keep going.\n\nNote: laptop lid-close sleep still follows Power Options → "When I close the lid"; set it to "Do nothing" and stay plugged in. Normal sleep is restored once all terminals exit or you quit FanBox.',
+        )
+        : M(
+          '开启后，只要还有终端会话在跑，合上盖子也不会休眠——agent 任务能接着干。\n\n注意：合盖期间持续耗电发热，建议接电源。终端全部退出或退出翻箱时自动恢复正常休眠。\n\n首次开启需输入一次管理员密码（装一条仅限电源设置的免密规则）。',
+          'While any terminal session is running, closing the lid won\'t sleep the Mac — your agent tasks keep going.\n\nNote: it keeps drawing power and heat while closed; stay plugged in. Normal sleep is restored once all terminals exit or you quit FanBox.\n\nFirst time needs your admin password once (installs a power-only passwordless rule).',
+        ),
     });
     console.log('[lid] warning dialog choice =', choice, '(0=开启)');
     if (choice !== 0) { buildMenu(); return; } // 取消 → 复位勾选
-    // 探针：能否免密 sudo（设 0 无害）。不行就装规则。
-    const probe = trySetDisableSleep(false);
-    console.log('[lid] sudo probe ok =', probe, '→', probe ? '已有免密规则' : '需安装');
-    if (!probe) {
-      const installed = await installSudoers();
-      console.log('[lid] installSudoers result =', installed);
-      if (!installed) { buildMenu(); return; } // 装失败/取消 → 保持关闭
+    if (IS_MAC) {
+      const probe = trySetDisableSleep(false);
+      console.log('[lid] sudo probe ok =', probe, '→', probe ? '已有免密规则' : '需安装');
+      if (!probe) {
+        const installed = await installSudoers();
+        console.log('[lid] installSudoers result =', installed);
+        if (!installed) { buildMenu(); return; }
+      }
     }
   }
   lidIntent = on;
@@ -386,9 +484,16 @@ async function setLidIntent(on) {
   buildMenu();
 }
 
-// 原生菜单——关键是 Edit role，终端里的 ⌘C/⌘V 才生效
+// 原生菜单——关键是 Edit role，终端里的 ⌘C/⌘V / Ctrl+C/V 才生效
 function buildMenu() {
-  const isMac = process.platform === 'darwin';
+  const isMac = IS_MAC;
+  const stayLabel = IS_WIN
+    ? (lidActive
+      ? M('有任务时保持唤醒（生效中）', 'Keep awake while tasks run (active)')
+      : M('有任务时保持唤醒', 'Keep awake while tasks run'))
+    : (lidActive
+      ? M('合盖后继续运行（生效中）', 'Keep running with lid closed (active)')
+      : M('合盖后继续运行', 'Keep running with lid closed'));
   const template = [
     ...(isMac ? [{ label: 'FanBox', submenu: [
       { role: 'about', label: M('关于 FanBox', 'About FanBox') },
@@ -400,7 +505,7 @@ function buildMenu() {
     ] }] : []),
     { label: M('文件', 'File'), submenu: [
       ...(isMac ? [] : [{ label: M('检查更新…', 'Check for Updates…'), click: () => checkUpdate({ manual: true }) }, { type: 'separator' }]),
-      isMac ? { role: 'close' } : { role: 'quit' },
+      isMac ? { role: 'close' } : { role: 'quit', label: M('退出', 'Quit') },
     ] },
     { label: M('编辑', 'Edit'), submenu: [
       { role: 'undo', label: M('撤销', 'Undo') }, { role: 'redo', label: M('重做', 'Redo') }, { type: 'separator' },
@@ -411,9 +516,9 @@ function buildMenu() {
       { role: 'reload', label: M('重新加载', 'Reload') }, { role: 'toggleDevTools', label: M('开发者工具', 'Developer Tools') },
       { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' },
       { type: 'separator' }, { role: 'togglefullscreen', label: M('全屏', 'Full Screen') },
-      ...(isMac ? [{ type: 'separator' }, {
-        // 合盖后继续运行：仅在有终端跑着时真正生效（智能模式）；勾选状态反映用户意图
-        label: lidActive ? M('合盖后继续运行（生效中）', 'Keep running with lid closed (active)') : M('合盖后继续运行', 'Keep running with lid closed'),
+      ...((isMac || IS_WIN) ? [{ type: 'separator' }, {
+        // 智能模式：仅在有终端跑着时真正生效；勾选状态反映用户意图
+        label: stayLabel,
         type: 'checkbox', checked: lidIntent,
         click: (item) => { setLidIntent(item.checked); },
       }] : []),
@@ -448,10 +553,10 @@ app.on('window-all-closed', () => {
   if (lidActive) { trySetDisableSleep(false); lidActive = false; } // 终端没了，别让 Mac 一直不睡
   recorders.forEach((r) => { try { r.stream.end(); } catch { /* */ } }); // 收尾刷盘，别丢最后几行
   recorders.clear();
-  if (process.platform !== 'darwin') app.quit();
+  if (!IS_MAC) app.quit();
 });
-// 退出兜底：无论怎么退（⌘Q、崩溃前的正常退出），都恢复系统休眠，绝不留禁休眠的烂摊子
-app.on('will-quit', () => { if (process.platform === 'darwin') trySetDisableSleep(false); });
+// 退出兜底：无论怎么退（⌘Q / Alt+F4 / 崩溃前的正常退出），都恢复系统休眠，绝不留禁休眠的烂摊子
+app.on('will-quit', () => { trySetDisableSleep(false); });
 
 // ---------- 终端录制（黑匣子）：把 PTY 字节流旁路成 asciinema v2 .cast ----------
 // 设计铁律：录制器是一根哑管子——只异步旁路字节，全程 try/catch，写失败就静默自废，
@@ -511,17 +616,48 @@ function recStop(id) {
 }
 
 // ---------- 终端 IPC（node-pty）----------
+const termCwds = new Map(); // id -> 最近已知 cwd（Windows 无 lsof，spawn 时记下，定位功能兜底）
+
+function resolveShell() {
+  if (IS_WIN) {
+    // 优先用户配置 / pwsh / Windows PowerShell / COMSPEC
+    const candidates = [
+      process.env.SHELL,
+      process.env.FANBOX_SHELL,
+      process.env.ComSpec && process.env.ComSpec.toLowerCase().includes('powershell') ? process.env.ComSpec : null,
+      path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+      'powershell.exe',
+      process.env.ComSpec || 'cmd.exe',
+    ].filter(Boolean);
+    for (const c of candidates) {
+      try {
+        if (c === 'powershell.exe' || c === 'pwsh.exe' || c === 'cmd.exe') return c;
+        if (fs.existsSync(c)) return c;
+      } catch { /* */ }
+    }
+    return 'powershell.exe';
+  }
+  return process.env.SHELL || '/bin/zsh';
+}
+
 ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme }) => {
   if (!pty) return { ok: false, error: 'node-pty 未编译，跑：npm run rebuild' };
-  const shellPath = process.env.SHELL || (process.platform === 'win32' ? 'powershell.exe' : '/bin/zsh');
+  const shellPath = resolveShell();
   const startCwd = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
   // login shell（-l）：GUI 启动的进程只继承精简 PATH，不读 .zprofile/.zlogin，
   // 用户在那里配的 Homebrew/nvm/npm 全局路径（claude 等）就丢了 → 「普通终端能找到、fanbox 找不到」。
-  // 走 login shell 把这些路径带进来。Windows 的 powershell 无此机制，保持空参数。
-  const shellArgs = process.platform === 'win32' ? [] : ['-l'];
+  // Windows ConPTY 无 POSIX login shell；PATH 已在 env 里尽量补齐。
+  let shellArgs = [];
+  if (!IS_WIN) shellArgs = ['-l'];
+  else if (/powershell|pwsh/i.test(shellPath)) shellArgs = ['-NoLogo'];
   // GUI 启动的 app 不继承 shell 的 locale，zsh 会把中文路径按字节转义成 \M-^@ 乱码 → 兜底 UTF-8
   const env = { ...process.env, TERM: 'xterm-256color', FANBOX: '1' };
-  if (!/UTF-8/i.test(env.LC_ALL || env.LC_CTYPE || env.LANG || '')) env.LANG = 'zh_CN.UTF-8';
+  if (!/UTF-8|utf8/i.test(env.LC_ALL || env.LC_CTYPE || env.LANG || '')) env.LANG = 'zh_CN.UTF-8';
+  if (IS_WIN) {
+    // ConPTY 友好：强制 UTF-8 代码页相关变量；补 HOME 给跨平台工具
+    env.PYTHONIOENCODING = env.PYTHONIOENCODING || 'utf-8';
+    if (!env.HOME && env.USERPROFILE) env.HOME = env.USERPROFILE;
+  }
   let p;
   try {
     p = pty.spawn(shellPath, shellArgs, {
@@ -530,9 +666,11 @@ ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme }) => {
       rows: rows || 24,
       cwd: startCwd,
       env,
+      useConpty: IS_WIN ? true : undefined,
     });
   } catch (err) { return { ok: false, error: err.message }; }
   terminals.set(id, p);
+  termCwds.set(id, startCwd);
   refreshLidGuard(); // 开关开着时，第一个终端起来即生效
   recStart(id, { cols, rows, cwd: startCwd, theme });
   p.onData((data) => {
@@ -544,21 +682,36 @@ ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme }) => {
   p.onExit(({ exitCode }) => {
     terminals.delete(id);
     termTails.delete(id);
+    termCwds.delete(id);
     refreshLidGuard(); // 最后一个终端退出即恢复休眠
     recStop(id);
     if (win && !win.isDestroyed()) win.webContents.send('pty:exit', { id, exitCode });
   });
   return { ok: true, cwd: startCwd };
 });
-// ---------- 剪贴板：复制图片本体 / 复制文件（访达可粘贴）----------
+// ---------- 剪贴板：复制图片本体 / 复制文件（访达 / 资源管理器可粘贴）----------
 ipcMain.handle('clip:image', (e, { path: p }) => {
   try { const img = nativeImage.createFromPath(p); if (img.isEmpty()) return { ok: false, error: '不是可读图片' }; clipboard.writeImage(img); return { ok: true }; }
   catch (err) { return { ok: false, error: err.message }; }
 });
 ipcMain.handle('clip:file', (e, { path: p }) => new Promise((resolve) => {
   const { execFile } = require('child_process');
-  // argv 传路径，避免拼进 AppleScript 字面量被注入
-  execFile('osascript', ['-e', 'on run argv', '-e', 'set the clipboard to (POSIX file (item 1 of argv))', '-e', 'end run', p], (err) => resolve({ ok: !err, error: err && err.message }));
+  if (IS_MAC) {
+    // argv 传路径，避免拼进 AppleScript 字面量被注入
+    execFile('osascript', ['-e', 'on run argv', '-e', 'set the clipboard to (POSIX file (item 1 of argv))', '-e', 'end run', p], (err) => resolve({ ok: !err, error: err && err.message }));
+    return;
+  }
+  if (IS_WIN) {
+    // PowerShell Set-Clipboard -Path：资源管理器可粘贴文件
+    const lit = String(p).replace(/'/g, "''");
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Set-Clipboard -Path '${lit}'`], { windowsHide: true, timeout: 8000 }, (err) => {
+      resolve({ ok: !err, error: err && err.message });
+    });
+    return;
+  }
+  // Linux：尽量把路径写进剪贴板文本
+  try { clipboard.writeText(p); resolve({ ok: true }); }
+  catch (err) { resolve({ ok: false, error: err.message }); }
 }));
 
 // 拖拽落盘：file-promise 类拖入（截图浮窗等）没有真实路径，把字节写进临时目录换路径
@@ -669,7 +822,32 @@ ipcMain.handle('rec:save-export', (e, { name, buf }) => {
 });
 // 导出：渲染层录出的永远是 WebM；要 MP4/GIF 就用本机 ffmpeg 转一道（检测不到 ffmpeg 优雅退回 WebM）。
 function findFfmpeg() {
-  for (const c of ['/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/usr/bin/ffmpeg']) { try { if (fs.existsSync(c)) return c; } catch { /* */ } }
+  const candidates = IS_WIN
+    ? [
+      process.env.FFMPEG_PATH,
+      path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WinGet', 'Links', 'ffmpeg.exe'),
+      path.join(process.env.ProgramFiles || 'C:\\Program Files', 'ffmpeg', 'bin', 'ffmpeg.exe'),
+      path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'ffmpeg', 'bin', 'ffmpeg.exe'),
+      'ffmpeg.exe',
+      'ffmpeg',
+    ]
+    : ['/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/usr/bin/ffmpeg', 'ffmpeg'];
+  for (const c of candidates) {
+    if (!c) continue;
+    try {
+      if (c === 'ffmpeg' || c === 'ffmpeg.exe') {
+        // PATH 查找
+        const { execFileSync } = require('child_process');
+        if (IS_WIN) {
+          const out = execFileSync('where.exe', [c], { encoding: 'utf8', timeout: 3000, windowsHide: true }).trim().split(/\r?\n/)[0];
+          if (out && fs.existsSync(out)) return out;
+        } else {
+          const out = execFileSync('which', [c], { encoding: 'utf8', timeout: 3000 }).trim();
+          if (out && fs.existsSync(out)) return out;
+        }
+      } else if (fs.existsSync(c)) return c;
+    } catch { /* */ }
+  }
   return null;
 }
 ipcMain.handle('rec:export', async (e, { name, buf, format }) => {
@@ -754,10 +932,59 @@ function decodeLsofPath(s) {
   }
   return Buffer.from(bytes).toString('utf8');
 }
-// 取某终端 shell 的真实当前目录（用 lsof 查 pty 子进程的 cwd）
+// Windows：node-pty 的 p.process 是 spawn 时写死的静态值（win32 从不轮询前台进程），
+// 判不了忙闲。改判「shell 有没有活着的子进程」：一次 CIM 查询扫全部 pty shell 的直接子进程，
+// 结果缓存 2s（微信轮询 + 前端 isPlainShell 共用，不会每问一次起一个 PowerShell）。
+// 查询失败/超时 → null（未知），调用方一律按忙处理：宁可新开标签，也不往运行中的程序里打字。
+let winProcProbe = { at: 0, val: null, inflight: null };
+function winPtyChildMap() {
+  const now = Date.now();
+  if (winProcProbe.inflight) return winProcProbe.inflight;
+  if (now - winProcProbe.at < 2000) return Promise.resolve(winProcProbe.val);
+  const pids = [...terminals.values()].map((t) => t && t.pid).filter(Boolean);
+  if (!pids.length) { winProcProbe = { at: now, val: new Map(), inflight: null }; return Promise.resolve(winProcProbe.val); }
+  const { execFile } = require('child_process');
+  const filter = pids.map((p) => 'ParentProcessId=' + Number(p)).join(' OR ');
+  const ps = `$ErrorActionPreference='SilentlyContinue'; Get-CimInstance -ClassName Win32_Process -Filter '${filter}' | ForEach-Object { '' + $_.ParentProcessId + '|' + $_.Name }`;
+  winProcProbe.inflight = new Promise((resolve) => {
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
+      timeout: 4000, windowsHide: true,
+    }, (err, stdout) => {
+      let val = null;
+      if (!err) {
+        val = new Map();
+        pids.forEach((p) => val.set(p, []));
+        for (const line of String(stdout || '').split(/\r?\n/)) {
+          const i = line.indexOf('|');
+          if (i <= 0) continue;
+          const pp = Number(line.slice(0, i));
+          const name = line.slice(i + 1).trim().toLowerCase();
+          // conhost 是 ConPTY 的随身管家，不算「正跑着东西」；名字乱码（OEM 代码页）就当忙——方向安全
+          if (val.has(pp) && name && name !== 'conhost.exe') val.get(pp).push(name);
+        }
+      }
+      winProcProbe = { at: Date.now(), val, inflight: null };
+      resolve(val);
+    });
+  });
+  return winProcProbe.inflight;
+}
+// 某个 pty shell 忙不忙：true / false / null（探测不到=未知）
+async function winPtyBusy(pid) {
+  if (!pid) return null;
+  const m = await winPtyChildMap();
+  if (!m || !m.has(pid)) return null;
+  return m.get(pid).length > 0;
+}
+
+// 取某终端 shell 的真实当前目录
+// macOS/Linux：lsof 查 pty 子进程 cwd；Windows：拿不到（WMI/kernel 都不给 cwd），
+// 直接空串走 termCwds 兜底——以前这里还起一个只算 '' 的 PowerShell，微信面板每次轮询 × 每个终端
+// 白起一个进程，纯浪费
 function termCwdByPid(pid) {
   return new Promise((resolve) => {
     if (!pid) return resolve('');
+    if (IS_WIN) return resolve('');
     require('child_process').exec(`lsof -a -p ${pid} -d cwd -Fn`, { env: { ...process.env, LC_ALL: 'en_US.UTF-8' }, timeout: 3000 }, (err, stdout) => {
       if (err) return resolve('');
       const line = (stdout || '').split('\n').find((l) => l.startsWith('n'));
@@ -769,14 +996,20 @@ function termCwdByPid(pid) {
 ipcMain.handle('pty:cwd', async (e, { id }) => {
   const p = terminals.get(id);
   if (!p || !p.pid) return { ok: false };
-  const cwd = await termCwdByPid(p.pid);
+  let cwd = await termCwdByPid(p.pid);
+  if (!cwd) cwd = termCwds.get(id) || '';
+  if (cwd) termCwds.set(id, cwd);
   return cwd ? { ok: true, cwd } : { ok: false };
 });
 
-// 取终端前台进程名（node-pty 维护）：判断当前是裸 shell 还是正跑着 claude/codex 等程序
-ipcMain.handle('pty:proc', (e, { id }) => {
+// 取终端前台进程名（node-pty 维护）：判断当前是裸 shell 还是正跑着 claude/codex 等程序。
+// Windows 的 proc 是 spawn 时的静态值不可信 → 附带主进程探测的 busy 三态（true/false/null=未知），
+// 前端 isPlainShell 只认 busy===false（见 winPtyBusy）
+ipcMain.handle('pty:proc', async (e, { id }) => {
   const p = terminals.get(id);
-  return p ? { ok: true, proc: p.process || '' } : { ok: false };
+  if (!p) return { ok: false };
+  const busy = IS_WIN ? await winPtyBusy(p.pid) : null;
+  return { ok: true, proc: p.process || '', busy };
 });
 
 // ---------- 微信 ClawBot：不经 openclaw，直连腾讯 iLink 协议 + 本机 claude/codex 无头实例 ----------
@@ -795,8 +1028,14 @@ function ensureWechat() {
       const arr = [];
       for (const [id, p] of terminals) {
         const proc = (p && p.process) || '';
-        const cwd = await termCwdByPid(p && p.pid);
-        const busy = !!proc && !/^-?(zsh|bash|sh|fish|login)$/i.test(proc); // 前台不是裸 shell = 正跑着东西
+        // Windows termCwdByPid 恒空 → 直接用 spawn/定位时记下的 termCwds（和 pty:cwd 同一兜底），
+        // 手机上才看得到「哪个终端在哪个项目」；POSIX 照旧 lsof，兜底同样补上
+        let cwd = IS_WIN ? '' : await termCwdByPid(p && p.pid);
+        if (!cwd) cwd = termCwds.get(id) || '';
+        // Windows 的 proc 是静态值，正则永远判「忙」→ 改用子进程探测；未知(null)按忙，别遥控打断正跑的活
+        const busy = IS_WIN
+          ? ((await winPtyBusy(p && p.pid)) !== false)
+          : !!proc && !/^-?(zsh|bash|sh|fish|login|powershell|powershell\.exe|pwsh|pwsh\.exe|cmd|cmd\.exe)$/i.test(proc); // 前台不是裸 shell = 正跑着东西
         arr.push({ id, cwd, name: cwd ? path.basename(cwd) : '', proc, busy, tail: termTails.get(id) || '' });
       }
       return arr;
@@ -824,16 +1063,24 @@ ipcMain.handle('wechat:disconnect', async () => { ensureWechat(); return wechatB
 ipcMain.handle('wechat:cancel', () => ({ ok: true }));
 ipcMain.handle('wechat:check', async () => { ensureWechat(); return wechatBridge.check(); }); // 主动探活，返回 { state }
 
-// 「离开不待机」开关：开启时（首次需管理员密码装免密规则）+ 微信连着 → 禁休眠，息屏/合盖也能远程操控
+// 「离开不待机」开关：开启时 + 微信连着 → 禁休眠，息屏/合盖也能远程操控
+// macOS 首次需管理员密码装 pmset 免密规则；Windows 用 powerSaveBlocker，无需提权
 ipcMain.handle('wechat:setStayAwake', async (e, { on } = {}) => {
   ensureWechat();
-  if (process.platform !== 'darwin') return { ok: false, error: 'macOS only' };
+  if (!IS_MAC && !IS_WIN) return { ok: false, error: 'unsupported platform' };
   if (on) {
     const choice = dialog.showMessageBoxSync(win && !win.isDestroyed() ? win : undefined, {
       type: 'warning', buttons: [M('开启', 'Enable'), M('取消', 'Cancel')], defaultId: 0, cancelId: 1,
       message: M('离开电脑也能用微信遥控', 'Keep controllable via WeChat while away'),
-      detail: M('开启后，只要微信 ClawBot 还连着，合盖 / 息屏也不休眠——你能一直用手机微信遥控本机的 Claude Code / Codex。\n\n注意：持续耗电发热，建议接电源。断开微信、或关掉这个开关，自动恢复正常休眠。\n\n首次开启需输入一次管理员密码（装一条仅限电源设置的免密规则）。',
-        'While WeChat ClawBot stays connected, closing the lid / screen off won\'t sleep the Mac — you can keep remote-controlling Claude Code / Codex from your phone.\n\nNote: it keeps drawing power and heat; stay plugged in. Disconnecting WeChat or turning this off restores normal sleep.\n\nFirst time needs your admin password once (installs a power-only passwordless rule).'),
+      detail: IS_WIN
+        ? M(
+          '开启后，只要微信 ClawBot 还连着，系统会尽量不进入睡眠——你能一直用手机微信遥控本机的 Claude Code / Codex。\n\n注意：笔记本合盖是否睡眠还取决于电源选项；建议合盖设为「不采取任何操作」并接电源。断开微信、或关掉这个开关，自动恢复正常休眠。',
+          'While WeChat ClawBot stays connected, Windows will try not to sleep — you can keep remote-controlling Claude Code / Codex from your phone.\n\nNote: laptop lid-close still follows Power Options; set it to "Do nothing" and stay plugged in. Disconnecting WeChat or turning this off restores normal sleep.',
+        )
+        : M(
+          '开启后，只要微信 ClawBot 还连着，合盖 / 息屏也不休眠——你能一直用手机微信遥控本机的 Claude Code / Codex。\n\n注意：持续耗电发热，建议接电源。断开微信、或关掉这个开关，自动恢复正常休眠。\n\n首次开启需输入一次管理员密码（装一条仅限电源设置的免密规则）。',
+          'While WeChat ClawBot stays connected, closing the lid / screen off won\'t sleep the Mac — you can keep remote-controlling Claude Code / Codex from your phone.\n\nNote: it keeps drawing power and heat; stay plugged in. Disconnecting WeChat or turning this off restores normal sleep.\n\nFirst time needs your admin password once (installs a power-only passwordless rule).',
+        ),
     });
     if (choice !== 0) return { ok: false, error: 'cancelled', on: wechatStayAwake };
     const ruleOk = await ensurePmsetRule();

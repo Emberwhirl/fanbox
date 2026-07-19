@@ -1051,6 +1051,11 @@ kbd {
    全屏期间把顶栏/品牌区的拖拽关掉，让预览自己的按钮可点（全屏本就不需要拖这条顶栏）。 */
 .desktop.preview-maxed #topbar, .desktop.preview-maxed .brand { -webkit-app-region: no-drag; }
 
+/* Windows：标题栏按钮在右侧（titleBarOverlay），侧栏不必给红绿灯让位；顶栏右侧留出 caption 按钮空间 */
+html.desktop.win32 #sidebar { padding-top: 12px; }
+html.desktop.win32 #topbar { padding-right: 148px; }
+html.desktop.win32 .brand { padding-top: 4px; }
+
 /* 终端头：文件跟随按钮 */
 .term-actions #file-follow { font-size: 11px; padding: 3px 8px; font-family: var(--font-ui); }
 .term-actions #file-follow.on { color: var(--accent); background: var(--accent-soft); }
