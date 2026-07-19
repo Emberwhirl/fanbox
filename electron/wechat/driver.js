@@ -1,13 +1,73 @@
 // 本机 CLI 驱动器：用 claude / codex 的无头模式起一个实例和它对话，作为微信消息的「大脑」。
 // 用户文本一律走 stdin（不进命令行，零转义/长度风险）；claude 用 session_id 续上下文。
 // 复用本机已登录的 claude/codex 凭据，原生读 cwd 下的 CLAUDE.md / AGENTS.md。
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
+const path = require('path');
+const fs = require('fs');
 const { fullEnv } = require('./env');
 
-const loginShell = () => process.env.SHELL || (process.platform === 'win32' ? 'powershell.exe' : '/bin/zsh');
+const isWin = () => process.platform === 'win32';
+const loginShell = () => process.env.SHELL || (isWin() ? 'powershell.exe' : '/bin/zsh');
+
+// Windows：纯 Node 在 PATH 里找可执行文件（PATHEXT 补扩展名）。不走 where.exe / Get-Command：
+// 它们的输出按 OEM 代码页编码，中文用户名路径会被 UTF-8 误解码成乱码 → existsSync 失败
+function winFindOnPath(name, env) {
+  const e = env || process.env;
+  const dirs = String(e.Path || e.PATH || '').split(';').map((s) => s.trim()).filter(Boolean);
+  const exts = String(e.PATHEXT || process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
+  const hasExt = /\.[^\\/.]+$/.test(name);
+  for (const d of dirs) {
+    if (hasExt) {
+      const f = path.join(d, name);
+      try { if (fs.existsSync(f)) return f; } catch { /* */ }
+      continue;
+    }
+    for (const ext of exts) {
+      const f = path.join(d, name + ext);
+      try { if (fs.existsSync(f)) return f; } catch { /* */ }
+    }
+  }
+  return null;
+}
+
+// 把 claude/codex 解析成「可直接 spawn 的可执行 + 前置参数」，绕开 PowerShell/cmd 中转：
+//  - 原生 .exe → 直接跑
+//  - npm shim（.cmd/.ps1/无扩展名）→ 从 shim 文本里挖 node_modules 下的 JS 入口，用 node 直跑
+// 好处一次讲清：stdin 字节透明（中文不被 PS 按控制台代码页重编码成 ???）、参数是真 argv
+//（人格带引号/换行不会被 .cmd/PS 的再引用规则拆碎）、kill 杀得到本体（不会留孤儿烧 token）
+function resolveWinCli(name, env) {
+  const hit = winFindOnPath(name, env);
+  if (!hit) return null;
+  const ext = path.extname(hit).toLowerCase();
+  if (ext === '.exe' || ext === '.com') return { file: hit, preArgs: [] };
+  const dir = path.dirname(hit);
+  let entry = null;
+  // shim 三兄弟（.cmd / .ps1 / 无扩展名 sh 版）内容里都写着 node_modules 下的入口路径
+  const texts = [hit, hit.replace(/\.(cmd|ps1)$/i, ''), hit.replace(/\.(cmd|ps1)$/i, '') + '.ps1'];
+  for (const f of texts) {
+    let txt; try { txt = fs.readFileSync(f, 'utf8'); } catch { continue; }
+    const m = txt.match(/node_modules[\\/][^"'\r\n]+?\.[cm]?js/i);
+    if (m) {
+      const cand = path.resolve(dir, m[0].replace(/\//g, path.sep));
+      if (fs.existsSync(cand)) { entry = cand; break; }
+    }
+  }
+  if (!entry) { // shim 格式不认识 → 按已知包名猜
+    const guess = { claude: '@anthropic-ai/claude-code/cli.js', codex: '@openai/codex/bin/codex.js' }[name];
+    if (guess) {
+      const cand = path.join(dir, 'node_modules', ...guess.split('/'));
+      if (fs.existsSync(cand)) entry = cand;
+    }
+  }
+  if (!entry) return null;
+  const node = winFindOnPath('node', env);
+  if (node) return { file: node, preArgs: [entry] };
+  // 没找到 node.exe（只剩 shim 的残局）：Electron 自己当 node 用
+  return { file: process.execPath, preArgs: [entry], extraEnv: { ELECTRON_RUN_AS_NODE: '1' } };
+}
 
 // 跑一条命令，prompt 写 stdin。env 复刻自用户的交互式登录 shell（见 env.js）：
-// 打包后从 Finder 启动会丢掉 PATH/代理/BASE_URL，这里补回来，子进程联网方式和用户终端一致。
+// 打包后从 GUI 启动会丢掉 PATH/代理/BASE_URL，这里补回来，子进程联网方式和用户终端一致。
 // onLine：可选，stdout 每攒满一整行就回调一次（用于流式过程播报）；不传则纯收尾解析，行为不变。
 // 超时用「空闲」而非「总耗时」判定：agent 真干活会持续吐 stream-json 事件，永远不会长时间沉默；
 // 而代理静默挂起表现为完全无输出。所以 idleMs 内零输出=判卡死（适配任何用户的代理，不挑节点）；
@@ -19,10 +79,48 @@ async function run(cmd, stdinText, cwd, opts = {}, onLine = null) {
   const env = await fullEnv();
   const started = Date.now();
   return new Promise((resolve) => {
-    const child = spawn(loginShell(), ['-lc', cmd], { cwd: cwd || env.HOME || process.env.HOME, env });
+    let child;
+    if (isWin()) {
+      // Windows：argv 数组直达 CLI 本体（见 resolveWinCli），不经 PowerShell——
+      // PS 5.1 会把 stdin 按控制台代码页重编码（中文变 ???）、给原生子进程重拼参数时拆碎引号，
+      // 且 kill 只杀得到 PS 壳，claude 本体成孤儿继续烧 token
+      const [name, ...rest] = Array.isArray(cmd) ? cmd : [String(cmd)];
+      const spawnCwd = cwd || env.HOME || env.USERPROFILE || process.env.USERPROFILE || process.env.HOME;
+      const resolved = resolveWinCli(name, env);
+      if (resolved) {
+        child = spawn(resolved.file, [...resolved.preArgs, ...rest], {
+          cwd: spawnCwd,
+          env: resolved.extraEnv ? { ...env, ...resolved.extraEnv } : env,
+          windowsHide: true,
+        });
+      } else {
+        // 兜底（基本走不到：which() 探测不到时上层根本不会调进来）：退回 PowerShell 中转
+        const psq = (s) => `'${String(s).replace(/'/g, "''")}'`;
+        child = spawn('powershell.exe', [
+          '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+          '-Command', [name, ...rest.map(psq)].join(' '),
+        ], { cwd: spawnCwd, env, windowsHide: true });
+      }
+    } else {
+      child = spawn(loginShell(), ['-lc', cmd], {
+        cwd: cwd || env.HOME || process.env.HOME,
+        env,
+      });
+    }
     let out = '', err = '', done = false, lineBuf = '', idleTimer = null;
     const finish = (r) => { if (done) return; done = true; clearTimeout(idleTimer); clearTimeout(maxTimer); resolve({ ...r, ms: Date.now() - started }); };
-    const kill = (reason) => { try { child.kill('SIGKILL'); } catch { /* */ } finish({ ok: false, out, err: err + `\n[超时:${reason}]`, timedOut: true, timeoutReason: reason }); };
+    const kill = (reason) => {
+      try {
+        if (isWin()) {
+          // taskkill /T 杀整棵进程树：child 可能是 node 直跑的本体（自己还会再开 helper），
+          // 也可能是兜底的 PS 壳——只 child.kill() 会把真正干活的 claude/codex 留成孤儿，
+          // 超时重试 3 次就是 3 个孤儿同时改同一个项目、一起烧 token
+          if (child.pid) execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, timeout: 5000 }, () => { /* */ });
+          child.kill();
+        } else child.kill('SIGKILL');
+      } catch { /* */ }
+      finish({ ok: false, out, err: err + `\n[超时:${reason}]`, timedOut: true, timeoutReason: reason });
+    };
     const armIdle = () => { clearTimeout(idleTimer); idleTimer = setTimeout(() => kill('idle'), idleMs); };
     const maxTimer = setTimeout(() => kill('max'), maxMs);
     armIdle(); // 从 spawn 起算：覆盖「首字之前」的连接挂起窗口
@@ -74,6 +172,12 @@ function codexNote(item) {
 
 // 检测本机有没有这个 CLI
 function which(bin) {
+  if (isWin()) {
+    // 纯 Node PATH 走查（用复刻后的完整 PATH，含注册表合并的用户目录）：
+    // 不起 PowerShell，也避开它输出的代码页乱码
+    const safe = String(bin).replace(/[^A-Za-z0-9._-]/g, '');
+    return fullEnv().then((env) => !!winFindOnPath(safe, env)).catch(() => !!winFindOnPath(safe, null));
+  }
   return run(`command -v ${bin} || true`, '', null, { idleMs: 8000, maxMs: 10000 }).then((r) => !!(r.out || '').trim());
 }
 
@@ -82,10 +186,18 @@ function which(bin) {
 // onProgress(note)：可选。传了就用 stream-json 边跑边把工具调用播报出去；不传走原来的一次性 json。
 async function runClaude(text, cwd, sessionId, persona, onProgress) {
   const sid = sessionId || require('crypto').randomUUID();
-  const flag = sessionId ? `--resume ${sid}` : `--session-id ${sid}`;
-  const sys = persona ? `--append-system-prompt ${shq(persona)}` : '';
   // 一律走 stream-json：持续吐事件，空闲超时才有活动信号可依（非流式 json 整轮沉默会被误杀）。
-  const cmd = `claude -p --output-format stream-json --verbose --dangerously-skip-permissions ${sys} ${flag}`;
+  // Windows 是真 argv 数组（人格含引号/换行零转义直达）；POSIX 保持登录 shell 字符串不动
+  let cmd;
+  if (isWin()) {
+    cmd = ['claude', '-p', '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'];
+    if (persona) cmd.push('--append-system-prompt', persona);
+    cmd.push(...(sessionId ? ['--resume', sid] : ['--session-id', sid]));
+  } else {
+    const flag = sessionId ? `--resume ${sid}` : `--session-id ${sid}`;
+    const sys = persona ? `--append-system-prompt ${shq(persona)}` : '';
+    cmd = `claude -p --output-format stream-json --verbose --dangerously-skip-permissions ${sys} ${flag}`;
+  }
   let result = '', outSid = sid, tokens = 0, cost = 0, r, ms = 0, attempts = 0;
   // 空闲卡死（连接挂起）→ 换新进程=新连接重试，最多 3 次（首次 + 2 重试）。每次清空累计，避免串数据。
   for (attempts = 1; attempts <= 3; attempts++) {
@@ -124,9 +236,13 @@ async function runClaude(text, cwd, sessionId, persona, onProgress) {
 
 // codex 无头：首轮 `codex exec` 建会话并从 thread.started 抓 thread_id；之后 `codex exec resume <id> -` 续上下文（codex 0.139+）。
 async function runCodex(text, cwd, persona, sessionId, onProgress) {
-  const flags = '--json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox';
+  const flagsArr = ['--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox'];
+  const flags = flagsArr.join(' ');
   // 续话：prompt 走 stdin（结尾 `-`）；会话已含人格/记忆，不再前置。首轮：把人格+记忆前置到消息里（codex 无独立 system-prompt 入口）。
-  const cmd = sessionId ? `codex exec resume ${sessionId} ${flags} -` : `codex exec ${flags}`;
+  // Windows 真 argv；POSIX 保持登录 shell 字符串不动
+  const cmd = isWin()
+    ? (sessionId ? ['codex', 'exec', 'resume', sessionId, ...flagsArr, '-'] : ['codex', 'exec', ...flagsArr])
+    : (sessionId ? `codex exec resume ${sessionId} ${flags} -` : `codex exec ${flags}`);
   const stdin = sessionId ? text : (persona ? `${persona}\n\n---\n${text}` : text);
   // 流式：codex 本就吐 JSONL，逐行挑出命令/改文件这类节点播报（最终文本仍走收尾解析）
   const onLine = onProgress ? (line) => {
@@ -176,10 +292,13 @@ async function runCodex(text, cwd, persona, sessionId, onProgress) {
   return { text: result || '（没有返回内容）', sessionId: outSid, tokens, cost: 0, ms, attempts, timedOut: !!r.timedOut };
 }
 
-function stripAnsi(s) { return s.replace(/\[[0-9;]*m/g, ''); }
+function stripAnsi(s) { return s.replace(/\x1b\[[0-9;]*m/g, ''); }
 
-// shell 单引号安全包裹（人格可能含引号/换行/中文）
-function shq(s) { return `'${String(s).replace(/'/g, "'\\''")}'`; }
+// POSIX shell 单引号安全包裹（人格可能含引号/换行/中文）。
+// Windows 不用它：命令走真 argv 数组，参数不经任何 shell 解析（见 run() / resolveWinCli）
+function shq(s) {
+  return `'${String(s).replace(/'/g, "'\\''")}'`;
+}
 
 // 启动时预热终端环境复刻（缓存到 env.js，第一条消息就不必等 shell 起来）
 function warmEnv() { fullEnv().catch(() => { /* 失败就退回 process.env，run 时再算 */ }); }

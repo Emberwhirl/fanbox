@@ -4,6 +4,7 @@ dist/
 # build/ 含打包图标（源资产，入库）；其余打包中间物忽略
 build/*
 !build/icon.icns
+!build/icon.ico
 !build/icon.png
 !build/icon-1024.png
 !build/entitlements.mac.plist

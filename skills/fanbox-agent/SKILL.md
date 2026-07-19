@@ -60,9 +60,11 @@ curl "${CT[@]}" -X POST -H 'Content-Type: application/json' \
 ```
 
 三种等法：
-- 默认：前台回到裸 shell 且输出静默 ≥ `idleMs`（默认 2000）——适合等普通命令跑完
+- 默认：前台回到裸 shell 且输出静默 ≥ `idleMs`（macOS/Linux 默认 2000；Windows 默认 3500）——适合等普通命令跑完
 - `"idle":"quiet"`：只看输出静默——适合等 claude 等常驻 TUI 回答完，建议配 `"idleMs":3000`
 - `"until":"正则"`：新输出匹配到正则就立刻返回——注意只匹配 wait 开始之后的新输出，所以要在结果出现前就发起 wait。**命令回显也算输出**：你敲的命令本身会先出现在流里，正则要用 `^` 锚定行首（如 `"^DONE$"`）才不会匹配到自己发的命令
+
+**Windows 忙闲说明**：系统不暴露 PTY 前台进程名，默认模式用「shell 是否有直接子进程」近似 busy。外部 CLI agent（`claude`/`codex`/`npm` 等会 spawn 子进程）可靠；纯 PowerShell/cmdlet 在进程内算、无子进程时可能误判 idle——等这类任务请用 `"idle":"quiet"` 或加大 `idleMs`，或改 `"until"` 锚定完成标记。
 
 返回 `{ok, idle|matched|exited|timeout, elapsed, output}`，output 是等待期间的输出（最后 8KB），通常不用再 read。
 

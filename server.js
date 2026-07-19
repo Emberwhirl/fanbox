@@ -509,13 +509,58 @@ async function codexOrganizeFlags(bin) {
 }
 
 async function findAgentBin(name) {
-  // GUI 启动的 app 没有用户 shell 的 PATH，走登录 shell 找一次绝对路径
+  // GUI 启动的 app 没有用户 shell 的 PATH，走登录 shell / where 找一次绝对路径
+  const safe = String(name || '').replace(/[^A-Za-z0-9._-]/g, '');
+  if (!safe) return null;
   return new Promise((resolve) => {
-    execFile('/bin/zsh', ['-lc', `command -v ${name}`], { timeout: 8000 }, (err, stdout) => {
+    if (PLATFORM === 'win32') {
+      // 纯 Node PATH 走查（见 winFindExe）：where.exe / Get-Command 输出按 OEM 代码页编码，
+      // 中文用户名下的 npm 全局路径按 UTF-8 解出来是乱码 → existsSync 必失败 → 误判「未装」。
+      // 额外补两个 GUI 启动时 PATH 常缺的高频安装位：npm 全局默认前缀、claude 原生安装器目录
+      resolve(winFindExe(safe, [
+        process.env.APPDATA && path.join(process.env.APPDATA, 'npm'),
+        process.env.USERPROFILE && path.join(process.env.USERPROFILE, '.local', 'bin'),
+      ].filter(Boolean)));
+      return;
+    }
+    execFile('/bin/zsh', ['-lc', `command -v ${safe}`], { timeout: 8000 }, (err, stdout) => {
       const out = String(stdout || '').trim().split('\n').pop();
       resolve(!err && out && out.startsWith('/') ? out : null);
     });
   });
+}
+
+// Windows：在常见安装根里浅找 <app>.exe（深度 ≤3，访问目录数封顶防失控），返回 exe 全路径。
+// 返回路径而不是布尔：前端「启动」直接用它拉起——检测和启动共用同一条解析，检测到就一定能启动
+// （原来检测扫 LOCALAPPDATA\Programs、启动却打 Start-Process '<名字>' 靠 PATH 解析，俩机制对不上，
+// 按钮亮着点了却报「找不到文件」）
+async function winFindDesktopApp(name) {
+  const roots = [
+    process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs'),
+    process.env.ProgramFiles,
+    process.env['ProgramFiles(x86)'],
+  ].filter(Boolean);
+  const target = (name + '.exe').toLowerCase();
+  let budget = 4000;
+  async function walk(dir, depth) {
+    if (depth > 3 || budget-- <= 0) return null;
+    let ents;
+    try { ents = await fsp.readdir(dir, { withFileTypes: true }); } catch { return null; }
+    for (const e of ents) {
+      if (e.isFile() && e.name.toLowerCase() === target) return path.join(dir, e.name);
+    }
+    for (const e of ents) {
+      if (!e.isDirectory() || IGNORE_DIRS.has(e.name)) continue;
+      const hit = await walk(path.join(dir, e.name), depth + 1);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  for (const r of roots) {
+    const hit = await walk(r, 1);
+    if (hit) return hit;
+  }
+  return winFindExe(name); // 有的应用装完会把自己加进 PATH，兜一把
 }
 
 // 最近几次整理日志的一句话摘要，给 agent 当历史参照（日志由 agent 按 brief 约定写入）
@@ -549,6 +594,10 @@ async function organizeLaunch(b) {
   }
   const prefs = await fsp.readFile(ORGANIZE_PREFS_FILE, 'utf8').catch(() => '');
   const history = await organizeHistory();
+  // 终端默认 shell 因平台而异：Windows 是 PowerShell，POSIX 是 bash/zsh——别让 agent 在 pwsh 里硬跑 mkdir -p
+  const moveStep = PLATFORM === 'win32'
+    ? '4. 动手用 PowerShell 移动：`New-Item -ItemType Directory -Force` 建目录，`Move-Item -LiteralPath <from> -Destination <to>` 移动；路径用绝对路径（反斜杠或正斜杠均可），含空格/中文时务必加引号'
+    : '4. 动手用 mv 移动，目标目录不存在先 mkdir -p';
   const brief = `# AI 整理任务（翻箱 FanBox 生成，每次启动覆盖本文件）
 
 你在翻箱的内嵌终端里，帮用户对话式整理这个文件夹：${dir}
@@ -557,7 +606,7 @@ async function organizeLaunch(b) {
 1. 先看现状：列出当前文件夹的松散文件（名字/类型/大小/修改时间）。文件夹和隐藏文件一律不动
 2. 结合下面的整理偏好与历史，提出分组整理方案摊给用户——用户明确同意前，一个文件都不要动
 3. 用户可能口头调整方案（「截图不动」「这几个归到XX」），以对话为准
-4. 动手用 mv 移动，目标目录不存在先 mkdir -p
+${moveStep}
 5. 每完成一批移动，按下面的格式写一份回滚日志，并告诉用户「想撤销随时说」
 6. 收尾：把这次对话里新学到的用户偏好（规则/例外/纠正）一条一行追加进偏好文件，别重复已有条目
 
@@ -599,7 +648,7 @@ async function releaseInspect(p) {
   const status = await sh('git', ['status', '--porcelain']);
   out.isRepo = status !== null;
   out.dirty = !!(status && status.length);
-  out.gh = !!(await sh('/bin/sh', ['-lc', 'command -v gh']));
+  out.gh = !!(await findAgentBin('gh'));
   out.unreleased = ''; out.hasChangelog = false;
   try {
     const cl = await fsp.readFile(path.join(dir, 'CHANGELOG.md'), 'utf8');
@@ -782,7 +831,8 @@ async function projectMemory(p) {
 }
 
 // ---------- 磁盘占用透视：算清当前目录每个子项的真实占用 ----------
-// 文件直接 stat（快）；目录一次 du -sk 批量算。du 碰到无权限子目录会报错但仍输出能算的部分，所以忽略 err 只用 stdout
+// 文件直接 stat（快）；目录：POSIX 用 du -sk 批量算；Windows 用 PowerShell Measure-Object。
+// du 碰到无权限子目录会报错但仍输出能算的部分，所以忽略 err 只用 stdout
 async function diskUsage(p) {
   const dir = resolvePath(p);
   let names;
@@ -794,17 +844,58 @@ async function diskUsage(p) {
     try { const st = await fsp.lstat(full); if (st.isFile()) items.push({ name: d.name, size: st.size, isDir: false }); } catch { /* */ }
   }));
   if (dirs.length) {
-    const out = await new Promise((resolve) => {
-      execFile('du', ['-sk', ...dirs], { timeout: 120000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => resolve(stdout || ''));
-    });
-    for (const line of out.split('\n')) {
-      const m = line.match(/^(\d+)\s+(.+)$/);
-      if (m) items.push({ name: path.basename(m[2]), size: Number(m[1]) * 1024, isDir: true });
+    if (PLATFORM === 'win32') {
+      // 单进程一趟算完所有子目录（原来每个子目录并发起一个递归 PowerShell，60 个能把机器拖死）；
+      // 算不出/超时的目录 size=null（前端显示 —，不冒充 0 B）
+      const sizes = await winDirSizes(dir);
+      for (const full of dirs) {
+        const name = path.basename(full);
+        items.push({ name, size: sizes.has(name) ? sizes.get(name) : null, isDir: true });
+      }
+    } else {
+      const out = await new Promise((resolve) => {
+        execFile('du', ['-sk', ...dirs], { timeout: 120000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => resolve(stdout || ''));
+      });
+      for (const line of out.split('\n')) {
+        const m = line.match(/^(\d+)\s+(.+)$/);
+        if (m) items.push({ name: path.basename(m[2]), size: Number(m[1]) * 1024, isDir: true });
+      }
     }
   }
-  items.sort((a, b) => b.size - a.size);
-  const total = items.reduce((a, b) => a + b.size, 0);
+  items.sort((a, b) => (b.size || 0) - (a.size || 0)); // size=null（Windows 没算出来的目录）当 0 排，前端另行标注
+  const total = items.reduce((a, b) => a + (b.size || 0), 0);
   return { ok: true, dir, total, items: items.slice(0, 60), more: Math.max(0, items.length - 60) };
+}
+
+// Windows：一个 PowerShell 进程逐个算完 dir 下所有子目录的递归大小，边算边逐行输出。
+// 目录名走 Base64(UTF-8) 回传（PS 5.1 重定向输出按 OEM 代码页，中文名会乱码，对不上 readdir 的名字）；
+// 整体超时被杀时已输出的行照常解析，缺的目录由调用方标 null
+function winDirSizes(dir) {
+  return new Promise((resolve) => {
+    const lit = String(dir).replace(/'/g, "''");
+    const ps = [
+      `$ErrorActionPreference='SilentlyContinue'`,
+      `Get-ChildItem -LiteralPath '${lit}' -Directory -Force | ForEach-Object {`,
+      `$s=(Get-ChildItem -LiteralPath $_.FullName -Recurse -Force -File | Measure-Object -Property Length -Sum).Sum;`,
+      `if($null -eq $s){$s=0};`,
+      `Write-Output ([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($_.Name)) + '|' + $s) }`,
+    ].join(' ');
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
+      timeout: 180000, windowsHide: true, maxBuffer: 4 * 1024 * 1024,
+    }, (err, stdout) => {
+      const map = new Map();
+      for (const line of String(stdout || '').split(/\r?\n/)) {
+        const i = line.indexOf('|');
+        if (i <= 0) continue;
+        try {
+          const name = Buffer.from(line.slice(0, i), 'base64').toString('utf8');
+          const n = Number(line.slice(i + 1).trim());
+          if (name && Number.isFinite(n)) map.set(name, n);
+        } catch { /* 半截行跳过 */ }
+      }
+      resolve(map);
+    });
+  });
 }
 
 // 压缩包内容清单：全用系统自带工具（unzip / bsdtar / gzip），保持零依赖
@@ -958,13 +1049,18 @@ async function statWithTail(p, tail) {
 }
 
 // 终端划线前的批量验证：候选路径 stat 得到才配下划线，中文散文里的「分发/产品演示」不再误标
+// 绝对路径与前端 openTermPath 对齐：POSIX 的 / 和 ~，Windows 盘符（C:\ / C:/）和 UNC（\\server\share）
+function isAbsPathCand(p) {
+  return p.startsWith('/') || p.startsWith('~')
+    || /^[A-Za-z]:[\\/]/.test(p) || p.startsWith('\\\\');
+}
 async function termVerify(b) {
   const cwd = b.cwd ? resolvePath(b.cwd) : HOME;
   const items = Array.isArray(b.items) ? b.items.slice(0, 24) : [];
   const results = await Promise.all(items.map(async (it) => {
     if (!it || typeof it.cand !== 'string') return false;
     let p = it.cand;
-    if (!p.startsWith('/') && !p.startsWith('~')) p = cwd.replace(/\/$/, '') + '/' + p.replace(/^\.\//, '');
+    if (!isAbsPathCand(p)) p = path.join(cwd, p.replace(/^\.[\\/]/, ''));
     return !!(await statWithTail(p, it.tail || ''));
   }));
   return { ok: true, results };
@@ -1090,18 +1186,40 @@ function execSnap(gitDir, project, args, timeout = 10000) {
 // 传入的 project 必须已经 snapReal 归一化（snapshot() 入口统一做）
 function snapEligible(project) {
   if (!project || !path.isAbsolute(project)) return false;
-  const p = path.normalize(project).replace(/\/+$/, '');
+  // Windows 去尾部 \ /；POSIX 去尾部 /
+  const p = path.normalize(project).replace(/[\\/]+$/, '') || project;
   const realHome = snapReal(HOME);
-  if (!p || p === '/' || p === HOME || p === realHome) return false;
+  // 拒根：/ 或 C:\ 等盘符根
+  const isRoot = p === '/' || p === path.parse(p).root.replace(/[\\/]+$/, '') || p === path.parse(p).root;
+  if (!p || isRoot || p === HOME || p === realHome) return false;
   if (p.startsWith(CONFIG_DIR) || p.startsWith(snapReal(CONFIG_DIR))) return false;
-  const base = [realHome, HOME].find((h) => p.startsWith(h + path.sep));
+  const base = [realHome, HOME].find((h) => p.startsWith(h + path.sep) || p.toLowerCase().startsWith((h + path.sep).toLowerCase()));
   if (base) {
     const segs = path.relative(base, p).split(path.sep);
     // ~/Documents 这类系统大目录整层不给存（自定义的 ~/myproj 一层目录放行）
-    const SYS = new Set(['Documents', 'Desktop', 'Downloads', 'Pictures', 'Movies', 'Music', 'Public', 'Applications', 'Library', '.Trash']);
+    const SYS = new Set([
+      'Documents', 'Desktop', 'Downloads', 'Pictures', 'Movies', 'Music', 'Public',
+      'Applications', 'Library', '.Trash',
+      'AppData', 'Application Data', 'Local Settings', 'OneDrive', 'Videos',
+      'Contacts', 'Favorites', 'Links', 'Saved Games', 'Searches',
+    ]);
     if (segs.length === 1 && SYS.has(segs[0])) return false;
-    if (segs[0] === 'Library' || segs[0] === '.Trash') return false;
-  } else if (p.split(path.sep).filter(Boolean).length < 2) return false; // / 下一层（/tmp 等）不收
+    if (segs[0] === 'Library' || segs[0] === '.Trash' || segs[0] === 'AppData') return false;
+  } else if (PLATFORM === 'win32') {
+    // 盘符不能算层级：'C:\Users'.split(sep) 会把 'C:' 数进去凑成 2 层，让 C:\Users / C:\Windows
+    // 混过 <2 检查——agent 一跑就 git add -A 整个用户树。深度一律相对盘根算。
+    // 系统盘根下一层不收（对齐 macOS 拒 /tmp、/Users）；数据盘放行一层（D:\myproject 很常见，
+    // 拒了它就等于悄悄没收安全带）；系统目录整棵、任意盘的 Users 这层永远不收。
+    const root = path.parse(p).root;
+    const rel = p.slice(root.length).split(path.sep).filter(Boolean);
+    const top = (rel[0] || '').toLowerCase();
+    const SYS_TREES = new Set(['windows', 'program files', 'program files (x86)', 'programdata', '$recycle.bin', 'system volume information']);
+    if (!rel.length) return false;
+    if (SYS_TREES.has(top)) return false;
+    if (rel.length === 1 && top === 'users') return false; // 所有用户主目录的父目录
+    const sysDrive = String(process.env.SystemDrive || 'C:').toLowerCase();
+    if (root.toLowerCase().startsWith(sysDrive) && rel.length < 2) return false;
+  } else if (p.split(path.sep).filter(Boolean).length < 2) return false; // / 下一层不收
   try { return fs.statSync(p).isDirectory(); } catch { return false; }
 }
 async function snapEnsureRepo(project) {
@@ -1122,7 +1240,8 @@ async function snapEnsureRepo(project) {
 }
 // 打一个快照：无变化不建 commit（天然去重），add 超时视为项目太大、本次运行内放弃
 async function snapshot(project, label) {
-  project = snapReal(path.normalize(resolvePath(project)).replace(/\/+$/, ''));
+  // 与 snapEligible 一致：Windows 可能留下尾部 \，只 strip / 会让 throttle/dead 键与资格检查不一致
+  project = snapReal(path.normalize(resolvePath(project)).replace(/[\\/]+$/, ''));
   if (!snapEligible(project)) return { ok: false, skipped: 'ineligible' };
   if (snapDead.has(project)) return { ok: false, skipped: 'dead' };
   const last = snapThrottle.get(project) || 0;
@@ -1152,7 +1271,7 @@ async function snapshot(project, label) {
 }
 // 列出某目录的快照：精确命中或该目录在某个已存档项目内（取最长前缀）
 async function snapResolveProject(p) {
-  const norm = snapReal(path.normalize(resolvePath(p)).replace(/\/+$/, ''));
+  const norm = snapReal(path.normalize(resolvePath(p)).replace(/[\\/]+$/, ''));
   let idx = {};
   try { idx = JSON.parse(await fsp.readFile(SNAP_INDEX, 'utf8')); } catch { return null; }
   let best = null;
@@ -1233,20 +1352,90 @@ async function saveImage({ path: target, dataUrl, newName }) {
   return { ok: true, path: dest, size: st.size };
 }
 
+// Windows：纯 Node 在 PATH（外加常见安装位）里找可执行文件，按 PATHEXT 补扩展名。
+// 不走 where.exe / Get-Command：它们的输出按 OEM 代码页编码，中文用户名路径会被
+// UTF-8 误解码成乱码 → existsSync 失败 → 误判「未装」
+function winFindExe(name, extraDirs) {
+  const dirs = String(process.env.Path || process.env.PATH || '')
+    .split(';').map((s) => s.trim()).filter(Boolean).concat(extraDirs || []);
+  const exts = String(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
+  const hasExt = /\.[^\\/.]+$/.test(name);
+  for (const d of dirs) {
+    if (hasExt) {
+      const f = path.join(d, name);
+      try { if (fs.existsSync(f)) return f; } catch { /* */ }
+      continue;
+    }
+    for (const ext of exts) {
+      const f = path.join(d, name + ext);
+      try { if (fs.existsSync(f)) return f; } catch { /* */ }
+    }
+  }
+  return null;
+}
+
+// VS Code 真身（Code.exe）：PATH 上的 code.cmd 在 <安装目录>\bin\ 下，真身在上一级；
+// 找不到再扫默认安装位置。不查注册表 App Paths：reg.exe 输出也是 OEM 代码页，中文路径会乱码
+function winFindVsCode() {
+  const shim = winFindExe('code');
+  if (shim && /\.cmd$/i.test(shim)) {
+    const exe = path.join(path.dirname(path.dirname(shim)), 'Code.exe');
+    try { if (fs.existsSync(exe)) return exe; } catch { /* */ }
+  }
+  const known = [
+    process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs', 'Microsoft VS Code', 'Code.exe'),
+    process.env.ProgramFiles && path.join(process.env.ProgramFiles, 'Microsoft VS Code', 'Code.exe'),
+    process.env['ProgramFiles(x86)'] && path.join(process.env['ProgramFiles(x86)'], 'Microsoft VS Code', 'Code.exe'),
+  ].filter(Boolean);
+  for (const f of known) { try { if (fs.existsSync(f)) return f; } catch { /* */ } }
+  return null;
+}
+
 function openInOS(target, withApp) {
   return new Promise((resolve) => {
     let cmd, args;
     if (withApp === 'terminal') {
       // 在该目录（文件则取其所在目录）打开系统终端，找回项目后一键去跑
       const dir = (() => { try { return fs.statSync(target).isDirectory() ? target : path.dirname(target); } catch { return path.dirname(target); } })();
-      if (PLATFORM === 'darwin') cmd = `open -a Terminal ${shellQuote(dir)}`;
-      else if (PLATFORM === 'win32') cmd = `start "" cmd /K cd /d "${dir}"`;
-      else cmd = `x-terminal-emulator --working-directory=${shellQuote(dir)} || gnome-terminal --working-directory=${shellQuote(dir)} || xterm`;
-      exec(cmd, (err) => resolve(err ? { ok: false, error: err.message } : { ok: true, with: 'terminal' }));
+      if (PLATFORM === 'darwin') {
+        cmd = `open -a Terminal ${shellQuote(dir)}`;
+        exec(cmd, (err) => resolve(err ? { ok: false, error: err.message } : { ok: true, with: 'terminal' }));
+      } else if (PLATFORM === 'win32') {
+        // 路径只走 argv / spawn cwd，不进任何 shell 命令行：spawn 的 argv 会被 libuv 按 \" 转义，
+        // cmd.exe 不认这种转义（原来 `cd /d "dir"` 对所有路径都失败），而且路径上 shell 命令行等于注入面。
+        // Windows Terminal（wt -d <dir>）优先；没装则 start 新开 PowerShell 控制台，目录靠 cwd 继承。
+        const wt = winFindExe('wt', [
+          process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Microsoft', 'WindowsApps'),
+        ].filter(Boolean));
+        let child;
+        if (wt) {
+          child = spawn(wt, ['-d', dir], { stdio: 'ignore', detached: true, windowsHide: false });
+        } else {
+          // 命令行上没有任何用户数据；detached 的 cmd 自己没有控制台，start 会给 powershell 新开一个窗口
+          child = spawn('cmd.exe', ['/c', 'start', '', 'powershell.exe', '-NoExit'], {
+            cwd: dir, stdio: 'ignore', detached: true, windowsHide: false,
+          });
+        }
+        child.on('error', (err) => resolve({ ok: false, error: err.message }));
+        child.on('spawn', () => { child.unref(); resolve({ ok: true, with: 'terminal' }); });
+      } else {
+        cmd = `x-terminal-emulator --working-directory=${shellQuote(dir)} || gnome-terminal --working-directory=${shellQuote(dir)} || xterm`;
+        exec(cmd, (err) => resolve(err ? { ok: false, error: err.message } : { ok: true, with: 'terminal' }));
+      }
       return;
     }
     if (withApp === 'editor') {
       // 用 VS Code 打开（文件或文件夹）
+      if (PLATFORM === 'win32') {
+        // 找 Code.exe 真身直接 argv 启动：不经 cmd.exe（shell:true 时参数不加引号，带空格的路径
+        // 会被拆碎、含 & 的路径会被当命令执行；且 cmd 能起来就不报 error，默认应用回退成死代码）
+        const exe = winFindVsCode();
+        if (!exe) { openDefault(target, withApp).then(resolve); return; }
+        const child = spawn(exe, [target], { stdio: 'ignore', detached: true, windowsHide: true });
+        child.on('error', () => { openDefault(target, withApp).then(resolve); });
+        child.on('spawn', () => { child.unref(); resolve({ ok: true, with: 'editor' }); });
+        return;
+      }
       cmd = 'code';
       args = [target];
       const child = spawn(cmd, args, { stdio: 'ignore', detached: true });
@@ -1263,21 +1452,34 @@ function openInOS(target, withApp) {
 
 function openDefault(target, withApp) {
   return new Promise((resolve) => {
-    let cmd;
     if (PLATFORM === 'darwin') {
-      if (withApp === 'reveal') cmd = `open -R ${shellQuote(target)}`;
-      else cmd = `open ${shellQuote(target)}`;
-    } else if (PLATFORM === 'win32') {
-      if (withApp === 'reveal') cmd = `explorer /select,"${target}"`;
-      else cmd = `start "" "${target}"`;
-    } else {
-      if (withApp === 'reveal') cmd = `xdg-open ${shellQuote(path.dirname(target))}`;
-      else cmd = `xdg-open ${shellQuote(target)}`;
+      const cmd = withApp === 'reveal' ? `open -R ${shellQuote(target)}` : `open ${shellQuote(target)}`;
+      exec(cmd, (err) => resolve(err ? { ok: false, error: err.message } : { ok: true, with: withApp || 'default' }));
+      return;
     }
-    exec(cmd, (err) => {
-      if (err) resolve({ ok: false, error: err.message });
-      else resolve({ ok: true, with: withApp || 'default' });
-    });
+    if (PLATFORM === 'win32') {
+      if (withApp === 'reveal') {
+        // explorer /select,path — 逗号后路径不要多余引号嵌套
+        let settled = false;
+        const done = (r) => { if (settled) return; settled = true; resolve(r); };
+        const child = spawn('explorer.exe', [`/select,${target}`], { stdio: 'ignore', detached: true });
+        child.on('error', (err) => done({ ok: false, error: err.message }));
+        child.on('spawn', () => { child.unref(); done({ ok: true, with: 'reveal' }); });
+        // explorer 有时非 0 退出但已打开，超时也算成功
+        setTimeout(() => done({ ok: true, with: 'reveal' }), 1500);
+        return;
+      }
+      // explorer.exe 打开默认关联：路径走 argv，不经 cmd 的 start——start 只保护含空格的参数，
+      // 像 a&whoami.txt 这种带元字符不带空格的文件名会裸着进 cmd 被当命令执行
+      const child = spawn('explorer.exe', [target], { stdio: 'ignore', detached: true, windowsHide: true });
+      child.on('error', (err) => resolve({ ok: false, error: err.message }));
+      child.on('spawn', () => { child.unref(); resolve({ ok: true, with: withApp || 'default' }); });
+      return;
+    }
+    const cmd = withApp === 'reveal'
+      ? `xdg-open ${shellQuote(path.dirname(target))}`
+      : `xdg-open ${shellQuote(target)}`;
+    exec(cmd, (err) => resolve(err ? { ok: false, error: err.message } : { ok: true, with: withApp || 'default' }));
   });
 }
 
@@ -1324,22 +1526,49 @@ const thumbInflight = new Map(); // cacheFile -> Promise，去重并发生成
 function run(cmd, args) {
   return new Promise((resolve, reject) => execFile(cmd, args, { timeout: 15000 }, (e) => (e ? reject(e) : resolve())));
 }
-// 图片走 sips 缩放（快）；视频/PDF/其它走 qlmanage QuickLook 抽帧
+// 缩略图：macOS 走 sips / qlmanage；其它平台优先 magick/convert（ImageMagick），视频走 ffmpeg
 async function generateThumb(src, e, size, cacheFile, isImg) {
   await fsp.mkdir(THUMB_DIR, { recursive: true });
-  if (isImg) {
-    const fmt = cacheFile.endsWith('.png') ? 'png' : 'jpeg';
-    await run('sips', ['-s', 'format', fmt, '-Z', String(size), src, '--out', cacheFile]);
+  if (PLATFORM === 'darwin') {
+    if (isImg) {
+      const fmt = cacheFile.endsWith('.png') ? 'png' : 'jpeg';
+      await run('sips', ['-s', 'format', fmt, '-Z', String(size), src, '--out', cacheFile]);
+      return;
+    }
+    const tmpDir = path.join(THUMB_DIR, '_ql_' + process.pid + '_' + crypto.randomBytes(4).toString('hex'));
+    await fsp.mkdir(tmpDir, { recursive: true });
+    try {
+      await run('qlmanage', ['-t', '-s', String(size), '-o', tmpDir, src]);
+      const png = (await fsp.readdir(tmpDir)).find((f) => f.endsWith('.png'));
+      if (!png) throw new Error('no thumb');
+      await fsp.rename(path.join(tmpDir, png), cacheFile);
+    } finally { fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {}); }
     return;
   }
-  const tmpDir = path.join(THUMB_DIR, '_ql_' + process.pid + '_' + crypto.randomBytes(4).toString('hex'));
-  await fsp.mkdir(tmpDir, { recursive: true });
-  try {
-    await run('qlmanage', ['-t', '-s', String(size), '-o', tmpDir, src]);
-    const png = (await fsp.readdir(tmpDir)).find((f) => f.endsWith('.png'));
-    if (!png) throw new Error('no thumb');
-    await fsp.rename(path.join(tmpDir, png), cacheFile);
-  } finally { fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {}); }
+  // Windows / Linux：ImageMagick 或 ffmpeg；都没有则抛错，前端回退矢量图标
+  if (isImg) {
+    const fmt = cacheFile.endsWith('.png') ? 'png' : 'jpg';
+    // magick (IM7) → convert (IM6)
+    try {
+      await run('magick', [src, '-auto-orient', '-thumbnail', `${size}x${size}>`, cacheFile]);
+      return;
+    } catch { /* try convert */ }
+    try {
+      await run('convert', [src, '-auto-orient', '-thumbnail', `${size}x${size}>`, cacheFile]);
+      return;
+    } catch { /* try ffmpeg still */ }
+    await run(PLATFORM === 'win32' ? 'ffmpeg.exe' : 'ffmpeg', [
+      '-y', '-i', src, '-vf', `scale=${size}:${size}:force_original_aspect_ratio=decrease`,
+      '-frames:v', '1', cacheFile,
+    ]);
+    return;
+  }
+  // 视频/PDF 等：ffmpeg 抽一帧
+  await run(PLATFORM === 'win32' ? 'ffmpeg.exe' : 'ffmpeg', [
+    '-y', '-ss', '0', '-i', src, '-frames:v', '1',
+    '-vf', `scale=${size}:${size}:force_original_aspect_ratio=decrease`,
+    cacheFile,
+  ]);
 }
 // 缩略图缓存按总体积上限做 LRU 裁剪（同一文件改一次就多一个缓存键，不清会无限涨）
 async function pruneThumbs(maxBytes = 400 * 1024 * 1024) {
@@ -1397,8 +1626,16 @@ async function serveHeicAsJpeg(req, res, file, st) {
   if (fs.existsSync(cacheFile)) return send();
   let pr = thumbInflight.get(cacheFile);
   if (!pr) {
-    pr = (async () => { await fsp.mkdir(THUMB_DIR, { recursive: true }); await run('sips', ['-s', 'format', 'jpeg', file, '--out', cacheFile]); })()
-      .finally(() => thumbInflight.delete(cacheFile));
+    pr = (async () => {
+      await fsp.mkdir(THUMB_DIR, { recursive: true });
+      if (PLATFORM === 'darwin') {
+        await run('sips', ['-s', 'format', 'jpeg', file, '--out', cacheFile]);
+      } else {
+        // Windows/Linux：ImageMagick 若支持 heic 则转；否则失败回退图标
+        try { await run('magick', [file, cacheFile]); }
+        catch { await run('convert', [file, cacheFile]); }
+      }
+    })().finally(() => thumbInflight.delete(cacheFile));
     thumbInflight.set(cacheFile, pr);
   }
   try { await pr; pruneThumbs(); send(); }
@@ -1675,20 +1912,53 @@ async function claudeOAuthToken() {
   catch { return null; }
 }
 
-// 终端启动时 curl 自己会认 http_proxy 等环境变量；但打包 App 从 Finder/Dock 启动没有这些变量，
-// curl 直连 api.anthropic.com 会被 403 地域拦截。此时读 macOS 系统代理（Clash 等都会写进去）兜底。
+// Windows 注册表 ProxyServer 三种形态：'host:port'｜'http=h:p;https=h:p;…'（协议表）｜'socks=h:p'（仅 SOCKS）。
+// 仅 SOCKS 时给 socks5h://（curl 认，DNS 也走代理），千万别把 'socks=h:p' 原样当 http 代理导出——
+// 那是个非法 URL，代理用户的每次 API 调用都会因此失败。
+// 注意：electron/wechat/env.js 里有同名孪生函数（server.js 保持零本地依赖，不 require electron/ 下的文件），改这里记得同步那边。
+function parseWinProxyServer(raw) {
+  raw = String(raw || '').trim();
+  if (!raw) return null;
+  let val = raw, socks = false;
+  if (raw.includes('=')) {
+    const pick = (k) => ((raw.match(new RegExp('(?:^|;)\\s*' + k + '=([^;]+)', 'i')) || [])[1] || '').trim();
+    const h = pick('https') || pick('http');
+    if (h) val = h;
+    else if (pick('socks')) { val = pick('socks'); socks = true; }
+    else return null;
+  } else if (/^socks/i.test(raw)) socks = true;
+  if (socks) return { url: 'socks5h://' + val.replace(/^socks[45]?h?:\/\//i, ''), socks: true };
+  return { url: /^https?:\/\//i.test(val) ? val : 'http://' + val, socks: false };
+}
+
+// 终端启动时 curl 自己会认 http_proxy 等环境变量；但打包 App 从 GUI 启动没有这些变量，
+// curl 直连 api.anthropic.com 会被 403 地域拦截。此时读系统代理兜底。
 async function curlSysProxyLine() {
   if (['https_proxy', 'HTTPS_PROXY', 'http_proxy', 'HTTP_PROXY', 'all_proxy', 'ALL_PROXY'].some((k) => process.env[k])) return '';
-  if (PLATFORM !== 'darwin') return '';
-  try {
-    const out = await new Promise((resolve, reject) => {
-      execFile('scutil', ['--proxy'], { timeout: 3000 }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
-    });
-    const grab = (k) => (out.match(new RegExp(`\\b${k} : (\\S+)`)) || [])[1];
-    if (grab('HTTPSEnable') === '1') return `proxy = "http://${grab('HTTPSProxy')}:${grab('HTTPSPort')}"\n`;
-    if (grab('HTTPEnable') === '1') return `proxy = "http://${grab('HTTPProxy')}:${grab('HTTPPort')}"\n`;
-    if (grab('SOCKSEnable') === '1') return `proxy = "socks5h://${grab('SOCKSProxy')}:${grab('SOCKSPort')}"\n`;
-  } catch { /* 读不到就直连 */ }
+  if (PLATFORM === 'darwin') {
+    try {
+      const out = await new Promise((resolve, reject) => {
+        execFile('scutil', ['--proxy'], { timeout: 3000 }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
+      });
+      const grab = (k) => (out.match(new RegExp(`\\b${k} : (\\S+)`)) || [])[1];
+      if (grab('HTTPSEnable') === '1') return `proxy = "http://${grab('HTTPSProxy')}:${grab('HTTPSPort')}"\n`;
+      if (grab('HTTPEnable') === '1') return `proxy = "http://${grab('HTTPProxy')}:${grab('HTTPPort')}"\n`;
+      if (grab('SOCKSEnable') === '1') return `proxy = "socks5h://${grab('SOCKSProxy')}:${grab('SOCKSPort')}"\n`;
+    } catch { /* 读不到就直连 */ }
+    return '';
+  }
+  if (PLATFORM === 'win32') {
+    try {
+      const out = await new Promise((resolve, reject) => {
+        execFile('powershell.exe', [
+          '-NoProfile', '-NonInteractive', '-Command',
+          `$p=Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings' -ErrorAction SilentlyContinue; if($p -and $p.ProxyEnable -eq 1 -and $p.ProxyServer){Write-Output $p.ProxyServer}`,
+        ], { timeout: 4000, windowsHide: true }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
+      });
+      const px = parseWinProxyServer(String(out || '').trim());
+      return px ? `proxy = "${px.url}"\n` : '';
+    } catch { /* 读不到就直连 */ }
+  }
   return '';
 }
 
@@ -2321,7 +2591,7 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 200, { enabled: Array.isArray(cfg.enabledAgents) ? cfg.enabledAgents : null, custom });
     }
     if (p === '/api/agents/which') {
-      // 装没装探测：bins 走登录 shell command -v；apps 是桌面应用，走 open -Ra
+      // 装没装探测：bins 走登录 shell command -v / where；apps 是桌面应用
       const out = {};
       const bins = String(url.searchParams.get('bins') || '').split(',')
         .map((s) => s.trim()).filter((s) => /^[A-Za-z0-9._-]{1,64}$/.test(s)).slice(0, 32);
@@ -2330,7 +2600,14 @@ const server = http.createServer(async (req, res) => {
       await Promise.all([
         ...bins.map(async (b) => { out[b] = !!(await findAgentBin(b)); }),
         ...apps.map((a) => new Promise((resolve) => {
-          execFile('/usr/bin/open', ['-Ra', a], { timeout: 8000 }, (err) => { out[a] = !err; resolve(); });
+          if (PLATFORM === 'darwin') {
+            execFile('/usr/bin/open', ['-Ra', a], { timeout: 8000 }, (err) => { out[a] = !err; resolve(); });
+          } else if (PLATFORM === 'win32') {
+            // 纯 Node 浅扫常见安装根，返回 exe 全路径（truthy 即「已装」，前端启动直接用这条路径）
+            winFindDesktopApp(a).then((hit) => { out[a] = hit || false; resolve(); });
+          } else {
+            out[a] = false; resolve();
+          }
         })),
       ]);
       return sendJSON(res, 200, out);
@@ -2451,7 +2728,8 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log('\n  按 Ctrl+C 退出\n');
   pruneThumbs().catch(() => {}); // 启动时裁剪缩略图缓存，防止无限增长
   if (!process.env.FANBOX_NO_OPEN) {
-    const opener = PLATFORM === 'darwin' ? 'open' : PLATFORM === 'win32' ? 'start' : 'xdg-open';
-    exec(`${opener} ${link}`, () => {});
+    if (PLATFORM === 'darwin') exec(`open ${link}`, () => {});
+    else if (PLATFORM === 'win32') spawn('cmd.exe', ['/c', 'start', '', link], { detached: true, stdio: 'ignore' }).unref();
+    else exec(`xdg-open ${link}`, () => {});
   }
 });

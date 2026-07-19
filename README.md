@@ -1,3 +1,73 @@
+# 📦 FanBox
+
+> [!IMPORTANT]
+> 这是 [FanBox](https://github.com/alchaincyf/fanbox) 的**社区 Windows 移植版**（非官方），对齐上游 v2.7.0。Windows 安装包见[本仓库 Releases](https://github.com/Emberwhirl/fanbox/releases)；macOS 用户请前往[官方仓库](https://github.com/alchaincyf/fanbox)。
+> This is an unofficial **community Windows port** of [FanBox](https://github.com/alchaincyf/fanbox), tracking upstream v2.7.0. Windows installers are in [this repo's Releases](https://github.com/Emberwhirl/fanbox/releases); macOS users should use the [original project](https://github.com/alchaincyf/fanbox).
+
+[![Windows x64 port](https://img.shields.io/badge/Windows-x64%20port%20%C2%B7%20v2.7.0-0078D6?logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZD0iTTAgMGgxMS4zNzd2MTEuMzcySDB6bTEyLjYyMyAwSDI0djExLjM3MkgxMi42MjN6TTAgMTIuNjIzaDExLjM3N1YyNEgwem0xMi42MjMgMEgyNFYyNEgxMi42MjN6Ii8%2BPC9zdmc%2B&logoColor=white)](https://github.com/Emberwhirl/fanbox/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Upstream](https://img.shields.io/badge/upstream-alchaincyf%2Ffanbox-8250df?logo=github)](https://github.com/alchaincyf/fanbox)
+
+## 🪟 关于本移植版 · About this Windows port
+
+FanBox 官方只发布 macOS 版。本仓库在 `windows` 分支上维护上游**完整功能**的 Windows 10/11 (x64) 移植：v2.6.3 从零移植，此后跟随上游更新，当前对齐 **v2.7.0**；同时把一批「离开 macOS 就坏」的平台细节按 Windows 的标准和使用习惯修好。
+
+FanBox officially ships for macOS only. This repo maintains a complete Windows 10/11 (x64) port on the `windows` branch: ported from scratch at v2.6.3, not derived from older community ports, and tracking upstream releases since, currently **v2.7.0**. Every platform-specific piece was reworked against upstream, fixing the details that break the moment you leave macOS.
+
+### What the port covers
+
+- 🖥️ **Embedded terminal.** PowerShell runs over ConPTY, Chinese output renders correctly, and any `C:\...` path an agent prints is clickable.
+- 🤖 **Agent cross-control (new in v2.7.0).** The `/api/agent/*` interface works in full: an agent running in one FanBox terminal can list sibling windows, read their output, send commands, open new windows and wait for tasks to finish. Busy/idle detection uses a child-process probe (Windows never exposes the foreground process name), so `wait` for external CLI agents means the same thing as on macOS; pure in-process PowerShell work can look idle (use quiet/`until` — see platform notes). The bundled `fanbox-agent` skill ships unmodified — one-click install from settings lands it where Claude Code on Windows looks (`%USERPROFILE%\.claude\skills`).
+- 🖱️ **One click actions.** Open in editor uses VS Code and falls back to the system default app when VS Code is missing. Open in terminal prefers Windows Terminal. Reveal in Explorer is safe for paths with spaces, Chinese and special characters.
+- 💬 **WeChat ClawBot bridge.** Chinese messages and multiline personas survive the trip end to end. When a run times out the whole process tree is killed, so no orphaned agent keeps burning tokens.
+- 🛟 **Snapshot safety belt.** The eligibility rules understand Windows drives. Projects like `D:\myproject` keep their safety net while `C:\Users` and `C:\Windows` are refused.
+- 🌐 **Environment and proxy.** On launch, User + Machine registry PATH is merged into the process environment so the embedded terminal, agent-bin probes, and WeChat bridge all find `claude` / `codex` / npm globals even when the app was started from the GUI. The system proxy is honored, including SOCKS-only setups from Clash or v2rayN, and Chinese usernames work throughout.
+- 🔄 **Updates.** Update checks point at this repo's Releases. When the GitHub API returns asset metadata, the app only prompts if a Windows installer (`.exe`) is present on that release — docs-only tags do not trigger a download toast.
+- ⌨️ **Shortcuts.** Every `⌘` shortcut maps to `Ctrl`, for example `Ctrl+K` for global search and `Ctrl+Enter` to open in editor. Dynamic UI labels (editor chrome, first-run guide, etc.) show the correct keys for your platform.
+
+### Install
+
+Download the NSIS installer `FanBox-<version>-win-x64.exe` or the portable build `FanBox-<version>-win-x64-portable.exe` from [**Releases**](https://github.com/Emberwhirl/fanbox/releases).
+
+### Run from source
+
+```powershell
+# Requires Node.js 18 or newer plus Visual Studio Build Tools with the C++ desktop workload to compile node-pty
+git clone https://github.com/Emberwhirl/fanbox.git
+cd fanbox
+git checkout windows
+npm install
+npm run rebuild      # rebuild node-pty for the bundled Electron
+npm run app          # launch the desktop app
+npm run dist:win     # build the NSIS installer and the portable exe into dist/
+```
+
+### Platform notes
+
+| Feature | Behavior on Windows |
+|---|---|
+| Embedded terminal | node-pty with ConPTY, PowerShell by default; registry PATH merged at app start |
+| Agent cross-control | busy/idle via child-process probe (external CLIs); pure in-process PowerShell can false-idle — default `wait` idleMs is 3500 ms; use `"idle":"quiet"` or `"until"` for cmdlet-only work; `terminals` reports last-known directory (spawn/locate), not live cwd |
+| Updates | GitHub API asset check requires `FanBox-*-win-*.exe` before prompting; HTML redirect fallback is tag-only |
+| Screenshot express | watches `Pictures\Screenshots` and the Desktop |
+| Stay awake | uses `powerSaveBlocker`, while lid behavior still follows the OS power settings |
+| Thumbnails and HEIC | ImageMagick or ffmpeg when available, icon fallback otherwise |
+
+Please open port related issues in [this repo's Issues](https://github.com/Emberwhirl/fanbox/issues) rather than the upstream project.
+
+---
+
+<div align="center">
+
+## 📄 ⬇️ 以下为原项目 README · Original upstream README below ⬇️
+
+<sub>以下内容原样保留自 <a href="https://github.com/alchaincyf/fanbox">alchaincyf/fanbox</a> v2.7.0，面向官方 macOS 版本。其中的下载链接、安装说明、Windows 社区移植列表等均为上游作者视角，Windows 相关信息以上文为准。<br>
+Everything below is kept verbatim from <a href="https://github.com/alchaincyf/fanbox">alchaincyf/fanbox</a> v2.7.0 and written for the official macOS build. The download links, install steps and community-ports list reflect the upstream author's view; for Windows, refer to the section above.</sub>
+
+</div>
+
+---
+
 <div align="center">
 
 # 📦 FanBox

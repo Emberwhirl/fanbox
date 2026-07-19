@@ -16,6 +16,19 @@
 ### Added
 - **Agent 控制接口（`/api/agent/*`）**：让跑在翻箱终端里的 coding agent 指挥兄弟窗口——列出所有终端（目录/前台进程/忙闲/最近输出）、读取输出（去 ANSI，最多 2000 行）、发送指令（支持 bracketed paste 整块喂 TUI）、新开终端窗口（可 `autorun` 开窗即执行）、长轮询等任务跑完（裸 shell 空闲 / 输出静默 / 正则命中三种判定）、关闭窗口。安全模型：token 每次启动随机生成、不落盘，只注入翻箱自开终端的环境变量（`FANBOX_TERM_ID` / `FANBOX_CTL` / `FANBOX_CTL_TOKEN`）——能力边界 = FanBox 进程树，本机其他进程拿不到门票，远程更够不着。被遥控的 tab 闪 8 秒 ⚡ 标记。配套 `skills/fanbox-agent` skill（curl 速查 + 多窗口并行实验套路），设置面板（⚙）「Agent 互控」一键装进 `~/.claude/skills`、内容更新时显示「可更新」。设计文档见 `docs/12-Agent控制接口-本机HTTP.md`
 
+### Windows port
+- **Agent 互控完整落地 Windows**：忙闲判定与 `wait` 默认判定改用「shell 子进程探测」（win32 下 node-pty 的前台进程名是 spawn 时写死的静态值，判不了回没回到裸 shell）——探测不到一律按忙，语义与 macOS 对齐，`fanbox-agent` skill 原样可用；`terminals` 的 cwd 用 spawn/定位时记下的目录兜底（Windows 拿不到其他进程的实时 cwd）；去 ANSI 缓冲追加剥离 OSC 序列（PowerShell 每个提示符都会刷控制台标题，不剥会污染 `/api/agent/read` 与「最近输出」）
+- **Windows 移植基础（本 fork v2.6.3 首发，对齐官方 v2.6.3）**：`windows` 分支从零适配 Windows 10/11 x64，不参考旧社区移植
+  - 打包：`npm run dist:win` → NSIS 安装包 + portable（`build/icon.ico`）
+  - 终端：node-pty ConPTY，默认 PowerShell；GUI 启动时合并用户/系统 PATH 注册表
+  - 环境/代理：PowerShell 环境抓取 + Internet Settings 系统代理兜底（微信 ClawBot / Claude 限额 curl）
+  - 截图直通车：监听 `Pictures\Screenshots`、桌面、OneDrive 截图目录
+  - 保持唤醒：Electron `powerSaveBlocker`（菜单「有任务时保持唤醒」+ 微信「离开不待机」）
+  - 文件：回收站删除、资源管理器定位、剪贴板复制文件（`Set-Clipboard -Path`）
+  - 磁盘占用：PowerShell `Measure-Object`（替代 `du`）
+  - 缩略图：ImageMagick / ffmpeg 可选回退（无则矢量图标）
+  - UI：`Ctrl` 快捷键文案、Windows 标题栏 overlay 右侧让位、访达→资源管理器 文案
+
 ## [2.6.3] - 2026-07-17
 
 ### Changed
