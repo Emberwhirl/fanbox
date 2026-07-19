@@ -4,7 +4,7 @@
 > 这是 [FanBox](https://github.com/alchaincyf/fanbox) 的**社区 Windows 移植版**（非官方），对齐上游 v2.7.0。Windows 安装包见[本仓库 Releases](https://github.com/Emberwhirl/fanbox/releases)；macOS 用户请前往[官方仓库](https://github.com/alchaincyf/fanbox)。
 > This is an unofficial **community Windows port** of [FanBox](https://github.com/alchaincyf/fanbox), tracking upstream v2.7.0. Windows installers are in [this repo's Releases](https://github.com/Emberwhirl/fanbox/releases); macOS users should use the [original project](https://github.com/alchaincyf/fanbox).
 
-[![Windows x64 port](https://img.shields.io/badge/Windows-x64%20port%20%C2%B7%20v2.7.0-0078D6?logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZD0iTTAgMGgxMS4zNzd2MTEuMzcySDB6bTEyLjYyMyAwSDI0djExLjM3MkgxMi42MjN6TTAgMTIuNjIzaDExLjM3N1YyNEgwem0xMi42MjMgMEgyNFYyNEgxMi42MjN6Ii8%2BPC9zdmc%2B&logoColor=white)](https://github.com/Emberwhirl/fanbox/releases)
+[![Windows x64 port](assets/badge-windows-x64.svg)](https://github.com/Emberwhirl/fanbox/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Upstream](https://img.shields.io/badge/upstream-alchaincyf%2Ffanbox-8250df?logo=github)](https://github.com/alchaincyf/fanbox)
 
