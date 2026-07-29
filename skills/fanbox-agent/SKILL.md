@@ -1,6 +1,6 @@
 ---
 name: fanbox-agent
-description: 在 FanBox 终端里指挥兄弟终端窗口：列出所有窗口、读取输出、发送指令、新开 agent 窗口、等待任务完成。当用户说「开个窗口跑 X」「看看另一个终端」「让 N 号窗口执行…」「多窗口并行实验」时使用。仅当 FANBOX_CTL 环境变量存在（跑在 FanBox 桌面 app 终端里）时可用。
+description: 在 FanBox 终端里指挥兄弟终端窗口（列出/读取/发指令/新开/等待），以及设定时任务（每天/每周/固定时间/cron 自动开窗跑 agent）。用户说「开个窗口跑 X」「让 N 号窗口执行…」「每天 X 点自动…」「定时/定期跑…」时使用。仅当 FANBOX_CTL 环境变量存在时可用。
 ---
 
 # FanBox 终端控制
@@ -60,11 +60,9 @@ curl "${CT[@]}" -X POST -H 'Content-Type: application/json' \
 ```
 
 三种等法：
-- 默认：前台回到裸 shell 且输出静默 ≥ `idleMs`（macOS/Linux 默认 2000；Windows 默认 3500）——适合等普通命令跑完
+- 默认：前台回到裸 shell 且输出静默 ≥ `idleMs`（默认 2000）——适合等普通命令跑完
 - `"idle":"quiet"`：只看输出静默——适合等 claude 等常驻 TUI 回答完，建议配 `"idleMs":3000`
 - `"until":"正则"`：新输出匹配到正则就立刻返回——注意只匹配 wait 开始之后的新输出，所以要在结果出现前就发起 wait。**命令回显也算输出**：你敲的命令本身会先出现在流里，正则要用 `^` 锚定行首（如 `"^DONE$"`）才不会匹配到自己发的命令
-
-**Windows 忙闲说明**：系统不暴露 PTY 前台进程名，默认模式用「shell 是否有直接子进程」近似 busy。外部 CLI agent（`claude`/`codex`/`npm` 等会 spawn 子进程）可靠；纯 PowerShell/cmdlet 在进程内算、无子进程时可能误判 idle——等这类任务请用 `"idle":"quiet"` 或加大 `idleMs`，或改 `"until"` 锚定完成标记。
 
 返回 `{ok, idle|matched|exited|timeout, elapsed, output}`，output 是等待期间的输出（最后 8KB），通常不用再 read。
 
@@ -73,6 +71,45 @@ curl "${CT[@]}" -X POST -H 'Content-Type: application/json' \
 ```bash
 curl "${CT[@]}" -X POST -H 'Content-Type: application/json' -d '{"id":"t5"}' "$FANBOX_CTL/kill"
 ```
+
+## 定时任务：用户白话 → 你换算成 schedule
+
+用户说「每天早上 9 点整理灵感箱」「周五下班前汇总本周改动」「两小时后跑一遍测试」时，把意图换算成 schedule 对象调接口。到点 FanBox 会自动开一个终端窗口执行（FanBox 没开着则记「错过」不补跑）。
+
+schedule 三种形态：
+- 周期规律：`{"type":"cron","expr":"0 9 * * *"}`——5 段本地时区 cron（分 时 日 月 周），支持 `* , - */n`
+- 固定时间一次：`{"type":"at","time":"2026-07-27T09:00"}`——执行完自动停用
+- 固定间隔：`{"type":"every","minutes":120}`
+
+**列出全部任务**：
+
+```bash
+curl "${CT[@]}" "$FANBOX_CTL/cron"
+```
+
+**创建 / 修改**（带 `id` 是修改，不带是创建；`agent` 可选 `claude`/`codex`/`shell`；`full:true` 表示全自动跳过一切确认——**必须用户明确授权才可设**，默认 acceptEdits）：
+
+```bash
+curl "${CT[@]}" -X POST -H 'Content-Type: application/json' -d '{
+  "name": "整理灵感箱",
+  "cwd": "/Users/xxx/Documents/写作",
+  "agent": "claude",
+  "prompt": "把灵感箱里的碎片整理进对应选题，完成后简要汇报",
+  "schedule": {"type":"cron","expr":"0 9 * * *"}
+}' "$FANBOX_CTL/cron/save"
+```
+
+**预览执行时间**（换算完先验一下，把结果报给用户确认）：
+
+```bash
+curl "${CT[@]}" -X POST -H 'Content-Type: application/json' \
+  -d '{"schedule":{"type":"cron","expr":"0 18 * * 5"}}' "$FANBOX_CTL/cron/preview"
+# → {"ok":true,"times":[…]}  接下来最多 3 次的时间戳
+```
+
+**其他操作**（都是 POST）：`/cron/toggle` `{"id":"crxx","enabled":false}`、`/cron/run` `{"id":"crxx"}`（立即执行一次）、`/cron/delete` `{"id":"crxx"}`。
+
+规矩：创建/修改完把「任务名 + 什么时候执行 + 去哪个目录干什么」复述给用户；删除和 `full:true` 先经用户明确同意。
 
 ## 子窗口的 claude 卡在确认框怎么办
 

@@ -324,6 +324,7 @@ async function navigate(p, pushHistory = true) {
     state.recentMode = false;
     state.skillsMode = false;
     state.cursor = -1;
+    localStorage.setItem('fb_last_cwd', state.cwd); // 下次启动回到这里
     render();
     renderRootsActive();
     // 联动：监听此目录 + 各终端项目目录的文件变化（agent 改文件→自动刷新）
@@ -675,8 +676,8 @@ function renderTextPreview(data) {
   const meta = `<div class="preview-meta"><span>${data.ext || 'txt'}</span><span>${fmtSize(data.size)}</span><span>${fmtTime(data.mtime)}</span></div>`;
   const ex = (data.ext || '').toLowerCase();
   if ((ex === 'md' || ex === 'markdown') && !window.__noMarked && window.marked) {
-    body.innerHTML = meta + `<div class="md-body">${window.marked.parse(data.content || '')}</div>`;
-    if (window.hljs) body.querySelectorAll('pre code').forEach((b) => { try { window.hljs.highlightElement(b); } catch {} });
+    body.innerHTML = meta;
+    body.appendChild(mdReadBody(data.content || '', data.path));
   } else if (ex === 'csv' || ex === 'tsv') {
     body.innerHTML = meta + csvTable(data.content || '', ex === 'tsv' ? '\t' : ',');
   } else if (ex === 'html' || ex === 'htm') {
@@ -691,6 +692,39 @@ function renderTextPreview(data) {
     body.appendChild(pre);
     if (window.hljs && !window.__noHljs) { try { window.hljs.highlightElement(code); } catch {} }
   }
+}
+// md 只读阅读体：渲染好的文章本体（代码高亮 + 本地图片能显出来），编辑器和跟随共用。
+// srcPath 用来把 `![](./图/封面.png)` 这类相对/本地绝对路径接到 /api/raw，不然本地配图一律裂图。
+function mdReadBody(md, srcPath) {
+  const div = document.createElement('div');
+  div.className = 'md-body';
+  div.innerHTML = window.marked ? window.marked.parse(md || '') : escapeHtml(md || '');
+  fixLocalImages(div, srcPath);
+  if (window.hljs && !window.__noHljs) div.querySelectorAll('pre code').forEach((b) => { try { window.hljs.highlightElement(b); } catch { /* */ } });
+  return div;
+}
+// 把 md 里指向本机文件的图片换成 /api/raw；外链 http(s)/data/blob 不动
+function fixLocalImages(root, srcPath) {
+  if (!srcPath) return;
+  const base = dirOf(srcPath);
+  root.querySelectorAll('img').forEach((im) => {
+    const raw = im.getAttribute('src') || '';
+    if (!raw || /^(https?:|data:|blob:|\/api\/|\/fs\/)/i.test(raw)) return;
+    let rel = raw.split('#')[0].split('?')[0];
+    try { rel = decodeURIComponent(rel); } catch { /* 本来就没编码 */ }
+    const abs = rel.startsWith('/') ? rel : normPath(base + '/' + rel);
+    im.setAttribute('src', '/api/raw?path=' + encodeURIComponent(abs));
+  });
+}
+// 折掉路径里的 ./ 和 ../，让相对图片路径能拼成真实绝对路径
+function normPath(p) {
+  const out = [];
+  for (const seg of p.split('/')) {
+    if (!seg || seg === '.') continue;
+    if (seg === '..') out.pop();
+    else out.push(seg);
+  }
+  return '/' + out.join('/');
 }
 function csvTable(text, delim) {
   const rows = text.split('\n').filter((r) => r.trim()).slice(0, 500).map((r) => r.split(delim));
@@ -1375,19 +1409,34 @@ async function mdEditor(e, data, mode = 'rich') {
   let content0 = cleanImgUrls(data.content || ''); // canonical：磁盘原始 markdown（顺手还原历史遗留的内部预览 URL）；唯一事实源，编辑器只从它初始化
   let getValue = null, baseline = '';
   let timer = null, paused = false;
-  let forceCode = false; // 该文件 Milkdown 往返有损 → 锁源码模式，富文本按钮灰显（用户选「无损才用富文本」）
+  let forceCode = false; // 该文件 Milkdown 往返有损 → 禁掉富文本（只剥夺「改」的权利，「看」仍走阅读模式）
   let reloading = false; // 外部变更重载 in-flight 锁：fs.watch 同一文件会连发多个事件，去重防并发 render 互踩
   let chain = Promise.resolve(); // 写盘串行化：防抖到点的保存和离开时的 flush 不互相踩
   const setStatus = (t) => { const s = $('#md-status'); if (s) s.textContent = t; };
-  // Milkdown 往返是否「语义无损」：所见即所得必然规范化语法（- → *、紧凑列表变松散、强调记号等），逐字节比会把干净文件也误判有损。
-  // 改用渲染结果比对：两份 markdown 渲成 HTML（去掉 <p> 包裹消除松/紧列表假阳性 + 折叠空白）后相等 = 内容无损 → 放行富文本；
-  // 不等 = 真丢了内容（如 <br/> 被吞、HTML 被删）→ 锁源码。marked 不可用时退回严格比对（保守锁源码，绝不误放行有损）。
+  // Milkdown 往返是否「语义无损」：所见即所得必然规范化语法（- → *、表格补空格对齐、强调记号拆分等），
+  // 逐字节比、甚至逐字节比 HTML，都会把干净文件误判有损。改用「语义指纹」：
+  // 两份 markdown 各渲成 HTML，取 ①可见文字（空白折叠）②结构骨架（标签序列 + 图片/链接目标），
+  // 两项都一致才算无损。只比文字会漏掉「图没了」，只比 HTML 会被排版差异带偏。
+  // marked 不可用时退回严格比对（保守禁掉富文本，绝不误放行有损）。
+  const semanticSig = (md) => {
+    const d = document.createElement('div');
+    d.innerHTML = window.marked.parse(md || '');
+    const text = (d.textContent || '').replace(/\s+/g, ' ').trim();
+    const bones = [];
+    d.querySelectorAll('*').forEach((el) => {
+      const t = el.tagName.toLowerCase();
+      if (t === 'p' || t === 'strong' || t === 'em' || t === 'span') return; // 段落包裹、行内强调被拆成相邻两段，是序列化风格不是内容
+      // 图注（alt）不出现在 textContent 里，但它是正文；不进指纹就等于放任图注被吞
+      const attr = t === 'img'
+        ? (el.getAttribute('src') || '') + '\u001f' + (el.getAttribute('alt') || '')
+        : (el.getAttribute('href') || '');
+      bones.push(t + attr);
+    });
+    return text + ' ' + bones.join('|');
+  };
   const semanticEqual = (a, b) => {
     if (!window.marked || window.__noMarked) return a === b;
-    let ha, hb;
-    try { ha = window.marked.parse(a || ''); hb = window.marked.parse(b || ''); } catch { return a === b; }
-    const n = (s) => String(s).replace(/>\s+</g, '><').replace(/<\/?p>/g, '').replace(/\s+/g, ' ').trim();
-    return n(ha) === n(hb);
+    try { return semanticSig(a) === semanticSig(b); } catch { return a === b; }
   };
   const doSave = async (force) => {
     if (!getValue || paused) return;
@@ -1412,35 +1461,118 @@ async function mdEditor(e, data, mode = 'rich') {
   autosaveFlush = flush;
   dirtyCheck = null;
   const render = async (m) => {
-    if (forceCode) m = 'code'; // 有损文件只允许源码，杜绝静默改写
+    if (forceCode && m === 'rich') m = 'read'; // 有损文件不给富文本改，但照样让人把文章看成文章
     mode = m;
     mona.disposeIfAny(); crepe.disposeIfAny();
-    const dis = forceCode; // 富文本按钮是否灰显
+    const hostCls = { rich: 'crepe-host', read: 'read-host', code: 'mona-host', typeset: 'typeset-host' }[m];
+    const seg = (id, label, on) =>
+      `<button class="seg-btn${m === id ? ' active' : ''}" data-m="${id}"${on ? '' : ' disabled title="此文件含富文本无法无损保存的语法，改请用源码"'}>${label}</button>`;
+    const hint = m === 'typeset' ? '排好了直接粘进公众号'
+      : m === 'read' ? (forceCode ? '只读 · 此文件富文本往返有损，要改请点源码' : '只读 · 要改请点富文本或源码')
+        : '自动保存 · ⌘S 立即保存';
+    // 排版档才出样式选择和出口按钮：其余三档的工具栏保持原样，不给写作过程添噪音。
+    // 公众号是主战场，主动作外露一键直达；其余去向收进「送去…」，菜单短到一眼看完
+    const tsBar = m === 'typeset'
+      ? `<select id="ts-style" class="ts-select">${typeset.list().map((s) =>
+        `<option value="${s.id}"${s.id === typeset.current() ? ' selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}</select>` +
+        `<button id="ts-wechat" class="primary">复制到公众号</button><button id="ts-more">送去… ▾</button>` +
+        `<span id="ts-stat" class="editor-hint"></span>`
+      : '';
     body.innerHTML =
-      `<div class="editor-bar"><button id="md-mode" class="ghost-btn"${dis ? ' disabled title="此文件含富文本无法无损保存的语法，已锁定源码模式"' : ''}>${m === 'rich' ? '源码' : '富文本'}</button><span id="md-status" class="editor-hint">${dis ? '源码模式（此文件富文本往返有损，已锁定）' : `自动保存 · ${modKey()}S 立即保存`}</span></div>` +
-      `<div id="ed-host" class="${m === 'rich' ? 'crepe-host' : 'mona-host'}"></div>`;
-    const modeBtn = $('#md-mode');
-    if (modeBtn && !dis) modeBtn.onclick = async () => {
-      await flush();
-      const cur = getValue ? getValue() : content0;
-      if (cur !== baseline) content0 = cleanImgUrls(cur); // 只有真编辑过才采纳编辑器的值（顺手还原拖入图片的内部 URL）；没改就保留磁盘原文，不被 Milkdown 规范化
-      render(m === 'rich' ? 'code' : 'rich');
-    };
+      `<div class="editor-bar"><div class="ed-modes">${seg('rich', '富文本', !forceCode)}${seg('read', '阅读', true)}${seg('code', '源码', true)}${seg('typeset', '排版', true)}</div>` +
+      tsBar +
+      `<span id="md-status" class="editor-hint">${hint}</span></div>` +
+      `<div id="ed-host" class="${hostCls}"></div>`;
+    body.querySelectorAll('.ed-modes .seg-btn').forEach((b) => {
+      if (b.disabled || b.dataset.m === m) return;
+      b.onclick = async () => {
+        await flush();
+        const cur = getValue ? getValue() : content0;
+        if (cur !== baseline) content0 = cleanImgUrls(cur); // 只有真编辑过才采纳编辑器的值（顺手还原拖入图片的内部 URL）；没改就保留磁盘原文，不被 Milkdown 规范化
+        render(b.dataset.m);
+      };
+    });
     const host = $('#ed-host');
-    if (m === 'rich') {
+    if (m === 'typeset') {
+      // 排版档只读：这里看到的就是粘出去的样子，改字回富文本或源码
+      const paint = () => {
+        host.innerHTML = '';
+        const box = typeset.build(content0, e.path, typeset.current());
+        host.appendChild(box);
+        $('#ts-stat').textContent = typeset.stat(box); // 发文前每次都想知道的两个数
+      };
+      paint();
+      getValue = () => content0;
+      const sel = $('#ts-style');
+      sel.onchange = () => { typeset.setCurrent(sel.value); paint(); };
+      const copy = async (btn, job) => {
+        btn.disabled = true;
+        try {
+          const r = await job((i, n) => setStatus(`处理图片 ${i}/${n}…`));
+          if (!r.ok) { setStatus('复制失败'); toast('复制失败，点一下窗口再试', true); }
+          else if (r.failed) { setStatus('已复制'); toast(`已复制，但 ${r.failed} 张图没取到，粘过去会缺图`, true); }
+          else { setStatus('已复制'); toast('已复制，去编辑器粘贴就行'); }
+        } catch (err) { setStatus('复制失败'); toast('复制失败：' + (err.message || err), true); }
+        finally { btn.disabled = false; }
+      };
+      $('#ts-wechat').onclick = (ev) => copy(ev.currentTarget, (onStep) => typeset.copyWechat(content0, e.path, typeset.current(), onStep));
+      // 导出长图：小红书/朋友圈/即刻要的是图不是文。PNG 落在文章旁边、命名跟着文章走，不覆盖旧图
+      const exportLong = async (btn) => {
+        btn.disabled = true;
+        setStatus('生成长图…');
+        try {
+          const r = await typeset.exportImage(content0, e.path, typeset.current(), (i, n) => setStatus(`处理图片 ${i}/${n}…`));
+          const name = r.path.split('/').pop();
+          setStatus('已导出');
+          if (r.failed) toast(`长图已导出（${name}），但 ${r.failed} 张图没取到，图里会缺`, true);
+          else toast(`长图已导出：${name}，就在文章旁边`);
+          if (dirOf(e.path) === state.cwd) refresh(); // 正浏览文章所在目录时文件区跟上，png 立刻可见；在「最近」视图或别的目录时不刷，toast 已说明 png 就在文章旁边
+        } catch (err) { setStatus('导出失败'); toast('导出失败：' + (err.message || err), true); }
+        finally { btn.disabled = false; }
+      };
+      // 分节多图：小红书一条笔记发的是多图不是单张。按 h2 切，编号连续落在文章旁边
+      const exportSlices = async (btn) => {
+        btn.disabled = true;
+        setStatus('切分节…');
+        try {
+          const r = await typeset.exportSlices(content0, e.path, typeset.current(),
+            (i, n, kind) => setStatus(kind === 'slice' ? `生成第 ${i}/${n} 张…` : `处理图片 ${i}/${n}…`));
+          const first = r.paths[0].split('/').pop();
+          setStatus('已导出');
+          // 18 是小红书一条笔记的图片上限，超了得自己挑——只提醒，不替他删
+          if (r.count > 18) toast(`已导出 ${r.count} 张（${first} 起），超过小红书 18 图上限，发之前挑一下`, true);
+          else if (r.failed) toast(`已导出 ${r.count} 张（${first} 起），但 ${r.failed} 张图没取到，图里会缺`, true);
+          else toast(`已导出 ${r.count} 张：${first} 起，就在文章旁边`);
+          if (dirOf(e.path) === state.cwd) refresh(); // 同单张导出：正浏览文章所在目录时文件区才跟上
+        } catch (err) { setStatus('导出失败'); toast('导出失败：' + (err.message || err), true); }
+        finally { btn.disabled = false; }
+      };
+      // 其余去向：剪贴板类/导出类自己干，平台类递一条指令给终端里的 agent（FanBox 不碰任何平台凭证）
+      $('#ts-more').onclick = (ev) => (ev.stopPropagation(), popupMenu(ev, [ // 不拦的话这次点击会冒泡到 document，把刚弹出的菜单当场关掉
+        { label: '复制到 X', fn: () => copy($('#ts-more'), () => typeset.copyX(content0, e.path)) },
+        { label: '导出长图', fn: () => exportLong($('#ts-more')) },
+        { label: '导出长图（分节）', fn: () => exportSlices($('#ts-more')) },
+        { sep: true },
+        ...typeset.handoffs().map((d) => ({ label: d.label, fn: () => term.sendPrompt(d.prompt(e.path)) })),
+      ]));
+    } else if (m === 'read') {
+      host.appendChild(mdReadBody(content0, e.path));
+      getValue = () => content0; // 只读：永远不脏，自动保存链路自然空转
+    } else if (m === 'rich') {
       const C = await crepe.load();
       if (!C) { render('code'); return; } // Crepe 加载失败 → 源码模式兜底
       // 保护 YAML frontmatter：Crepe 不识别会丢掉，剥离后只把正文交给它，保存时再拼回
       const fm = /^(---\r?\n[\s\S]*?\r?\n---\r?\n)/.exec(content0);
       const front = fm ? fm[1] : '';
       const inst = new C.Crepe({ root: host, defaultValue: front ? content0.slice(front.length) : content0 });
+      if (C.keepImageAlt) C.keepImageAlt(inst.editor); // 图注归 alt，别被 Milkdown 拿去存缩放比例
       await inst.create();
-      // 语义无损校验：Milkdown 序列化回来若渲染结果和磁盘原文不同（<br/> 被吞、HTML 被删等真丢内容）→ 锁源码，绝不让它静默落盘
+      // 语义无损校验：Milkdown 序列化回来若渲染结果和磁盘原文不同（<br/> 被吞、HTML 被删等真丢内容）→ 禁掉富文本，绝不让它静默落盘
       if (!semanticEqual(front + inst.getMarkdown(), content0)) {
         crepe.disposeIfAny();
         forceCode = true;
-        toast('此文件含富文本无法无损表示的内容，已切到源码模式编辑');
-        return render('code');
+        toast('此文件富文本往返有损，已切到只读阅读模式（要改点源码）');
+        return render('read');
       }
       try { inst.on((l) => l.markdownUpdated(() => queue())); } catch { /* 旧版 Crepe 无 .on，靠下面的 input 兜底 */ }
       host.addEventListener('input', () => queue(), true); // 兜底：键入路径一定触发
@@ -1635,17 +1767,19 @@ async function memoryPanel(dirPath) {
   const d = await api('/api/project-memory?path=' + encodeURIComponent(dirPath));
   const body = ov.querySelector('.mem-body');
   if (!d.ok || !d.sessions.length) {
-    body.innerHTML = '<div class="empty-state">这个文件夹还没有 agent 会话记录<br><br><span class="usage-sub">在这里跑过 Claude Code / Codex 之后，历史会话会出现在这里</span></div>';
+    body.innerHTML = '<div class="empty-state">这个文件夹还没有 agent 会话记录<br><br><span class="usage-sub">在这里跑过 Claude Code / Codex / Kimi / opencode 之后，历史会话会出现在这里</span></div>';
     return;
   }
+  // 徽标/续接命令从注册表的 sessions 配置读，不再按 agent 逐个硬编码；没配置的兜底成首字母徽标
+  const sessCfg = (agent) => (AGENT_REGISTRY.find((a) => a.id === agent) || {}).sessions || {};
   body.innerHTML = d.sessions.map((s, i) => `
     <div class="mem-sess">
       <div class="mem-head" data-i="${i}">
-        <span class="mem-agent${s.agent === 'codex' ? ' codex' : ''}">${s.agent === 'codex' ? '>_' : 'C'}</span>
+        <span class="mem-agent${s.agent === 'claude' ? '' : ' codex'}">${escapeHtml(sessCfg(s.agent).badge || (s.agent || '?')[0].toUpperCase())}</span>
         <span class="mem-title">${escapeHtml(s.title || '（无标题会话）')}</span>
         <button class="ghost-btn mem-resume" data-i="${i}" title="在内嵌终端里接上这段会话的上下文继续">▶ 续上</button>
       </div>
-      <div class="mem-meta">${fmtTime(s.lastT)} · ${s.userMsgs} 条消息${s.files.length ? ` · 改了 ${s.files.length} 个文件` : ''}${s.skills.length ? ' · ' + s.skills.map((k) => `<i class="mem-skill">${escapeHtml(k)}</i>`).join(' ') : ''}</div>
+      <div class="mem-meta">${fmtTime(s.lastT)}${s.userMsgs != null ? ` · ${s.userMsgs} 条消息` : ''}${s.files.length ? ` · 改了 ${s.files.length} 个文件` : ''}${s.skills.length ? ' · ' + s.skills.map((k) => `<i class="mem-skill">${escapeHtml(k)}</i>`).join(' ') : ''}</div>
       ${s.files.length ? `<div class="mem-files hidden">${s.files.map((f) => `<div class="mem-file" data-p="${escapeHtml(f)}" title="${escapeHtml(f)}">${escapeHtml(f.startsWith(dirPath + '/') ? f.slice(dirPath.length + 1) : f.replace(state.home, '~'))}</div>`).join('')}</div>` : ''}
     </div>`).join('');
   body.querySelectorAll('.mem-head').forEach((h) => {
@@ -1658,7 +1792,8 @@ async function memoryPanel(dirPath) {
   body.querySelectorAll('.mem-resume').forEach((b) => {
     b.onclick = () => {
       const s = d.sessions[Number(b.dataset.i)];
-      const cmd = s.agent === 'codex' ? `codex resume ${s.id}` : `claude --dangerously-skip-permissions --resume ${s.id}`;
+      const tpl = sessCfg(s.agent).resumeCmd || 'claude --dangerously-skip-permissions --resume {id}';
+      const cmd = tpl.replace('{id}', s.id);
       close();
       term.runInDir(dirPath, cmd, '已在终端续上会话');
     };
@@ -2199,9 +2334,9 @@ function bindTerminalResizer() {
 
 // ---------- 微信 ClawBot：终端内的 IM 界面（设计方向 A）。桌面输入直连本机 claude/codex，可选连手机微信遥控 ----------
 const wechatView = {
-  offMsg: null, offQr: null, offConn: null, offExpired: null, offPower: null, onKey: null, onDoc: null,
+  offMsg: null, offQr: null, offConn: null, offExpired: null, onKey: null, onDoc: null,
   target: 'codex', targets: [], connected: false, cwdName: '', menuOpen: false,
-  connState: 'unknown', stayAwake: false, platform: '',
+  connState: 'unknown',
   el() { return $('#wechat-view'); },
   shown() { const e = this.el(); return e && !e.classList.contains('hidden'); },
   toggle() { this.shown() ? this.close() : this.open(); },
@@ -2223,9 +2358,6 @@ const wechatView = {
     this.offMsg = window.fanboxWechat.onMessage(() => this.loadChat());
     // 连接失效（轮询/探活发现 token 掉了）→ 立刻翻红 + 弹重连横幅，不让用户对着死连接干瞪眼
     this.offExpired = window.fanboxWechat.onExpired ? window.fanboxWechat.onExpired(() => this.setConn('expired')) : null;
-    // 免密规则丢失等导致后端强制关掉「不待机」→ 同步开关 UI
-    this.offPower = window.fanboxWechat.onPower ? window.fanboxWechat.onPower((m) => { this.stayAwake = !!(m && m.stayAwake); this.syncAwake(); }) : null;
-    this.loadPower();
     await this.detect();
   },
   close() {
@@ -2237,7 +2369,6 @@ const wechatView = {
   teardown() {
     if (this.offMsg) { this.offMsg(); this.offMsg = null; }
     if (this.offExpired) { this.offExpired(); this.offExpired = null; }
-    if (this.offPower) { this.offPower(); this.offPower = null; }
     this.teardownScan();
     this.menuOpen = false;
   },
@@ -2253,7 +2384,6 @@ const wechatView = {
         <span class="wx-name">微信 ClawBot</span>
         <span class="wx-status" id="wx-status"></span>
         <span class="wx-spacer"></span>
-        <button class="wx-awake hidden" id="wx-awake">🌙 离开不待机</button>
         <span class="wx-brain" id="wx-brain">连到 Codex <span class="caret">▾</span></span>
         <button class="wx-x" id="wx-close" title="收起（回到终端）">✕</button>
         <div class="wx-menu hidden" id="wx-menu"></div>
@@ -2277,11 +2407,9 @@ const wechatView = {
       </div>`;
     e.querySelector('#wx-close').onclick = () => this.close();
     e.querySelector('#wx-brain').onclick = (ev) => { ev.stopPropagation(); this.toggleMenu(); };
-    e.querySelector('#wx-awake').onclick = () => this.toggleAwake();
     e.querySelector('#wx-compact').onclick = (ev) => this.runCtxAction(ev.currentTarget, '整理中…', () => window.fanboxWechat.compact(), '已整理上下文');
     e.querySelector('#wx-new').onclick = (ev) => this.runCtxAction(ev.currentTarget, '处理中…', () => window.fanboxWechat.newConversation(), '已开启新对话');
     e.querySelector('#wx-reconnect-btn').onclick = () => this.connectPhone();
-    this.syncAwake();
     this.onDoc = (ev) => { if (this.menuOpen && !ev.target.closest('#wx-menu') && !ev.target.closest('#wx-brain')) this.closeMenu(); };
     document.addEventListener('click', this.onDoc, true);
   },
@@ -2333,35 +2461,8 @@ const wechatView = {
     const brain = e.querySelector('#wx-brain'); if (brain) brain.innerHTML = `连到 ${escapeHtml(this.label(this.target))} <span class="caret">${this.menuOpen ? '▴' : '▾'}</span>`;
     this.applyConn();
   },
-  // 「离开不待机」开关
-  async loadPower() {
-    if (!window.fanboxWechat.powerState) return;
-    const p = await window.fanboxWechat.powerState().catch(() => ({}));
-    this.platform = p.platform || (window.fanboxEnv && window.fanboxEnv.platform) || '';
-    this.stayAwake = !!p.stayAwake;
-    this.syncAwake();
-  },
-  syncAwake() {
-    const e = this.el(); if (!e) return;
-    const btn = e.querySelector('#wx-awake'); if (!btn) return;
-    const plat = this.platform || (window.fanboxEnv && window.fanboxEnv.platform) || state.platform || '';
-    const supported = plat === 'darwin' || plat === 'win32';
-    btn.classList.toggle('hidden', !supported); // macOS (pmset) / Windows (powerSaveBlocker)
-    btn.classList.toggle('on', this.stayAwake);
-    btn.textContent = this.stayAwake ? '🌙 离开不待机 · 开' : '🌙 离开不待机';
-    btn.title = this.stayAwake
-      ? (plat === 'win32'
-        ? '已开启：微信连着时尽量不睡眠，离开电脑也能远程操控。点击关闭'
-        : '已开启：微信连着时，合盖 / 息屏也不休眠，离开电脑也能远程操控。点击关闭')
-      : (plat === 'win32'
-        ? '开启后离开电脑也能用微信遥控：系统尽量不睡眠（断开微信自动恢复）'
-        : '开启后离开电脑也能用微信遥控：合盖 / 息屏不休眠（断开微信自动恢复）');
-  },
-  async toggleAwake() {
-    const r = await window.fanboxWechat.setStayAwake(!this.stayAwake).catch(() => ({}));
-    if (r && r.ok) { this.stayAwake = !!r.on; this.syncAwake(); toast(this.stayAwake ? '已开启 · 离开也能用微信遥控本机' : '已关闭 · 恢复正常休眠'); }
-    else { this.stayAwake = !!(r && r.on); this.syncAwake(); if (r && r.error && r.error !== 'cancelled' && r.error !== 'setup-cancelled') toast('开启失败：' + r.error, true); }
-  },
+  // Stay-awake moved to the sidebar Away section (fanboxPower); not duplicated on the WeChat panel.
+
   toggleMenu() { this.menuOpen ? this.closeMenu() : this.openMenu(); },
   openMenu() {
     this.menuOpen = true;
@@ -2488,15 +2589,19 @@ const wechatView = {
 // 三层：① AGENT_REGISTRY 内置 11 个主流 agent（图标在 /assets/agents/）
 //      ② 设置面板（⚙ 滑杆按钮）勾选启用哪些，存 config.json 的 enabledAgents，默认 claude + codex
 //      ③ config.json 的 agents 数组做高级自定义：同 id 覆盖内置命令，新 id 追加按钮
-// app: true 的是桌面应用（无终端 CLI 形态，官方确认），按钮改为 open -a / Start-Process 拉起
+// app: true 的是桌面应用（无终端 CLI 形态，官方确认），按钮改为 open -a / Start-Process 拉起，检测走 open -Ra
+// sessions: 有会话适配器的 agent 声明续接方式——badge 是项目记忆面板的徽标，resumeCmd 里 {id} 占位符替换成会话 id；
+//           没有 sessions 字段 = 该 agent 暂不支持会话回溯（服务端也没有对应适配器）
+
 const AGENT_REGISTRY = [
-  { id: 'claude', label: 'Claude Code', cmd: 'claude --dangerously-skip-permissions', bin: 'claude', install: 'npm install -g @anthropic-ai/claude-code' },
-  { id: 'codex', label: 'Codex', cmd: 'codex', bin: 'codex', install: 'npm install -g @openai/codex' },
+  { id: 'claude', label: 'Claude Code', cmd: 'claude --dangerously-skip-permissions', bin: 'claude', install: 'npm install -g @anthropic-ai/claude-code', sessions: { badge: 'C', resumeCmd: 'claude --dangerously-skip-permissions --resume {id}' } },
+  { id: 'codex', label: 'Codex', cmd: 'codex', bin: 'codex', install: 'npm install -g @openai/codex', sessions: { badge: '>_', resumeCmd: 'codex resume {id}' } },
   { id: 'hermes', label: 'Hermes Agent', cmd: 'hermes', bin: 'hermes', install: 'curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash' },
   { id: 'openclaw', label: 'OpenClaw', cmd: 'openclaw', bin: 'openclaw', install: 'npm install -g openclaw' },
-  { id: 'kimi', label: 'Kimi Code', cmd: 'kimi', bin: 'kimi', install: 'curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash' },
+  { id: 'kimi', label: 'Kimi Code', cmd: 'kimi', bin: 'kimi', install: 'curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash', sessions: { badge: 'K', resumeCmd: 'kimi -S {id}' } },
   { id: 'zcode', label: 'ZCode', cmd: 'open -a ZCode', app: 'ZCode', install: 'https://zcode.z.ai （桌面应用，官网下载）' },
-  { id: 'opencode', label: 'opencode', cmd: 'opencode', bin: 'opencode', install: 'curl -fsSL https://opencode.ai/install | bash' },
+  { id: 'opencode', label: 'opencode', cmd: 'opencode', bin: 'opencode', install: 'curl -fsSL https://opencode.ai/install | bash', sessions: { badge: 'oc', resumeCmd: 'opencode -s {id}' } },
+
   { id: 'pi', label: 'pi', cmd: 'pi', bin: 'pi', install: 'curl -fsSL https://pi.dev/install.sh | sh' },
   { id: 'codebuddy', label: 'CodeBuddy', cmd: 'codebuddy', bin: 'codebuddy', install: 'npm install -g @tencent-ai/codebuddy-code' },
   { id: 'workbuddy', label: 'WorkBuddy', cmd: 'open -a WorkBuddy', app: 'WorkBuddy', install: 'https://codebuddy.cn/work （桌面应用，官网下载）' },
@@ -2708,6 +2813,7 @@ function bindEvents() {
   usagePanel.bind();
   shotTray.init();
   $('#skills-entry').onclick = () => skillsView.show();
+  $('#cron-entry').onclick = () => cronPanel.show();
   $('#term-newtab').onclick = () => { wechatView.close(); term.newTab(); };
   $('#term-max').onclick = () => term.toggleMax();
   // 双击终端顶栏空白处（避开标签/按钮/输入框）= 铺满终端：agent 交互窗口最重要，给它一键放到最大
@@ -3282,6 +3388,28 @@ const term = {
     $('#btn-terminal').classList.remove('active');
     localStorage.setItem('fb_term_open', '0');
   },
+  // 标签布局快照：几个标签、各在哪个目录、谁在前台。renderTabs 是所有标签变化的必经之路，在那里落
+  persistTabs() {
+    try {
+      localStorage.setItem('fb_term_tabs', JSON.stringify({
+        tabs: this.sessions.map((s) => ({ cwd: s.cwd || s.startDir || '' })),
+        active: this.sessions.findIndex((s) => s.id === this.active),
+      }));
+    } catch { /* */ }
+  },
+  // 下次打开时还原上面的快照：进程不复活（shell 全新），但打开就是你离开时的格局
+  async restore(saved) {
+    $('#terminal-panel').classList.remove('hidden');
+    $('#terminal-resizer').classList.remove('hidden');
+    this.applyDock();
+    $('#btn-terminal').classList.add('active');
+    for (const t of (saved.tabs || []).slice(0, 8)) await this.newTab(t.cwd || undefined);
+    const want = this.sessions[saved.active];
+    if (want) this.activate(want.id);
+    if (!this.sessions.length) this.newTab(); // 快照坏了也保证有一个标签
+    player.refreshHint();
+    localStorage.setItem('fb_term_open', '1');
+  },
   applyDock() {
     const mb = $('#main-body');
     mb.classList.toggle('dock-bottom', this.dock === 'bottom');
@@ -3333,6 +3461,27 @@ const term = {
     const write = () => { if (this.active) this.input(this.active, shQuote(p) + ' '); const s = this.sessions.find((x) => x.id === this.active); if (s) s.xterm.focus(); };
     if (wasHidden) setTimeout(write, 280); else write();
   },
+  // ⌘V / 右键粘贴：文字照常粘。网页、微信里复制的图片在剪贴板上没有路径，
+  // navigator.clipboard 只看得见文字，于是这类粘贴一直是「按了没反应」——
+  // 走主进程把位图落盘成临时 png，再把路径插进去，终端里的 agent 就能读到那张图了。
+  async pasteInto(xterm) {
+    this.pastedAt = Date.now(); // 同步打点：⌘V 还会顺着系统「编辑>粘贴」再触发一次 paste 事件，让那边认出是同一次
+    const bridge = window.fanboxClipboard && window.fanboxClipboard.readForPaste;
+    if (!bridge) { // 浏览器版没有主进程桥，退回纯文字
+      try { const t = await navigator.clipboard.readText(); if (t) xterm.paste(t); } catch { /* 无权限时走 Electron 菜单兜底 */ }
+      return;
+    }
+    const r = await bridge().catch(() => null);
+    if (!r) return;
+    if (r.kind === 'text') { xterm.paste(r.text); return; }
+    if (r.kind === 'image' || r.kind === 'file') {
+      this.insertPath(r.path);
+      if (r.kind === 'image') toast('剪贴板图片已存成文件，路径已插入终端');
+      return;
+    }
+    if (r.kind === 'error') toast('读剪贴板失败：' + (r.error || ''), true);
+    else toast('剪贴板是空的');
+  },
   // 一键在终端启动 coding agent：当前标签是空闲 shell 就地启动；正跑着东西（claude/codex/任何前台程序）
   // 则新开标签，不打断也不把命令打进别的程序里
   async launchAgent(cmd) {
@@ -3383,6 +3532,21 @@ const term = {
       const s = this.sessions.find((x) => x.id === this.active); if (s) s.xterm.focus();
     };
     if (wasHidden) setTimeout(write, 300); else write();
+  },
+  // 把一条现成指令递给终端里的 agent（排版档的「送去…」用）：只粘不回车——
+  // 用户看得见指令原文、能改能拒，发布这种不可逆动作永远不由 FanBox 代按。
+  async sendPrompt(text) {
+    if (!this.available()) { toast('内嵌终端不可用（网页版没有终端）', true); return; }
+    if (!this.sessions.length || !this.active) { toast('先在右边开个终端、启动 agent，再送稿', true); return; }
+    const cur = this.sessions.find((x) => x.id === this.active);
+    if (!cur || cur.dead) { toast('当前终端标签已经关了', true); return; }
+    // 裸 shell 接不住自然语言，打进去只会 command not found——沿用「不往运行中的程序里乱打字」的老规矩
+    if (await this.isPlainShell(cur)) { toast('当前标签是裸 shell，先启动 Claude Code 或 Codex 再送', true); return; }
+    const wasHidden = $('#terminal-panel').classList.contains('hidden');
+    if (wasHidden) this.open();
+    const write = () => { this.input(this.active, '\x1b[200~' + text + '\x1b[201~'); cur.xterm.focus(); };
+    if (wasHidden) setTimeout(write, 300); else write();
+    toast('指令已递进终端，看一眼没问题就回车');
   },
   // 用户输入统一入口：记 lastInput 供回显过滤（击键/粘贴/拖路径/跟随 cd 引发的重绘不算 agent 干活）
   input(id, d) {
@@ -3559,11 +3723,9 @@ const term = {
         return true;
       }
       if (cmd && (e.key === 'v' || e.key === 'V')) {
-        // ⌘V 粘贴
+        // ⌘V 粘贴：文字/图片/文件都收（图片和文件落成路径）
         e.preventDefault();
-        navigator.clipboard.readText().then(text => {
-          if (text) xterm.paste(text);
-        }).catch(() => { /* 无权限时走Electron菜单兜底 */ });
+        term.pasteInto(xterm);
         return false;
       }
       if (cmd && (e.key === '=' || e.key === '+' || e.key === '0')) {
@@ -3588,11 +3750,24 @@ const term = {
       if (hasSel) items.push({ label: '复制', fn: () => {
         try { navigator.clipboard.writeText(xterm.getSelection()); xterm.clearSelection(); } catch {}
       }});
-      items.push({ label: '粘贴', fn: async () => {
-        try { const text = await navigator.clipboard.readText(); if (text) xterm.paste(text); } catch {}
-      }});
+      items.push({ label: '粘贴', fn: () => term.pasteInto(xterm) });
       popupMenu(e, items);
     });
+    // 走系统「编辑 > 粘贴」菜单的那条路：图片会以 File 形式落在 clipboardData 上，
+    // xterm 只认文字会当没粘。这里截下来落盘换路径，和 ⌘V 一个口径。
+    host.addEventListener('paste', (ev) => {
+      const files = ev.clipboardData ? [...(ev.clipboardData.files || [])] : [];
+      const img = files.find((f) => f.type.startsWith('image/'));
+      if (!img || !window.fanboxDrop) return; // 纯文字粘贴交给 xterm 自己处理
+      ev.preventDefault();
+      ev.stopPropagation(); // 别让 xterm 拿这个事件去粘一段空文本
+      if (Date.now() - (term.pastedAt || 0) < 800) return; // ⌘V 那条路已经插过了，别插第二遍
+      const ext = (img.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+      img.arrayBuffer()
+        .then((buf) => window.fanboxDrop.saveTemp(`粘贴图片-${fmtStamp()}.${ext}`, buf))
+        .then((r) => { if (r && r.ok) { term.insertPath(r.path); toast('剪贴板图片已存成文件，路径已插入终端'); } })
+        .catch(() => toast('剪贴板图片存盘失败', true));
+    }, true);
 
     // 选中即复制（iTerm2 默认行为）
     xterm.onSelectionChange(() => {
@@ -3949,6 +4124,7 @@ const term = {
     } catch { /* 通知不可用就算了 */ }
   },
   renderTabs() {
+    this.persistTabs(); // 标签的增删/切换/换目录都路过这里，顺手落快照供下次启动还原
     const bar = $('#term-tabs');
     bar.innerHTML = '';
     this.sessions.forEach((s) => {
@@ -4795,8 +4971,8 @@ async function liveMd(e, first) {
   const range = follow.lastContent == null ? null : changedRange(follow.lastContent, content);
   const nearEnd = !range || range.end >= content.split('\n').length - 4;
   const keep = body.scrollTop;
-  body.innerHTML = `<div class="md-body">${window.marked.parse(content)}</div>`;
-  if (window.hljs && !window.__noHljs) body.querySelectorAll('pre code').forEach((b) => { try { window.hljs.highlightElement(b); } catch { /* */ } });
+  body.innerHTML = '';
+  body.appendChild(mdReadBody(content, e.path));
   follow.lastContent = content;
   if (nearEnd) body.scrollTo({ top: body.scrollHeight, behavior: first ? 'auto' : 'smooth' });
   else body.scrollTop = keep;
@@ -4955,6 +5131,396 @@ if (window.fanboxFs) {
 }
 
 // ---------- 启动 ----------
+// ---------- 侧栏悬停解释卡：比原生 title 更快出现、能排版，鼠标移开即散 ----------
+function sideHoverCard(el, build) {
+  let card = null;
+  const hide = () => { if (card) { card.remove(); card = null; } };
+  el.addEventListener('mouseenter', () => {
+    hide();
+    card = document.createElement('div');
+    card.className = 'side-tip';
+    card.innerHTML = build();
+    document.body.appendChild(card);
+    const r = el.getBoundingClientRect();
+    let left = r.right + 10;
+    if (left + card.offsetWidth > window.innerWidth - 8) left = Math.max(8, window.innerWidth - card.offsetWidth - 8);
+    card.style.left = left + 'px';
+    card.style.top = Math.max(8, Math.min(r.top, window.innerHeight - card.offsetHeight - 8)) + 'px';
+  });
+  el.addEventListener('mouseleave', hide);
+  el.addEventListener('click', hide);
+  window.addEventListener('blur', hide);
+}
+
+// ---------- Sidebar Away: keep working / WeChat stay-awake (macOS pmset + Windows powerSaveBlocker) ----------
+const powerBar = {
+  st: null,
+  async init() {
+    if (!window.fanboxPower) return; // browser build / old preload: hide the whole section
+    const st = await window.fanboxPower.state().catch(() => null);
+    // macOS: pmset disablesleep; Windows: powerSaveBlocker (no elevation)
+    if (!st || (st.platform !== 'darwin' && st.platform !== 'win32')) return;
+    this.st = st;
+    $('#power-sec').classList.remove('hidden');
+    // Windows has no "lid closed" product language — use "keep awake while tasks run"
+    if (st.platform === 'win32') {
+      const lidLab = $('#pw-lid') && $('#pw-lid').querySelector('.pw-label');
+      if (lidLab) lidLab.textContent = '有任务时保持唤醒';
+    }
+    $('#pw-lid').onclick = () => this.flip('lid');
+    $('#pw-wechat').onclick = () => this.flip('wechat');
+    sideHoverCard($('#pw-lid'), () => this.tipLid());
+    sideHoverCard($('#pw-wechat'), () => this.tipWechat());
+    window.fanboxPower.onChange((m) => { this.st = m; this.sync(); });
+    this.sync();
+  },
+  async flip(kind) {
+    const st = this.st || {};
+    const on = !(kind === 'lid' ? st.lid : st.wechat);
+    const r = await (kind === 'lid' ? window.fanboxPower.setLid(on) : window.fanboxPower.setWechat(on)).catch(() => null);
+    if (r) { this.st = r; this.sync(); }
+    const winPlat = (this.st && this.st.platform) === 'win32';
+    if (r && r.ok) {
+      if (kind === 'lid') {
+        toast(r.on
+          ? (winPlat ? '已开启 · 有终端时尽量不睡眠' : '已开启 · agent 干活时合盖不休眠')
+          : (winPlat ? '已关闭 · 恢复正常休眠' : '已关闭 · 合盖照常休眠'));
+      } else toast(r.on ? '已开启 · 微信连着时不休眠' : '已关闭 · 恢复正常休眠');
+    } else if (r && r.error && r.error !== 'cancelled' && r.error !== 'setup-cancelled') toast('开启失败：' + r.error, true);
+  },
+  sync() {
+    const st = this.st; if (!st) return;
+    const row = (id, on, lit) => {
+      const el = $(id); if (!el) return;
+      el.querySelector('.pw-switch').classList.toggle('on', on);
+      el.querySelector('.pw-dot').classList.toggle('lit', lit);
+    };
+    row('#pw-lid', !!st.lid, !!st.lidHolding);
+    row('#pw-wechat', !!st.wechat, !!st.wechatHolding);
+  },
+  tipLid() {
+    const st = this.st || {};
+    const winPlat = st.platform === 'win32';
+    let now;
+    if (!st.lid) now = winPlat ? '现在：未开启，系统照常休眠' : '现在：未开启，合盖照常休眠';
+    else if (st.lidHolding) now = winPlat
+      ? `现在：${st.terms} 个终端开着 → 生效中，尽量不睡眠`
+      : `现在：${st.terms} 个终端开着，agent 正在干活 → 生效中，合盖也不休眠`;
+    else if (st.terms > 0) now = winPlat
+      ? `现在：${st.terms} 个终端开着但判定空闲 → 系统照常休眠`
+      : `现在：${st.terms} 个终端开着但都空闲 → 合盖照常休眠`;
+    else now = winPlat ? '现在：没有终端会话 → 系统照常休眠' : '现在：没有终端会话 → 合盖照常休眠';
+    if (winPlat) {
+      return `<b>有任务时保持唤醒</b>
+      <p>开启后：只要还有终端会话在跑，Windows 会尽量不进入睡眠，agent 任务能接着干；终端全退约两分钟后恢复正常休眠。笔记本合盖是否睡眠仍看「电源选项 → 合上盖子的操作」。</p>
+      <p class="tip-note">持续耗电发热，建议接电源并把合盖设为「不采取任何操作」。无需管理员密码（powerSaveBlocker）。</p>
+      <p class="tip-state">${escapeHtml(now)}</p>`;
+    }
+    return `<b>合盖继续干活</b>
+      <p>翻箱盯着每个终端窗口的工作状态。开启后：只要检测到有 agent 正在干活，合上盖子 Mac 也不休眠，任务接着跑；所有终端都空闲约两分钟后，自动恢复正常休眠——不会让 Mac 一直不睡。</p>
+      <p class="tip-note">合盖跑任务持续耗电发热，建议接电源。首次开启需输一次管理员密码（装一条仅限电源设置的免密规则）。</p>
+      <p class="tip-state">${escapeHtml(now)}</p>`;
+  },
+  tipWechat() {
+    const st = this.st || {};
+    const winPlat = st.platform === 'win32';
+    let now;
+    if (!st.wechat) now = winPlat ? '现在：未开启，系统照常休眠' : '现在：未开启，合盖照常休眠';
+    else if (st.wechatHolding) now = winPlat
+      ? '现在：微信已连接 → 生效中，尽量不睡眠'
+      : '现在：微信已连接 → 生效中，合盖 / 息屏也不休眠';
+    else now = '现在：微信未连接 → 暂不生效，连上后自动开始守护';
+    return `<b>微信遥控不断线</b>
+      <p>开启后，手机微信连着 ClawBot 期间${winPlat ? '系统尽量不睡眠' : '，合盖 / 息屏也不休眠'}——人在外面也能一直用微信遥控本机的 Claude Code / Codex；微信断开自动恢复正常休眠。</p>
+      <p class="tip-note">持续耗电发热，建议接电源。${winPlat ? '无需管理员密码（powerSaveBlocker）。' : '首次开启需输一次管理员密码（装一条仅限电源设置的免密规则）。'}</p>
+      <p class="tip-state">${escapeHtml(now)}</p>`;
+  },
+};
+
+// ---------- 版本号与版本历史：brand 旁小版本标，悬停看最新更新，点击看全部 ----------
+const verInfo = {
+  data: null,
+  async init() {
+    let d = null;
+    try { d = await api('/api/changelog'); } catch { /* 服务端没这接口就不显示 */ }
+    if (!d || !d.ok) return;
+    this.data = d;
+    const el = $('#ver-tag');
+    el.textContent = 'v' + d.version;
+    el.classList.remove('hidden');
+    el.onclick = (ev) => { ev.stopPropagation(); this.showAll(); };
+    sideHoverCard(el, () => this.tipHtml());
+  },
+  // Keep a Changelog 的英文分类词换成中文再渲染，用户不用猜 Added/Fixed 是啥
+  md(body) {
+    const zh = String(body || '')
+      .replace(/^### Added$/gm, '### 新增')
+      .replace(/^### Fixed$/gm, '### 修复')
+      .replace(/^### Changed$/gm, '### 改进')
+      .replace(/^### Removed$/gm, '### 移除')
+      .replace(/^### Deprecated$/gm, '### 弃用')
+      .replace(/^### Security$/gm, '### 安全');
+    return window.marked ? window.marked.parse(zh) : '<pre>' + escapeHtml(zh) + '</pre>';
+  },
+  tipHtml() {
+    const e = (this.data.entries || []).find((x) => x.version !== 'Unreleased' && x.body);
+    if (!e) return '<b>版本历史</b><p class="tip-note">点击查看全部版本更新</p>';
+    return `<b>v${escapeHtml(e.version)} 更新了什么</b><span class="tip-date">${escapeHtml(e.date || '')}</span>
+      <div class="tip-md">${this.md(e.body)}</div>
+      <p class="tip-note">点击版本号查看完整版本历史</p>`;
+  },
+  showAll() {
+    const old = $('.clog-overlay'); if (old) old.remove();
+    const entries = (this.data.entries || []).filter((e) => e.body);
+    const cur = this.data.version;
+    const ov = document.createElement('div');
+    ov.className = 'input-overlay clog-overlay';
+    ov.innerHTML = `<div class="input-dialog clog-dialog">
+      <div class="input-title">版本历史<span class="clog-sub">最新在上</span></div>
+      <div class="clog-body">${entries.map((e) => `
+        <div class="clog-entry">
+          <div class="clog-head">
+            <span class="clog-ver">${e.version === 'Unreleased' ? '开发中 · 未发布' : 'v' + escapeHtml(e.version)}</span>
+            ${e.date ? `<span class="clog-date">${escapeHtml(e.date)}</span>` : ''}
+            ${e.version === cur ? '<span class="clog-curtag">当前版本</span>' : ''}
+          </div>
+          <div class="clog-md">${this.md(e.body)}</div>
+        </div>`).join('') || '<div class="empty-state">还没有版本记录</div>'}</div></div>`;
+    document.body.appendChild(ov);
+    const onKey = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+    const close = () => { ov.remove(); document.removeEventListener('keydown', onKey, true); };
+    ov.onclick = (ev) => { if (ev.target === ov) close(); };
+    document.addEventListener('keydown', onKey, true);
+    // 更新说明里的外链（GitHub、参考项目等）交给系统浏览器，别把 app 自己导航走
+    ov.querySelector('.clog-body').addEventListener('click', (ev) => {
+      const a = ev.target.closest('a'); if (!a) return;
+      ev.preventDefault();
+      const href = a.getAttribute('href') || '';
+      if (/^https?:/.test(href)) { window.fanboxUpdate ? window.fanboxUpdate.open(href) : window.open(href, '_blank'); }
+    });
+  },
+};
+
+// ---------- 定时任务：到点自动开一个终端窗口跑 agent / 命令（侧栏入口 + 管理弹层）----------
+const cronPanel = {
+  data: null, editing: null, ov: null,
+  WD: ['日', '一', '二', '三', '四', '五', '六'],
+  async syncBadge() {
+    try { this.data = await api('/api/cron'); } catch { return; }
+    const n = (this.data.tasks || []).filter((t) => t.enabled).length;
+    const el = $('#cron-count'); if (!el) return;
+    el.textContent = n; el.classList.toggle('hidden', !n);
+  },
+  async show() {
+    const old = $('.cron-overlay'); if (old) old.remove();
+    const ov = this.ov = document.createElement('div');
+    ov.className = 'input-overlay cron-overlay';
+    ov.innerHTML = `<div class="input-dialog cron-dialog">
+      <div class="input-title">定时任务<span class="cron-sub">到点自动开一个终端窗口干活</span></div>
+      <div class="cron-body"><div class="cmdk-loading">读取任务中…</div></div></div>`;
+    document.body.appendChild(ov);
+    const onKey = (ev) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      if (this.editing != null) { this.editing = null; this.render(); } else this.close();
+    };
+    this.close = () => { ov.remove(); document.removeEventListener('keydown', onKey, true); this.ov = null; };
+    ov.onclick = (ev) => { if (ev.target === ov) this.close(); };
+    document.addEventListener('keydown', onKey, true);
+    this.editing = null;
+    await this.reload();
+  },
+  async reload() {
+    try { this.data = await api('/api/cron'); } catch { this.data = { tasks: [] }; }
+    if (this.ov) this.render();
+    this.syncBadgeLocal();
+  },
+  syncBadgeLocal() {
+    const n = ((this.data && this.data.tasks) || []).filter((t) => t.enabled).length;
+    const el = $('#cron-count'); if (el) { el.textContent = n; el.classList.toggle('hidden', !n); }
+  },
+  agentLabel(t) { return t.agent === 'codex' ? 'Codex' : t.agent === 'shell' ? 'Shell' : 'Claude Code'; },
+  schedLabel(s) {
+    if (!s) return '';
+    if (s.type === 'at') return '一次 · ' + this.fmtAbs(new Date(s.time).getTime());
+    if (s.type === 'every') { const m = Number(s.minutes) || 0; return m % 60 === 0 ? `每 ${m / 60} 小时` : `每 ${m} 分钟`; }
+    if (s.type === 'cron') {
+      const p = String(s.expr || '').trim().split(/\s+/);
+      if (p.length === 5) {
+        const [mi, h, dom, mon, dow] = p;
+        const hm = () => `${h}:${mi.padStart(2, '0')}`;
+        if (/^\d+$/.test(mi) && /^\d+$/.test(h) && dom === '*' && mon === '*' && dow === '*') return `每天 ${hm()}`;
+        if (/^\d+$/.test(mi) && /^\d+$/.test(h) && dom === '*' && mon === '*' && /^\d$/.test(dow)) return `每周${this.WD[+dow % 7]} ${hm()}`;
+        if (/^\d+$/.test(mi) && h === '*' && dom === '*' && mon === '*' && dow === '*') return `每小时的第 ${+mi} 分钟`;
+        if (/^\d+$/.test(mi) && /^\d+$/.test(h) && /^\d+$/.test(dom) && mon === '*' && dow === '*') return `每月 ${+dom} 日 ${hm()}`;
+      }
+      return 'cron · ' + s.expr;
+    }
+    return '';
+  },
+  fmtAbs(ms) {
+    if (!ms || !isFinite(ms)) return '—';
+    const d = new Date(ms); const now = new Date();
+    const hm = `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+    const sameDay = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+    if (sameDay(d, now)) return `今天 ${hm}`;
+    const tomorrow = new Date(now.getTime() + 86400000);
+    if (sameDay(d, tomorrow)) return `明天 ${hm}`;
+    return `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
+  },
+  lastBadge(t) {
+    const h = (t.history || [])[0];
+    if (!h) return '';
+    if (h.missed) return `<i class="cron-last warn">上次到点时 FanBox 没开着，跳过了</i>`;
+    if (h.ok) return `<i class="cron-last ok">上次 ${fmtTime(h.t)} ✓</i>`;
+    return `<i class="cron-last bad" title="${escapeHtml(h.error || '')}">上次失败 ✗</i>`;
+  },
+  render() {
+    const body = this.ov.querySelector('.cron-body');
+    if (this.editing != null) return this.renderForm(body);
+    const d = this.data || {}; const tasks = d.tasks || [];
+    body.innerHTML = `${d.desktop === false ? '<div class="cron-note">浏览器版只能管理任务；到点开窗执行需要 FanBox 桌面版开着</div>' : ''}
+      <div class="cron-list">${tasks.map((t) => {
+        const meta = `${this.schedLabel(t.schedule)} · ${this.agentLabel(t)} · ${baseOf(t.cwd || '') || '~'}${t.enabled && t.nextRun ? ` · 下次 ${this.fmtAbs(t.nextRun)}` : ''}`;
+        return `
+        <div class="cron-row ${t.enabled ? '' : 'off'}" data-id="${t.id}">
+          <label class="pw-switch ${t.enabled ? 'on' : ''}" data-act="toggle" title="${t.enabled ? '停用（保留任务，不再到点执行）' : '启用'}"><i></i></label>
+          <div class="cron-main">
+            <div class="cron-name"><span class="cron-name-text" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</span>${t.createdBy === 'agent' ? '<i class="cron-src">agent 设的</i>' : ''}${t.full ? '<i class="cron-full" title="全自动：执行时跳过所有确认">全自动</i>' : ''}</div>
+            <div class="cron-meta" title="${escapeHtml(meta)}">${escapeHtml(meta)} ${this.lastBadge(t)}</div>
+          </div>
+          <button class="cron-btn" data-act="run" title="立即执行一次（新开终端窗口）">▶</button>
+          <button class="cron-btn" data-act="edit" title="编辑">编辑</button>
+          <button class="cron-btn danger" data-act="del" title="删除">删除</button>
+        </div>`;
+      }).join('') || `<div class="empty-state">还没有定时任务<br><br><span class="usage-sub">点下方「新建」，或在终端里对 agent 说一句<br>「每天早上 9 点到写作目录整理灵感箱」</span></div>`}
+      </div>
+      <div class="cron-foot">
+        <button class="cron-add" id="cron-new">＋ 新建定时任务</button>
+        <span class="cron-hint">终端里的 agent 也能帮你设：白话说清「什么时候、去哪个目录、干什么」就行</span>
+      </div>`;
+    body.querySelector('#cron-new').onclick = () => { this.editing = {}; this.render(); };
+    body.querySelectorAll('.cron-row').forEach((row) => {
+      const t = tasks.find((x) => x.id === row.dataset.id);
+      row.querySelector('[data-act=toggle]').onclick = async () => {
+        const r = await apiPost('/api/cron/toggle', { id: t.id, enabled: !t.enabled });
+        if (!r.ok) toast(r.error || '操作失败', true);
+        this.reload();
+      };
+      row.querySelector('[data-act=run]').onclick = async () => {
+        const r = await apiPost('/api/cron/run', { id: t.id });
+        toast(r.ok ? '已开一个终端窗口执行' : (r.error || '执行失败'), !r.ok);
+        this.reload();
+      };
+      row.querySelector('[data-act=edit]').onclick = () => { this.editing = t; this.render(); };
+      const del = row.querySelector('[data-act=del]');
+      del.onclick = async () => {
+        if (!del.dataset.armed) { del.dataset.armed = '1'; del.textContent = '确认删除?'; setTimeout(() => { del.dataset.armed = ''; del.textContent = '删除'; }, 2500); return; }
+        await apiPost('/api/cron/delete', { id: t.id });
+        this.reload();
+      };
+    });
+  },
+  // 编辑表单：六种时间预设 → schedule 对象；保存前实时预告接下来 3 次执行
+  presetOf(s) {
+    if (!s || !s.type) return 'daily';
+    if (s.type === 'at') return 'once';
+    if (s.type === 'every') return 'every';
+    const l = this.schedLabel(s);
+    if (l.startsWith('每天')) return 'daily';
+    if (l.startsWith('每周')) return 'weekly';
+    if (l.startsWith('每小时')) return 'hourly';
+    return 'cron';
+  },
+  renderForm(body) {
+    const t = this.editing;
+    const s = t.schedule || {};
+    const p = String((s.expr || '')).trim().split(/\s+/);
+    const pad = (n) => String(n).padStart(2, '0');
+    const time0 = p.length === 5 && /^\d+$/.test(p[0]) && /^\d+$/.test(p[1]) ? `${pad(p[1])}:${pad(p[0])}` : '09:00';
+    const preset = this.presetOf(s);
+    body.innerHTML = `<div class="cron-form">
+      <label class="cron-fl">想让它干什么<textarea id="cr-prompt" class="input-field" rows="3" placeholder="白话写就行，如：把灵感箱里的碎片整理进对应选题；Shell 模式则填要执行的命令">${escapeHtml(t.prompt || '')}</textarea></label>
+      <div class="cron-grid">
+        <label class="cron-fl">谁来干<select id="cr-agent" class="input-field">
+          <option value="claude" ${t.agent === 'codex' || t.agent === 'shell' ? '' : 'selected'}>Claude Code</option>
+          <option value="codex" ${t.agent === 'codex' ? 'selected' : ''}>Codex</option>
+          <option value="shell" ${t.agent === 'shell' ? 'selected' : ''}>Shell 命令</option>
+        </select></label>
+        <label class="cron-fl">在哪个目录<input id="cr-cwd" class="input-field" value="${escapeHtml(t.cwd || state.cwd || state.home || '')}" /></label>
+      </div>
+      <label class="cron-check" id="cr-full-wrap"><input type="checkbox" id="cr-full" ${t.full ? 'checked' : ''} /> 全自动：跳过所有确认（无人值守时用，agent 会直接改文件、跑命令）</label>
+      <div class="cron-grid">
+        <label class="cron-fl">什么时候<select id="cr-preset" class="input-field">
+          <option value="daily" ${preset === 'daily' ? 'selected' : ''}>每天</option>
+          <option value="weekly" ${preset === 'weekly' ? 'selected' : ''}>每周</option>
+          <option value="hourly" ${preset === 'hourly' ? 'selected' : ''}>每小时</option>
+          <option value="every" ${preset === 'every' ? 'selected' : ''}>每隔一段时间</option>
+          <option value="once" ${preset === 'once' ? 'selected' : ''}>某个时间点，一次</option>
+          <option value="cron" ${preset === 'cron' ? 'selected' : ''}>cron 表达式</option>
+        </select></label>
+        <div class="cron-fl" id="cr-sched-fields"></div>
+      </div>
+      <div class="cron-preview" id="cr-preview"></div>
+      <label class="cron-fl">名称（可不填）<input id="cr-name" class="input-field" value="${escapeHtml(t.name || '')}" placeholder="不填就取任务内容开头" /></label>
+      <div class="cron-form-foot">
+        <button class="cron-add" id="cr-save">保存</button>
+        <button class="cron-btn" id="cr-cancel">取消</button>
+      </div>
+    </div>`;
+    const fields = body.querySelector('#cr-sched-fields');
+    const renderFields = (pr) => {
+      if (pr === 'daily') fields.innerHTML = `<input type="time" id="cr-time" class="input-field" value="${time0}" />`;
+      else if (pr === 'weekly') fields.innerHTML = `<span class="cron-inline"><select id="cr-dow" class="input-field">${this.WD.map((w, i) => `<option value="${i}" ${p[4] == i ? 'selected' : ''}>周${w}</option>`).join('')}</select><input type="time" id="cr-time" class="input-field" value="${time0}" /></span>`;
+      else if (pr === 'hourly') fields.innerHTML = `<span class="cron-inline">第 <input type="number" id="cr-min" class="input-field" min="0" max="59" value="${/^\d+$/.test(p[0]) ? +p[0] : 0}" style="width:64px" /> 分钟</span>`;
+      else if (pr === 'every') { const m = Number(s.minutes) || 120; fields.innerHTML = `<span class="cron-inline">每 <input type="number" id="cr-n" class="input-field" min="1" value="${m % 60 === 0 ? m / 60 : m}" style="width:64px" /> <select id="cr-unit" class="input-field"><option value="60" ${m % 60 === 0 ? 'selected' : ''}>小时</option><option value="1" ${m % 60 === 0 ? '' : 'selected'}>分钟</option></select></span>`; }
+      else if (pr === 'once') { const v = s.time ? s.time.slice(0, 16) : ''; fields.innerHTML = `<input type="datetime-local" id="cr-at" class="input-field" value="${escapeHtml(v)}" />`; }
+      else fields.innerHTML = `<input id="cr-expr" class="input-field" value="${escapeHtml(s.expr || '0 9 * * *')}" placeholder="分 时 日 月 周，如 30 8 * * 1-5" />`;
+      fields.querySelectorAll('input,select').forEach((el) => { el.oninput = preview; el.onchange = preview; });
+    };
+    const buildSchedule = () => {
+      const pr = body.querySelector('#cr-preset').value;
+      const tm = () => { const [h, mi] = (body.querySelector('#cr-time').value || '9:00').split(':'); return { h: +h, mi: +mi }; };
+      if (pr === 'daily') { const { h, mi } = tm(); return { type: 'cron', expr: `${mi} ${h} * * *` }; }
+      if (pr === 'weekly') { const { h, mi } = tm(); return { type: 'cron', expr: `${mi} ${h} * * ${body.querySelector('#cr-dow').value}` }; }
+      if (pr === 'hourly') return { type: 'cron', expr: `${+body.querySelector('#cr-min').value || 0} * * * *` };
+      if (pr === 'every') return { type: 'every', minutes: Math.max(1, (+body.querySelector('#cr-n').value || 1) * (+body.querySelector('#cr-unit').value || 1)) };
+      if (pr === 'once') return { type: 'at', time: body.querySelector('#cr-at').value };
+      return { type: 'cron', expr: body.querySelector('#cr-expr').value };
+    };
+    let pvTimer = null;
+    const preview = () => {
+      clearTimeout(pvTimer);
+      pvTimer = setTimeout(async () => {
+        const el = body.querySelector('#cr-preview'); if (!el) return;
+        const r = await apiPost('/api/cron/preview', { schedule: buildSchedule() }).catch(() => null);
+        if (!r || !r.ok) { el.innerHTML = `<i class="bad-t">${escapeHtml((r && r.error) || '时间规则无法解析')}</i>`; return; }
+        // 分隔用「 · 」：i18n 的 EN 模式按 · 拆段逐段翻，每个时间片段都能命中规则
+        el.textContent = r.times.length ? '将执行于：' + r.times.map((x) => this.fmtAbs(x)).join(' · ') + (r.times.length > 1 ? ' · …' : '') : '不会再执行';
+      }, 250);
+    };
+    body.querySelector('#cr-preset').onchange = () => { renderFields(body.querySelector('#cr-preset').value); preview(); };
+    body.querySelector('#cr-agent').onchange = () => { body.querySelector('#cr-full-wrap').style.display = body.querySelector('#cr-agent').value === 'shell' ? 'none' : ''; };
+    body.querySelector('#cr-agent').onchange();
+    body.querySelector('#cr-cancel').onclick = () => { this.editing = null; this.render(); };
+    body.querySelector('#cr-save').onclick = async () => {
+      const payload = {
+        id: t.id, name: body.querySelector('#cr-name').value, cwd: body.querySelector('#cr-cwd').value,
+        agent: body.querySelector('#cr-agent').value, prompt: body.querySelector('#cr-prompt').value,
+        full: body.querySelector('#cr-full').checked, schedule: buildSchedule(),
+        enabled: t.enabled !== false,
+      };
+      const r = await apiPost('/api/cron/save', payload);
+      if (!r.ok) { toast(r.error || '保存失败', true); return; }
+      this.editing = null;
+      toast('已保存');
+      this.reload();
+    };
+    renderFields(preset);
+    preview();
+  },
+};
+
 async function init() {
   // 桌面 app：标记 html，给顶部交通灯/标题栏留位、顶部可拖拽
   if (window.fanboxEnv && window.fanboxEnv.isDesktopApp) {
@@ -4996,11 +5562,23 @@ async function init() {
   document.querySelectorAll('#theme-switch .theme-seg button').forEach((b) => { b.onclick = () => applyTheme(b.dataset.skin); });
   await loadRoots();
   await loadFavorites();
+  powerBar.init();
+  verInfo.init();
+  cronPanel.syncBadge();
   loadAgentProjects();
   setInterval(loadAgentProjects, 120000); // agent 项目入口保持新鲜（服务端有 60s 缓存，开销很小）
-  await navigate(state.home, false);
-  // 恢复上次终端开合状态（dock 方位已由 applyDock 自带记忆）
-  if (localStorage.getItem('fb_term_open') === '1' && term.available()) term.open();
+  // 回到上次浏览的目录（目录已不存在则退回主目录）
+  const lastDir = localStorage.getItem('fb_last_cwd');
+  await navigate(lastDir || state.home, false);
+  if (!state.cwd) await navigate(state.home, false);
+  // 恢复上次终端开合与标签布局（几个标签、各在哪个目录、谁在前台；进程不复活）。
+  // 首次安装没有任何记录 → 默认打开：侧栏 + 文件区 + 终端的三栏就是 FanBox 的本来形态
+  if (term.available() && localStorage.getItem('fb_term_open') !== '0') {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem('fb_term_tabs') || 'null'); } catch { /* */ }
+    if (saved && Array.isArray(saved.tabs) && saved.tabs.length) await term.restore(saved);
+    else term.open();
+  }
   maybeShowGuide();
   bindUpdateNotice();
 }
@@ -5027,8 +5605,12 @@ function bindUpdateNotice() {
             ? '已下载并打开安装包，按提示完成覆盖安装'
             : '已下载并打开 dmg，拖进 Applications 完成更新';
           dl.remove();
+        } else {
+          dl.disabled = false; dl.textContent = '下载更新';
+          // no-asset: release has no installer for this arch; main already opened the release page
+          toast(r && r.error === 'no-asset' ? `这个版本没有 ${r.arch} 安装包，已打开发布页` : '下载失败，去发布页手动下吧', true);
         }
-        else { dl.disabled = false; dl.textContent = '下载更新'; toast('下载失败，去发布页手动下吧', true); }
+
       };
       if (window.fanboxUpdate.onProgress) window.fanboxUpdate.onProgress((m) => {
         if (m.state === 'downloading' && dl.disabled) dl.textContent = m.pct >= 0 ? `下载中 ${m.pct}%` : '下载中…';

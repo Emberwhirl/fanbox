@@ -15,7 +15,7 @@
       <div class="brand">
         <span class="logo"><svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor" fill-opacity="0.13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.3 7 12 12 20.7 7"/><line x1="12" y1="22" x2="12" y2="12"/></svg></span>
         <div>
-          <div class="brand-name">FanBox</div>
+          <div class="brand-name">FanBox <a id="ver-tag" class="brand-ver hidden"></a></div>
           <div class="brand-sub">Coding Agent的驾驶舱</div>
         </div>
       </div>
@@ -44,12 +44,22 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><line x1="17.5" y1="14" x2="17.5" y2="21"/><line x1="14" y1="17.5" x2="21" y2="17.5"/></svg>
         Skills 透视
       </div>
+      <div id="cron-entry" class="nav-title side-link" title="到点自动开一个终端窗口跑 agent 或命令：固定时间、每天/每周、cron 周期都行；也能在终端里用自然语言让 agent 帮你设">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="8"/><polyline points="12 9 12 13 15 15"/><line x1="9" y1="2" x2="15" y2="2"/></svg>
+        定时任务 <span id="cron-count" class="cron-count hidden"></span>
+      </div>
       <div id="usage-sec">
         <div class="nav-title" id="usage-toggle" title="Claude Code / Codex 用量——官方限额窗口 + 本机会话日志，不用开着它们">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
           Agent 用量 <span id="usage-arrow">▸</span>
         </div>
         <div id="usage-body" class="hidden"></div>
+      </div>
+      <!-- 离开电脑：两个电源开关（macOS 桌面版才显示，app.js 里按 fanboxPower 判定） -->
+      <div id="power-sec" class="hidden">
+        <div class="nav-title"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg> 离开电脑</div>
+        <div class="pw-row" id="pw-lid"><span class="pw-dot"></span><span class="pw-label">合盖继续干活</span><label class="pw-switch"><i></i></label></div>
+        <div class="pw-row" id="pw-wechat"><span class="pw-dot"></span><span class="pw-label">微信遥控不断线</span><label class="pw-switch"><i></i></label></div>
       </div>
       <div class="theme-switch" id="theme-switch">
         <div class="theme-switch-label">皮肤</div>
@@ -201,6 +211,9 @@
   <script src="/vendor/xterm/addon-clipboard.js" onerror="window.__noClipboard=1"></script>
   <script src="/i18n-dict.js" onerror="window.__noDict=1"></script>
   <script src="/i18n.js"></script>
+  <!-- md 排版档：主题表 + 排版/复制引擎，只在 md 编辑器点「排版」时才用得上 -->
+  <script src="/typeset-styles.js"></script>
+  <script src="/typeset.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

@@ -697,8 +697,10 @@ async function releasePrepare(b) {
 }
 
 // ---------- 项目记忆：这个文件夹里 AI 干过什么 ----------
-// 数据源：~/.claude/projects/<munge(cwd)>/*.jsonl + ~/.codex/sessions/**/rollout-*.jsonl（头部 cwd 匹配）。
-// 单会话解析结果按 (size, mtime) 缓存，再次打开只重解析有变化的文件。
+// 数据源：~/.claude/projects/<munge(cwd)>/*.jsonl + ~/.codex/sessions/**/rollout-*.jsonl（头部 cwd 匹配）
+//        + ~/.kimi-code/session_index.jsonl（全局索引→state.json）+ ~/.local/share/opencode/storage/session/**/ses_*.json（directory 字段匹配）。
+// 单会话解析结果按 (size, mtime) 缓存，再次打开只重解析有变化的文件。统一会话对象 {id, agent, title, firstT, lastT, userMsgs, files, skills}。
+// userMsgs 允许为 null 表示「未统计」（kimi/opencode 只读元数据不解析消息正文），前端遇到 null 不渲染条数；0 保留给「确实数过是零条」。
 const projMemCache = new Map(); // file -> { size, mtimeMs, sess }
 const mungeClaudeDir = (cwd) => cwd.replace(/[^A-Za-z0-9]/g, '-');
 
@@ -791,6 +793,69 @@ async function parseCodexSession(fp, st) {
   return sess;
 }
 
+// Kimi Code 适配器：~/.kimi-code/session_index.jsonl 是现成的全局索引（sessionId → sessionDir + workDir），
+// 按 workDir 过滤后逐个读 state.json 拿标题/时间戳，完全不用碰 wire.jsonl 协议日志。
+// 消息数/改过的文件埋在 wire.jsonl 里（协议带版本号 1.4，会漂移），列表页不值得挖——给默认值。
+const KIMI_HOME = path.join(HOME, '.kimi-code');
+async function listKimiSessions(cwd) {
+  const out = [];
+  let idx;
+  try { idx = await fsp.readFile(path.join(KIMI_HOME, 'session_index.jsonl'), 'utf8'); } catch { return out; } // 没装/没用过 Kimi Code
+  for (const line of idx.split('\n')) {
+    if (!line.includes('"workDir"')) continue;
+    let rec;
+    try { rec = JSON.parse(line); } catch { continue; }
+    if (rec.workDir !== cwd || !rec.sessionId || !rec.sessionDir) continue;
+    const fp = path.join(String(rec.sessionDir), 'state.json');
+    try {
+      const st = await fsp.stat(fp);
+      const hit = projMemCache.get(fp);
+      if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) { out.push(hit.sess); continue; }
+      const d = JSON.parse(await fsp.readFile(fp, 'utf8'));
+      const title = String(d.title || d.lastPrompt || '').trim().slice(0, 160);
+      const sess = { id: rec.sessionId, agent: 'kimi', title, firstT: Date.parse(d.createdAt) || 0, lastT: Date.parse(d.updatedAt) || st.mtimeMs, userMsgs: null, files: [], skills: [] };
+      projMemCache.set(fp, { size: st.size, mtimeMs: st.mtimeMs, sess });
+      out.push(sess);
+    } catch { /* 单条会话坏了不拖垮整个列表 */ }
+  }
+  return out;
+}
+
+// opencode 适配器：~/.local/share/opencode/storage/session/<projectID>/ses_*.json 单文件即全部元数据，
+// 按 JSON 里的 directory 字段过滤（目录名是 projectID hash，没法从 cwd 正向算，只能全扫——文件小，先 stat 排序封顶控 IO）。
+// summary.files 只有改动数量没有路径列表，前端要的是可点击的路径，所以 files 给空数组。
+const OPENCODE_SESS = path.join(HOME, '.local', 'share', 'opencode', 'storage', 'session');
+async function listOpencodeSessions(cwd) {
+  const out = [];
+  let projDirs;
+  try { projDirs = await fsp.readdir(OPENCODE_SESS, { withFileTypes: true }); } catch { return out; } // 没装/没用过 opencode
+  const files = [];
+  for (const pd of projDirs) {
+    if (!pd.isDirectory()) continue;
+    let names;
+    try { names = await fsp.readdir(path.join(OPENCODE_SESS, pd.name)); } catch { continue; }
+    for (const n of names) {
+      if (!n.startsWith('ses_') || !n.endsWith('.json')) continue;
+      const fp = path.join(OPENCODE_SESS, pd.name, n);
+      try { files.push({ fp, st: await fsp.stat(fp) }); } catch { /* */ }
+    }
+  }
+  files.sort((a, b) => b.st.mtimeMs - a.st.mtimeMs);
+  for (const { fp, st } of files.slice(0, 200)) {
+    try {
+      const hit = projMemCache.get(fp);
+      if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) { if (hit.dir === cwd) out.push(hit.sess); continue; }
+      const d = JSON.parse(await fsp.readFile(fp, 'utf8'));
+      const dir = String(d.directory || '');
+      const t = d.time || {};
+      const sess = { id: String(d.id || path.basename(fp, '.json')), agent: 'opencode', title: String(d.title || '').trim().slice(0, 160), firstT: Number(t.created) || 0, lastT: Number(t.updated) || st.mtimeMs, userMsgs: null, files: [], skills: [] };
+      projMemCache.set(fp, { size: st.size, mtimeMs: st.mtimeMs, sess, dir });
+      if (dir === cwd) out.push(sess);
+    } catch { /* 单条会话坏了不拖垮整个列表 */ }
+  }
+  return out;
+}
+
 async function projectMemory(p) {
   const cwd = resolvePath(p);
   const sessions = [];
@@ -824,6 +889,9 @@ async function projectMemory(p) {
       try { if ((await readCwdFromHead(fp, 16384)) === cwd) sessions.push(await parseCodexSession(fp, st)); } catch { /* */ }
     }
   } catch { /* 没用过 Codex */ }
+  // Kimi Code / opencode：适配器内部已各自兜底，这里再包一层——任何一家格式漂移都不拖垮整个面板
+  try { sessions.push(...await listKimiSessions(cwd)); } catch { /* */ }
+  try { sessions.push(...await listOpencodeSessions(cwd)); } catch { /* */ }
   // 没有正经标题的会话（纯 warmup / 空会话）沉底，按最近活跃排
   sessions.sort((a, b) => (b.title ? 1 : 0) - (a.title ? 1 : 0) || b.lastT - a.lastT);
   sessions.sort((a, b) => b.lastT - a.lastT);
@@ -1584,6 +1652,90 @@ async function pruneThumbs(maxBytes = 400 * 1024 * 1024) {
     stats.sort((a, b) => a.t - b.t); // 最旧的先删
     for (const f of stats) { if (total <= maxBytes) break; await fsp.unlink(f.fp).catch(() => {}); total -= f.size; }
   } catch { /* 目录不存在等，忽略 */ }
+}
+
+// 排版档把图片转 base64 时用：渲染进程受同源策略限制，抓不到图床里的外链图，
+// 由本机服务代抓一次（带上源站 referer，绕开常见的防盗链）。只放行 http(s)，只回图片。
+// 代抓目标限定公网：本机服务权限大，不给页面借道探测回环/内网/云元数据地址的机会；响应体设上限防撑爆内存。
+// 三个易被绕过的点都要堵：①IPv6 URL 的 hostname 自带方括号（[::1]），丢给 DNS 查会被泛解析域名放行，
+// 所以 IP 字面量剥括号后直接按网段判、绝不走 DNS；②长写法（0:0:0:0:0:0:0:1）正则会漏，按网段用 BlockList 算，
+// 正则只兜底映射写法；③重定向逐跳校验——follow 模式下中间跳的内网请求已经真实发出去了。
+const PRIVATE_HOST_RE = /^(127\.|10\.|0\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[789]\d|1[01]\d|12[0-7])\.)|^(::1$|::ffff:|f[cd]|fe80:)/i;
+const PRIVATE_NETS = (() => {
+  const bl = new (require('net').BlockList)();
+  [['127.0.0.0', 8], ['10.0.0.0', 8], ['0.0.0.0', 8], ['192.168.0.0', 16], ['169.254.0.0', 16], ['172.16.0.0', 12], ['100.64.0.0', 10]]
+    .forEach(([a, p]) => bl.addSubnet(a, p, 'ipv4'));
+  // 注意别加 ::ffff:0:0/96：BlockList 会把普通 IPv4 也算进这条 v6 规则，公网图会被全拦。映射地址在下面单独拆。
+  [['::1', 128], ['fc00::', 7], ['fe80::', 10]]
+    .forEach(([a, p]) => bl.addSubnet(a, p, 'ipv6'));
+  return bl;
+})();
+// ::ffff:127.0.0.1 和 ::ffff:7f00:1 是同一个回环的两种写法，取出内嵌的 v4 再判
+function unmapV4(ip) {
+  const m = /^::ffff:(.+)$/i.exec(ip);
+  if (!m) return null;
+  if (require('net').isIPv4(m[1])) return m[1];
+  const hex = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(m[1]);
+  if (!hex) return null;
+  const n = (parseInt(hex[1], 16) << 16) | parseInt(hex[2], 16);
+  return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.');
+}
+function isPrivateIp(ip) {
+  const fam = require('net').isIP(ip);
+  if (!fam) return false;
+  if (fam === 6) {
+    const v4 = unmapV4(ip);
+    if (v4) return isPrivateIp(v4);
+    return PRIVATE_NETS.check(ip, 'ipv6') || PRIVATE_HOST_RE.test(ip);
+  }
+  return PRIVATE_NETS.check(ip, 'ipv4') || PRIVATE_HOST_RE.test(ip);
+}
+async function assertPublicHost(hostname) {
+  const bare = String(hostname || '').replace(/^\[|\]$/g, ''); // IPv6 hostname 形如 [::1]
+  if (require('net').isIP(bare)) {
+    if (isPrivateIp(bare)) throw new Error('只代抓公网图片地址');
+    return;
+  }
+  const addrs = await require('dns').promises.lookup(bare, { all: true, verbatim: true });
+  if (!addrs.length || addrs.some((a) => isPrivateIp(a.address))) throw new Error('只代抓公网图片地址');
+}
+const PROXY_IMG_MAX_BYTES = 20 * 1024 * 1024;
+const PROXY_IMG_MAX_HOPS = 5;
+async function proxyImage(res, url) {
+  try {
+    if (!/^https?:\/\//i.test(url || '')) return sendJSON(res, 400, { error: '只支持 http(s) 图片' });
+    let target = url; let r = null;
+    for (let hop = 0; hop <= PROXY_IMG_MAX_HOPS; hop++) {
+      await assertPublicHost(new URL(target).hostname); // 每一跳发请求前都校验，重定向进内网直接断
+      r = await fetch(target, {
+        redirect: 'manual',
+        headers: { 'user-agent': 'Mozilla/5.0', referer: new URL(target).origin + '/' },
+        signal: AbortSignal.timeout(20000),
+      });
+      if (![301, 302, 303, 307, 308].includes(r.status)) break;
+      const loc = r.headers.get('location');
+      if (!loc) break;
+      try { await r.body?.cancel(); } catch { /* 重定向响应体直接丢弃 */ }
+      target = new URL(loc, target).href;
+      if (!/^https?:$/i.test(new URL(target).protocol)) return sendJSON(res, 502, { error: '重定向到了非 http(s) 地址' });
+      r = null; // 循环耗尽仍是重定向时以此为凭
+    }
+    if (!r) return sendJSON(res, 502, { error: '重定向次数过多' });
+    const type = r.headers.get('content-type') || '';
+    if (!r.ok || !/^image\//i.test(type)) return sendJSON(res, 502, { error: '抓不到这张图（HTTP ' + r.status + '）' });
+    if (Number(r.headers.get('content-length') || 0) > PROXY_IMG_MAX_BYTES) return sendJSON(res, 502, { error: '图片超过 20MB，不代抓' });
+    const chunks = []; let total = 0;
+    for await (const chunk of r.body) {
+      total += chunk.length;
+      if (total > PROXY_IMG_MAX_BYTES) return sendJSON(res, 502, { error: '图片超过 20MB，不代抓' });
+      chunks.push(chunk);
+    }
+    const buf = Buffer.concat(chunks);
+    res.writeHead(200, { 'Content-Type': type, 'Content-Length': buf.length, 'Cache-Control': 'no-store' });
+    res.end(buf);
+  } catch (e) {
+    sendJSON(res, 502, { error: String((e && e.message) || e) });
+  }
 }
 
 async function serveThumb(req, res, p, size) {
@@ -2429,6 +2581,205 @@ function originAllowed(req) {
   try { return ALLOWED_HOSTS.has(new URL(o).hostname); } catch { return false; }
 }
 
+// ---------- 定时任务：cron.json 持久化 + 到点开终端窗口跑 agent/命令 ----------
+// 设计：调度器只在 FanBox 跑着时活着（本地工具，不装 launchd 常驻）；app 没开时错过的
+// 记一条「错过」绝不补跑——定时任务突然袭击比漏跑一次更吓人。执行复用 Agent 控制接口的
+// 开窗能力（global.__fanboxAgent.create），用户在界面上能看到窗口在干活。
+const CRON_FILE = path.join(CONFIG_DIR, 'cron.json');
+function cronLoad() {
+  try { const d = JSON.parse(fs.readFileSync(CRON_FILE, 'utf8')); return Array.isArray(d.tasks) ? d.tasks : []; }
+  catch { return []; }
+}
+function cronPersist() {
+  try { fs.mkdirSync(CONFIG_DIR, { recursive: true }); fs.writeFileSync(CRON_FILE, JSON.stringify({ tasks: cronTasks }, null, 2)); }
+  catch { /* 写失败不致命 */ }
+}
+let cronTasks = cronLoad();
+
+// 5 字段 cron（分 时 日 月 周，本地时区）。支持 * , - */n；周日 0 或 7 都认
+function cronField(spec, min, max) {
+  if (spec === '*') return null; // null = 不限
+  const set = new Set();
+  for (const part of spec.split(',')) {
+    const m = part.match(/^(\*|\d+)(?:-(\d+))?(?:\/(\d+))?$/);
+    if (!m) return undefined; // 解析失败
+    const step = m[3] ? parseInt(m[3], 10) : 1;
+    if (!step) return undefined;
+    let lo, hi;
+    if (m[1] === '*') { lo = min; hi = max; }
+    else { lo = parseInt(m[1], 10); hi = m[2] ? parseInt(m[2], 10) : (m[3] ? max : lo); }
+    if (lo < min || hi > max + (max === 6 ? 1 : 0) || lo > hi) return undefined; // 周允许 7
+    for (let v = lo; v <= hi; v += step) set.add(max === 6 && v === 7 ? 0 : v);
+  }
+  return set;
+}
+// 下一次命中时刻（ms）；表达式非法返回 undefined，一年内无命中返回 null
+function cronNext(expr, fromMs) {
+  const parts = String(expr || '').trim().split(/\s+/);
+  if (parts.length !== 5) return undefined;
+  const [fMin, fHour, fDom, fMon, fDow] = [
+    cronField(parts[0], 0, 59), cronField(parts[1], 0, 23), cronField(parts[2], 1, 31),
+    cronField(parts[3], 1, 12), cronField(parts[4], 0, 6),
+  ];
+  if ([fMin, fHour, fDom, fMon, fDow].some((f) => f === undefined)) return undefined;
+  // 经典 cron 语义：日、周都有限定时，任一命中即可
+  const dayOk = (d) => {
+    const dom = !fDom || fDom.has(d.getDate());
+    const dow = !fDow || fDow.has(d.getDay());
+    return fDom && fDow ? (dom || dow) : (dom && dow);
+  };
+  const d = new Date(fromMs);
+  d.setSeconds(0, 0);
+  d.setMinutes(d.getMinutes() + 1);
+  for (let i = 0; i < 366 * 24 * 60; i++) {
+    if (!fMon || fMon.has(d.getMonth() + 1)) {
+      if (dayOk(d)) {
+        if ((!fHour || fHour.has(d.getHours())) && (!fMin || fMin.has(d.getMinutes()))) return d.getTime();
+      } else { d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + 1); i += 1439; continue; } // 整天不匹配就跳天
+    } else { d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + 1); i += 1439; continue; }
+    d.setMinutes(d.getMinutes() + 1);
+  }
+  return null;
+}
+// 任务的下一次执行时刻；null = 不再执行
+function cronNextRun(t, fromMs = Date.now()) {
+  const s = t.schedule || {};
+  if (s.type === 'at') { const ts = new Date(s.time).getTime(); return !isFinite(ts) || ts <= fromMs ? null : ts; }
+  if (s.type === 'every') {
+    const step = Math.max(1, Number(s.minutes) || 0) * 60000;
+    const base = t.lastFire || t.createdAt || fromMs;
+    const n = base + step;
+    return n > fromMs ? n : fromMs + step; // 错过的不补，从现在起重新按周期排
+  }
+  if (s.type === 'cron') { const n = cronNext(s.expr, fromMs); return n === undefined ? null : n; }
+  return null;
+}
+function cronScheduleValid(s) {
+  if (!s || typeof s !== 'object') return '缺少时间规则';
+  if (s.type === 'at') { const ts = new Date(s.time).getTime(); if (!isFinite(ts)) return '时间点无法解析'; if (ts <= Date.now()) return '时间点已经过去了'; return null; }
+  if (s.type === 'every') { const m = Number(s.minutes); if (!isFinite(m) || m < 1) return '周期至少 1 分钟'; return null; }
+  if (s.type === 'cron') { return cronNext(s.expr, Date.now()) === undefined ? 'cron 表达式无法解析（需要 5 段：分 时 日 月 周）' : null; }
+  return '不认识的时间规则类型';
+}
+// Quote a prompt for embedding in the autorun command line typed into the PTY (agentSend).
+// POSIX: bash single quotes (' → '\''). Windows default shell is PowerShell (' → '').
+// Never assembled via shell:true / cmd.exe.
+function cronShq(s) {
+  if (PLATFORM === 'win32') return `'${String(s).replace(/'/g, "''")}'`;
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+// Command typed into a new terminal when a schedule fires.
+// Agent tasks default to acceptEdits (auto-approve edits; shell still confirms).
+// full = user explicitly requested unattended full-auto (skip all confirms).
+function cronCommand(t) {
+  if (t.agent === 'shell') return String(t.prompt || '');
+  const p = cronShq(t.prompt || '');
+  if (t.agent === 'codex') return t.full ? `codex --full-auto ${p}` : `codex ${p}`;
+  return t.full ? `claude --dangerously-skip-permissions ${p}` : `claude --permission-mode acceptEdits ${p}`;
+}
+async function cronFire(t, manual) {
+  t.nextRun = (t.schedule || {}).type === 'at' ? null : cronNextRun(t); // 先排下一次，防调度重入
+  const rec = { t: Date.now(), manual: !!manual };
+  const A = global.__fanboxAgent;
+  if (!A) { rec.ok = false; rec.error = '需要桌面版（浏览器版没有内嵌终端）'; }
+  else {
+    const r = await A.create({ cwd: t.cwd || HOME, autorun: cronCommand(t) }).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+    rec.ok = !!(r && r.ok); if (r && r.error) rec.error = r.error; if (r && r.id) rec.term = r.id;
+  }
+  t.lastFire = rec.t;
+  t.history = [rec, ...(t.history || [])].slice(0, 10);
+  if ((t.schedule || {}).type === 'at') t.enabled = false; // 一次性任务执行完自动归档
+  cronPersist();
+  return rec;
+}
+// 启动结算：错过的记一笔、不补跑；一次性过期的直接停
+for (const t of cronTasks) {
+  if (t.enabled && t.nextRun && t.nextRun < Date.now() - 60000) {
+    t.history = [{ t: t.nextRun, missed: true }, ...(t.history || [])].slice(0, 10);
+  }
+  t.nextRun = t.enabled ? cronNextRun(t) : null;
+  if (t.enabled && (t.schedule || {}).type === 'at' && !t.nextRun) t.enabled = false;
+}
+cronPersist();
+setInterval(() => {
+  const now = Date.now();
+  for (const t of cronTasks) {
+    if (t.enabled && t.nextRun && t.nextRun <= now) cronFire(t, false);
+  }
+}, 20000);
+
+function cronList() { return { ok: true, desktop: !!global.__fanboxAgent, now: Date.now(), tasks: cronTasks }; }
+async function cronAction(action, b = {}) {
+  if (action === 'preview') { // 给定时间规则，预告接下来最多 3 次执行
+    const err = cronScheduleValid(b.schedule);
+    if (err) return { ok: false, error: err };
+    const times = [];
+    let from = Date.now();
+    const fake = { schedule: b.schedule, createdAt: Date.now() };
+    for (let i = 0; i < 3; i++) {
+      const n = cronNextRun(fake, from);
+      if (!n) break;
+      times.push(n); from = n; fake.lastFire = n;
+    }
+    return { ok: true, times };
+  }
+  if (action === 'save') {
+    const err = cronScheduleValid(b.schedule);
+    if (err) return { ok: false, error: err };
+    if (!String(b.prompt || '').trim()) return { ok: false, error: '任务内容不能为空' };
+    const agent = ['claude', 'codex', 'shell'].includes(b.agent) ? b.agent : 'claude';
+    const old = b.id && cronTasks.find((x) => x.id === b.id);
+    const t = old || { id: 'cr' + crypto.randomBytes(4).toString('hex'), createdAt: Date.now(), history: [] };
+    Object.assign(t, {
+      name: String(b.name || '').trim() || String(b.prompt).trim().slice(0, 24),
+      cwd: String(b.cwd || '').trim() || HOME,
+      agent, prompt: String(b.prompt).trim(), full: !!b.full,
+      schedule: b.schedule, enabled: b.enabled !== false,
+      createdBy: b.createdBy === 'agent' ? 'agent' : (old ? old.createdBy : 'ui'),
+    });
+    t.nextRun = t.enabled ? cronNextRun(t) : null;
+    if (!old) cronTasks.push(t);
+    cronPersist();
+    return { ok: true, task: t };
+  }
+  const t = cronTasks.find((x) => x.id === b.id);
+  if (!t) return { ok: false, error: 'no such task' };
+  if (action === 'delete') { cronTasks = cronTasks.filter((x) => x.id !== b.id); cronPersist(); return { ok: true }; }
+  if (action === 'toggle') {
+    t.enabled = !!b.enabled;
+    t.nextRun = t.enabled ? cronNextRun(t) : null;
+    if (t.enabled && (t.schedule || {}).type === 'at' && !t.nextRun) { t.enabled = false; cronPersist(); return { ok: false, error: '时间点已过去，改个时间再启用' }; }
+    cronPersist();
+    return { ok: true, task: t };
+  }
+  if (action === 'run') { const rec = await cronFire(t, true); return { ok: !!rec.ok, error: rec.error, term: rec.term, task: t }; }
+  return { ok: false, error: 'unknown cron action' };
+}
+
+// ---------- 版本历史：解析随包分发的 CHANGELOG.md（Keep a Changelog 格式），侧栏版本号入口用 ----------
+let clogCache = null; // { mtime, data }
+function changelogData() {
+  try {
+    const file = path.join(__dirname, 'CHANGELOG.md');
+    const mtime = fs.statSync(file).mtimeMs;
+    if (clogCache && clogCache.mtime === mtime) return clogCache.data;
+    const raw = fs.readFileSync(file, 'utf8');
+    const entries = [];
+    const re = /^## \[([^\]]+)\](?:\s*-\s*(\S+))?\s*$/gm;
+    let m, prev = null;
+    while ((m = re.exec(raw))) {
+      if (prev) prev.body = raw.slice(prev.end, m.index).trim();
+      prev = { version: m[1], date: m[2] || '', end: re.lastIndex };
+      entries.push(prev);
+    }
+    if (prev) prev.body = raw.slice(prev.end).trim();
+    entries.forEach((e) => delete e.end);
+    const data = { ok: true, version: require('./package.json').version, entries };
+    clogCache = { mtime, data };
+    return data;
+  } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+}
+
 const server = http.createServer(async (req, res) => {
   if (!hostAllowed(req)) { res.writeHead(403); res.end('forbidden host'); return; }
   if (req.method === 'POST' && !originAllowed(req)) { res.writeHead(403); res.end('forbidden origin'); return; }
@@ -2439,6 +2790,16 @@ const server = http.createServer(async (req, res) => {
   try {
     if (p === '/api/roots') {
       return sendJSON(res, 200, { home: HOME, platform: PLATFORM, sep: path.sep, roots: defaultRoots() });
+    }
+    if (p === '/api/changelog') {
+      return sendJSON(res, 200, changelogData());
+    }
+    // 定时任务（界面用；agent 用带 token 的 /api/agent/cron*，同一套实现）
+    if (p === '/api/cron') {
+      return sendJSON(res, 200, cronList());
+    }
+    if (p.startsWith('/api/cron/') && req.method === 'POST') {
+      return sendJSON(res, 200, await cronAction(p.slice('/api/cron/'.length), await readBody(req)));
     }
     if (p === '/api/list') {
       return sendJSON(res, 200, await listDir(qp.get('path') || HOME));
@@ -2464,6 +2825,9 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/thumb') {
       return serveThumb(req, res, qp.get('path'), parseInt(qp.get('w') || '240', 10));
+    }
+    if (p === '/api/img-proxy') {
+      return proxyImage(res, qp.get('url'));
     }
     if (p === '/api/search') {
       return sendJSON(res, 200, await searchFiles(qp.get('q'), qp.get('root') || HOME));
@@ -2663,6 +3027,13 @@ const server = http.createServer(async (req, res) => {
       if (!A) return sendJSON(res, 501, { ok: false, error: 'desktop app only' });
       const tok = req.headers['x-fanbox-token'] || qp.get('token') || '';
       if (tok !== A.token) return sendJSON(res, 403, { ok: false, error: 'bad token' });
+      // 定时任务：agent 用自然语言理解用户意图后换算成 schedule 调这里（见 skills/fanbox-agent）
+      if (p === '/api/agent/cron') return sendJSON(res, 200, cronList());
+      if (p.startsWith('/api/agent/cron/') && req.method === 'POST') {
+        const b = await readBody(req);
+        if (p === '/api/agent/cron/save') b.createdBy = 'agent';
+        return sendJSON(res, 200, await cronAction(p.slice('/api/agent/cron/'.length), b));
+      }
       if (p === '/api/agent/terminals') return sendJSON(res, 200, await A.list());
       if (p === '/api/agent/read') return sendJSON(res, 200, A.read(qp.get('id'), parseInt(qp.get('lines') || '0', 10)));
       if (p === '/api/agent/send' && req.method === 'POST') { const b = await readBody(req); return sendJSON(res, 200, A.send(b.id, b.text, b)); }

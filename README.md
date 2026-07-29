@@ -1,29 +1,29 @@
-# 📦 FanBox
+# FanBox
 
 > [!IMPORTANT]
-> 这是 [FanBox](https://github.com/alchaincyf/fanbox) 的**社区 Windows 移植版**（非官方），对齐上游 v2.7.0。Windows 安装包见[本仓库 Releases](https://github.com/Emberwhirl/fanbox/releases)；macOS 用户请前往[官方仓库](https://github.com/alchaincyf/fanbox)。
-> This is an unofficial **community Windows port** of [FanBox](https://github.com/alchaincyf/fanbox), tracking upstream v2.7.0. Windows installers are in [this repo's Releases](https://github.com/Emberwhirl/fanbox/releases); macOS users should use the [original project](https://github.com/alchaincyf/fanbox).
+> This is an unofficial **community Windows port** of [FanBox](https://github.com/alchaincyf/fanbox), tracking upstream **v2.12.1**. Windows installers are published in [this repository’s Releases](https://github.com/Emberwhirl/fanbox/releases). macOS users should use the [official project](https://github.com/alchaincyf/fanbox).
 
 [![Windows x64 port](assets/badge-windows-x64.svg)](https://github.com/Emberwhirl/fanbox/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Upstream](https://img.shields.io/badge/upstream-alchaincyf%2Ffanbox-8250df?logo=github)](https://github.com/alchaincyf/fanbox)
 
-## 🪟 关于本移植版 · About this Windows port
+## About this Windows port
 
-FanBox 官方只发布 macOS 版。本仓库在 `windows` 分支上维护上游**完整功能**的 Windows 10/11 (x64) 移植：v2.6.3 从零移植，此后跟随上游更新，当前对齐 **v2.7.0**；同时把一批「离开 macOS 就坏」的平台细节按 Windows 的标准和使用习惯修好。
-
-FanBox officially ships for macOS only. This repo maintains a complete Windows 10/11 (x64) port on the `windows` branch: ported from scratch at v2.6.3, not derived from older community ports, and tracking upstream releases since, currently **v2.7.0**. Every platform-specific piece was reworked against upstream, fixing the details that break the moment you leave macOS.
+FanBox officially ships for macOS only. This repository maintains a full-featured Windows 10/11 (x64) port on the `windows` branch: started from scratch at upstream v2.6.3, then kept in step with upstream releases—currently **v2.12.1**. Platform-specific paths that fail outside macOS were reworked for Windows conventions rather than left as half-ports.
 
 ### What the port covers
 
-- 🖥️ **Embedded terminal.** PowerShell runs over ConPTY, Chinese output renders correctly, and any `C:\...` path an agent prints is clickable.
-- 🤖 **Agent cross-control (new in v2.7.0).** The `/api/agent/*` interface works in full: an agent running in one FanBox terminal can list sibling windows, read their output, send commands, open new windows and wait for tasks to finish. Busy/idle detection uses a child-process probe (Windows never exposes the foreground process name), so `wait` for external CLI agents means the same thing as on macOS; pure in-process PowerShell work can look idle (use quiet/`until` — see platform notes). The bundled `fanbox-agent` skill ships unmodified — one-click install from settings lands it where Claude Code on Windows looks (`%USERPROFILE%\.claude\skills`).
-- 🖱️ **One click actions.** Open in editor uses VS Code and falls back to the system default app when VS Code is missing. Open in terminal prefers Windows Terminal. Reveal in Explorer is safe for paths with spaces, Chinese and special characters.
-- 💬 **WeChat ClawBot bridge.** Chinese messages and multiline personas survive the trip end to end. When a run times out the whole process tree is killed, so no orphaned agent keeps burning tokens.
-- 🛟 **Snapshot safety belt.** The eligibility rules understand Windows drives. Projects like `D:\myproject` keep their safety net while `C:\Users` and `C:\Windows` are refused.
-- 🌐 **Environment and proxy.** On launch, User + Machine registry PATH is merged into the process environment so the embedded terminal, agent-bin probes, and WeChat bridge all find `claude` / `codex` / npm globals even when the app was started from the GUI. The system proxy is honored, including SOCKS-only setups from Clash or v2rayN, and Chinese usernames work throughout.
-- 🔄 **Updates.** Update checks point at this repo's Releases. When the GitHub API returns asset metadata, the app only prompts if a Windows installer (`.exe`) is present on that release — docs-only tags do not trigger a download toast.
-- ⌨️ **Shortcuts.** Every `⌘` shortcut maps to `Ctrl`, for example `Ctrl+K` for global search and `Ctrl+Enter` to open in editor. Dynamic UI labels (editor chrome, first-run guide, etc.) show the correct keys for your platform.
+- **Embedded terminal.** PowerShell over ConPTY; CJK output renders correctly; agent-printed `C:\...` paths are clickable.
+- **Agent cross-control.** Full `/api/agent/*` support: list sibling terminals, read output, send input, open windows, wait for completion. Busy/idle uses a child-process probe (Windows does not expose the PTY foreground process name), so `wait` for external CLI agents matches macOS semantics. Pure in-process PowerShell work can look idle—use `"idle":"quiet"` or `"until"` (see platform notes). The bundled `fanbox-agent` skill is shipped byte-identical to upstream; install it from Settings into `%USERPROFILE%\.claude\skills`.
+- **Scheduled tasks (v2.11+).** Cron, one-shot, and interval schedules open a real terminal tab on the agent-control path; agents may author schedules via token-gated `/api/agent/cron*`.
+- **Typeset and long-image export (v2.9–2.12).** Markdown includes a typeset mode; export full-article or sectioned PNG long images for social posts; `/api/img-proxy` fetches remote images for inlining.
+- **One-click open.** Editor: VS Code when present, otherwise the system default app. Terminal: Windows Terminal preferred. Reveal in Explorer is safe for spaces, non-ASCII, and special characters.
+- **WeChat ClawBot bridge.** Chinese messages and multiline personas survive end to end. On timeout, the whole process tree is killed so orphaned agents do not keep burning tokens.
+- **Stay awake (sidebar Away section).** Uses Electron `powerSaveBlocker` while terminals are open or WeChat is connected. Lid-close sleep still follows OS power options; UI copy omits macOS lid-only wording on Windows.
+- **Snapshot safety belt.** Drive-aware eligibility: projects such as `D:\myproject` remain eligible; `C:\Users` and `C:\Windows` are refused.
+- **Environment and proxy.** On launch, User and Machine registry PATH entries are merged so the embedded terminal, agent binary probes, and WeChat bridge find `claude` / `codex` / npm globals even when started from the GUI. System proxy is honored, including SOCKS-only setups (Clash, v2rayN). Localized profile paths work throughout.
+- **Updates.** Checks target this repository’s Releases. When the GitHub API returns assets, the app only prompts if a Windows installer (`.exe`) is present—docs-only tags do not toast. Missing architecture assets open the release page with a clear message.
+- **Shortcuts.** Every `⌘` binding maps to `Ctrl` (for example `Ctrl+K` global search, `Ctrl+Enter` open in editor). Dynamic labels use platform-correct modifiers.
 
 ### Install
 
@@ -32,37 +32,38 @@ Download the NSIS installer `FanBox-<version>-win-x64.exe` or the portable build
 ### Run from source
 
 ```powershell
-# Requires Node.js 18 or newer plus Visual Studio Build Tools with the C++ desktop workload to compile node-pty
+# Requires Node.js 18+ and Visual Studio Build Tools (C++ desktop workload) for node-pty
 git clone https://github.com/Emberwhirl/fanbox.git
 cd fanbox
 git checkout windows
 npm install
-npm run rebuild      # rebuild node-pty for the bundled Electron
+npm run rebuild      # rebuild node-pty against the bundled Electron
 npm run app          # launch the desktop app
-npm run dist:win     # build the NSIS installer and the portable exe into dist/
+npm run dist:win     # NSIS installer + portable exe → dist/
 ```
 
 ### Platform notes
 
 | Feature | Behavior on Windows |
 |---|---|
-| Embedded terminal | node-pty with ConPTY, PowerShell by default; registry PATH merged at app start |
-| Agent cross-control | busy/idle via child-process probe (external CLIs); pure in-process PowerShell can false-idle — default `wait` idleMs is 3500 ms; use `"idle":"quiet"` or `"until"` for cmdlet-only work; `terminals` reports last-known directory (spawn/locate), not live cwd |
+| Embedded terminal | node-pty with ConPTY; PowerShell by default; registry PATH merged at startup |
+| Agent cross-control | Busy/idle via child-process probe (external CLIs); pure in-process PowerShell can false-idle — default `wait` idleMs is 3500 ms; use `"idle":"quiet"` or `"until"` for cmdlet-only work; `terminals` reports last-known directory (spawn/locate), not live cwd |
 | Updates | GitHub API asset check requires `FanBox-*-win-*.exe` before prompting; HTML redirect fallback is tag-only |
-| Screenshot express | watches `Pictures\Screenshots` and the Desktop |
-| Stay awake | uses `powerSaveBlocker`, while lid behavior still follows the OS power settings |
-| Thumbnails and HEIC | ImageMagick or ffmpeg when available, icon fallback otherwise |
+| Screenshot express | Watches `Pictures\Screenshots` and the Desktop |
+| Stay awake | Sidebar power switches + `powerSaveBlocker`; lid-close sleep still follows OS power options |
+| Scheduled tasks | Same scheduler as macOS; fires only while FanBox is running (no Windows Task Scheduler install) |
+| Typeset / long image | Pure frontend; image proxy and local `/api/raw` paths work with Windows drive letters |
+| Thumbnails and HEIC | ImageMagick or ffmpeg when available; icon fallback otherwise |
 
-Please open port related issues in [this repo's Issues](https://github.com/Emberwhirl/fanbox/issues) rather than the upstream project.
+Please file port-related issues in [this repository’s Issues](https://github.com/Emberwhirl/fanbox/issues), not against the upstream project.
 
 ---
 
 <div align="center">
 
-## 📄 ⬇️ 以下为原项目 README · Original upstream README below ⬇️
+## Upstream README (verbatim)
 
-<sub>以下内容原样保留自 <a href="https://github.com/alchaincyf/fanbox">alchaincyf/fanbox</a> v2.7.0，面向官方 macOS 版本。其中的下载链接、安装说明、Windows 社区移植列表等均为上游作者视角，Windows 相关信息以上文为准。<br>
-Everything below is kept verbatim from <a href="https://github.com/alchaincyf/fanbox">alchaincyf/fanbox</a> v2.7.0 and written for the official macOS build. The download links, install steps and community-ports list reflect the upstream author's view; for Windows, refer to the section above.</sub>
+<sub>The content below is kept verbatim from <a href="https://github.com/alchaincyf/fanbox">alchaincyf/fanbox</a> <strong>v2.12.1</strong> and describes the official macOS product. Download links, install steps, and community-port lists reflect the upstream author’s view. For Windows, use the section above.</sub>
 
 </div>
 
@@ -205,8 +206,12 @@ The UI was designed with [huashu-design](https://github.com/alchaincyf/huashu-de
 
 ### Editing · WYSIWYG / 编辑 · 所见即所得
 
-- **Markdown** — Milkdown Crepe 提供 Notion 式所见即所得，打开就是编辑态，停笔 0.8 秒自动保存。  
-  Milkdown Crepe, Notion-style WYSIWYG; opens in edit mode, auto-saves 0.8s after you stop typing.
+- **Markdown** — Milkdown Crepe 提供 Notion 式所见即所得，打开就是编辑态，停笔 0.8 秒自动保存。顶部 `富文本 / 阅读 / 源码 / 排版` 四档随时切；少数文件富文本往返会丢内容（校验不过），只灰掉富文本、默认落在只读阅读模式，文章照看，要改点源码。  
+  Milkdown Crepe, Notion-style WYSIWYG; opens in edit mode, auto-saves 0.8s after you stop typing. A `Rich / Read / Source / Typeset` switch sits on top; when a file can't survive a WYSIWYG round-trip, only Rich is disabled — it falls back to the rendered read-only view, not raw source.
+- **排版档 · 一键进公众号 / Typeset — one click into WeChat** — 20 套排版主题（来自 [editor.huasheng.ai](https://editor.huasheng.ai)），选好样式点「复制到公众号」，粘进公众号后台即成稿：样式全内联、图片自动转 base64（本地图和图床外链都行）、连续多图排成表格网格、带底色主题自动补背景层。排版档里看到的就是粘出去的，不存在预览与成稿不一致。工具栏顺带给出「x 字 · 约 y 分钟」。  
+  20 typeset themes (from [editor.huasheng.ai](https://editor.huasheng.ai)). Pick one, hit *Copy for WeChat*, paste into the WeChat editor — styles fully inlined, images inlined as base64 (local files and remote hosts alike), consecutive images laid out as a table grid, tinted themes get a background wrapper. What you see in Typeset is exactly what gets pasted; word count and reading time sit in the toolbar.
+- **送去… / Send to…** — 其余去向收在一个菜单里：「复制到 X」按 X Articles 的标签白名单清洗；飞书文档、X Articles·渡口、B站专栏·渡口则把一条明文指令递给终端里的 agent 去跑（需装 `lark-doc` / `dukou` skill）。FanBox 自己不存任何平台凭证、不内建任何第三方 SDK，指令只粘不回车——你看得见、能改、能拒，最后那一下永远由人来点。  
+  Other destinations live in one menu: *Copy for X* sanitizes to the X Articles whitelist; Feishu docs and Dukou (X Articles / Bilibili) hand a plain-text instruction to the agent running in your terminal instead. FanBox stores no platform credentials and bundles no third-party SDK; the instruction is pasted without a newline — visible, editable, refusable. You press the final key, always.
 - **代码/JSON / Code/JSON** — Monaco 编辑器（VS Code 同款内核），随皮肤切换主题。  
   Monaco (the VS Code core), themed per skin.
 - **图片标注 / Image annotation** — 画笔/箭头/文字/打码、格式转换、压缩、调分辨率，覆盖原图前有确认。  
@@ -223,8 +228,8 @@ The UI was designed with [huashu-design](https://github.com/alchaincyf/huashu-de
 
 Download the latest `.dmg` from [**Releases**](https://github.com/alchaincyf/fanbox/releases/latest) and drag it into Applications. Native Apple Silicon (arm64).
 
-> 已用 Apple Development 证书签名 + hardened runtime。首次打开若提示「未验证的开发者」：**右键 → 打开 → 确认**即可。  
-> Signed with an Apple Development certificate + hardened runtime. If macOS warns about an unverified developer on first launch: **right-click → Open → confirm**.
+> 已用 Developer ID 证书签名 + hardened runtime，并通过 Apple 公证（notarization），**双击直接打开**，不用右键。  
+> Signed with a Developer ID certificate + hardened runtime and notarized by Apple — **just double-click to open**, no right-click workaround needed.
 >
 > 应用内置**更新提醒**：检测到 GitHub 上有新 Release 时，右下角会弹一条提示引导下载，不强更、可对单个版本「不再提醒」。  
 > Built-in **update notifications**: when a new release lands on GitHub, a capsule appears at the bottom right. Never forced; individual versions can be muted.
