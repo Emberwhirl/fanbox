@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Windows Port v2.12.1 — Remediation &amp; macOS-Parity Plan</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1c1e21; --muted: #616a73; --line: #e2e5e9;
+    --card: #f6f7f9; --accent: #0969da; --code-bg: #eef1f4;
+    --high: #c93c37; --med: #b56300; --low: #57606a; --ok: #1a7f37;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --fg: #e6edf3; --muted: #9aa4af; --line: #2d333b;
+      --card: #161b22; --accent: #539bf5; --code-bg: #1c2128;
+      --high: #f47067; --med: #d29922; --low: #909dab; --ok: #57ab5a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0 auto; max-width: 980px; padding: 2.2rem 1.4rem 5rem;
+         font: 15px/1.65 -apple-system, "Segoe UI", system-ui, sans-serif;
+         background: var(--bg); color: var(--fg); }
+  h1 { font-size: 1.7rem; line-height: 1.3; margin: 0 0 .4rem; }
+  h2 { font-size: 1.25rem; margin: 2.6rem 0 .8rem; padding-top: 1.2rem; border-top: 2px solid var(--line); }
+  h3 { font-size: 1.05rem; margin: 1.8rem 0 .5rem; }
+  p, li { max-width: 76ch; }
+  .sub { color: var(--muted); margin: 0 0 1.6rem; }
+  code { font: 12.5px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace;
+         background: var(--code-bg); padding: .1em .35em; border-radius: 4px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+          padding: 1rem 1.2rem; margin: 1rem 0; }
+  .card h3 { margin-top: .2rem; }
+  .badge { display: inline-block; font-size: .72rem; font-weight: 700; letter-spacing: .03em;
+           padding: .1em .55em; border-radius: 99px; vertical-align: 2px; margin-right: .5em;
+           color: #fff; }
+  .b-high { background: var(--high); } .b-med { background: var(--med); }
+  .b-low { background: var(--low); } .b-ok { background: var(--ok); }
+  .loc { color: var(--muted); font-size: .85rem; }
+  .decision { border-left: 3px solid var(--accent); padding-left: .9rem; margin: .8rem 0; }
+  .decision b:first-child { color: var(--accent); }
+  table { border-collapse: collapse; width: 100%; margin: .8rem 0 1.4rem; font-size: .88rem; }
+  .tblwrap { overflow-x: auto; }
+  th, td { border: 1px solid var(--line); padding: .45em .7em; text-align: left; vertical-align: top; }
+  th { background: var(--card); }
+  td code { white-space: nowrap; }
+  .zh { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  nav { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+        padding: .9rem 1.2rem; margin: 1.4rem 0; }
+  nav a { color: var(--accent); text-decoration: none; }
+  nav li { margin: .15rem 0; }
+  .small { font-size: .85rem; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<h1>Windows Port v2.12.1 — Remediation &amp; macOS-Parity Plan</h1>
+<p class="sub">Fix plan for the 57 verified findings from the 2026-07-29 multi-agent review of <code>master...dev</code>.
+Goal: the Windows port behaves and reads exactly like the macOS original wherever the platform allows,
+and the macOS/Linux code paths return to <b>byte-for-byte identical to <code>master</code></b> (the golden rule),
+so future upstream merges stay clean. Target release: <b>v2.12.1</b> (<code>package.json</code> already reads
+2.12.1 — no bump; the remediated port ships <em>as</em> the 2.12.1 Windows release).
+Target runtime: <b>Windows 10/11 x64</b>. All work lands on <code>dev</code>; <code>windows</code> is touched
+only to tag and release the tested port (§6).</p>
+
+<nav>
+<b>Part I — Decisions you may want to tweak</b>
+<ul>
+  <li><a href="#high">1. High-severity fixes (4)</a></li>
+  <li><a href="#policy">2. Platform-policy &amp; architecture decisions (D1–D10)</a></li>
+  <li><a href="#copy">3. User-facing copy — every new EN/Chinese string (tweak here)</a></li>
+</ul>
+<b>Part II — Engineering (delegated)</b>
+<ul>
+  <li><a href="#golden">4. Golden-rule restoration — the platform-fork pattern + site list</a></li>
+  <li><a href="#mech">5. Mechanical correctness &amp; port-rule fixes</a></li>
+  <li><a href="#verify">6. Phasing, verification, release</a></li>
+  <li><a href="#trace">7. Traceability — all 57 findings → plan items</a></li>
+</ul>
+</nav>
+
+<h2 id="principles">Guiding principles</h2>
+<ul>
+  <li><b>macOS is the reference UX.</b> Every fix asks first: what does upstream v2.12.1 do on macOS? Windows mirrors that experience with platform-native vocabulary (Finder→资源管理器/File Explorer, 废纸篓→回收站/Recycle Bin, ⌘→Ctrl).</li>
+  <li><b>POSIX code returns to master text, not just master behavior.</b> Where the port edited shared lines, we restore the master bytes and re-express the Windows behavior inside <code>IS_WIN</code>/<code>PLATFORM === 'win32'</code> branches — even when the edit was behavior-equivalent. This is what keeps the next upstream tag merge conflict-free.</li>
+  <li><b>Port rules stay load-bearing:</b> argv-style spawns only, no shell strings containing user data, no parsing of <code>where.exe</code>/OEM-codepage output, <code>taskkill /T /F</code> for trees, busy tri-state where unknown = busy.</li>
+  <li><b>Target runtime: Windows 10/11 x64 only.</b> ConPTY and PowerShell 5.1 are assumed present; no
+  Windows 7/8.1 support, no ARM64/ia32 builds. Anything gated on older Windows is out of scope.</li>
+  <li><b>No macOS-only function or term may reach a Windows user.</b> Every macOS-only surface — Finder,
+  <span class="zh">废纸篓</span>, ⌘, zsh, <code>lsof</code>, the pasteboard, dmg assets, IM6 <code>convert</code>,
+  SIGKILL process groups — is eliminated from the Windows runtime and ported to its Windows x64 equivalent where
+  one exists (mapping table below), degrading gracefully where none does. Elimination applies to the Windows
+  <em>experience</em> only: in code, the macOS paths stay byte-for-byte per the golden rule.</li>
+  <li><b>Branch discipline: all port work happens on <code>dev</code>.</b> <code>windows</code> exists solely to
+  tag and release the <em>tested</em> port — <code>dev</code> is never merged into it until the port passes the
+  full manual matrix on a physical Windows 10/11 x64 machine (§6).</li>
+</ul>
+
+<h3 id="macmap">macOS-only surface → Windows 10/11 x64 port mapping</h3>
+<p>The elimination checklist behind the principle above. Every row is either already implemented in the port or
+fixed by the referenced plan item; the acceptance sweep in §6 greps for leftovers.</p>
+<div class="tblwrap">
+<table>
+<tr><th>macOS-only surface</th><th>Windows 10/11 x64 equivalent</th><th>Plan item</th></tr>
+<tr><td>Finder reveal（<span class="zh">在 Finder 显示 / 访达</span>）</td><td>File Explorer（<span class="zh">在 资源管理器 显示</span> / “Reveal in File Explorer”）</td><td>H4 / D2, §3a</td></tr>
+<tr><td><span class="zh">废纸篓</span> (Trash) semantics + all delete copy</td><td><span class="zh">回收站</span> (Recycle Bin) via PowerShell <code>FileSystem::DeleteFile/DeleteDirectory</code> recycle calls — never <code>Remove-Item</code></td><td>§3a, §5 (trashPath)</td></tr>
+<tr><td>⌘ modifier — ⌘S autosave hint, ⌘-labelled chrome</td><td>Ctrl — Ctrl+S hint, <code>applyPlatformChrome</code> ⌘→Ctrl rewrite (win-only)</td><td>§3b, §4</td></tr>
+<tr><td>Pasteboard file copy/paste (<code>public.file-url</code>)</td><td><code>FileNameW</code> clipboard read + <code>Set-Clipboard -LiteralPath</code> write (PowerShell 5.1)</td><td>D7</td></tr>
+<tr><td>zsh login shell — env replication, <code>command -v</code> probes, cron spawns</td><td>PowerShell 5.1 + registry-PATH merge + <code>winFindExe</code> PATH walk; agent cron tabs force PowerShell</td><td>D4, D5, §4</td></tr>
+<tr><td><code>lsof</code> live-cwd tracking</td><td>spawn-time cwd fallback (win32-only arm)</td><td>D10</td></tr>
+<tr><td>Foreground-process busy heuristic (<code>p.process</code>)</td><td><code>winPtyBusy</code> child-process probe, tri-state where unknown = busy</td><td>D10, §4</td></tr>
+<tr><td>SIGKILL to the process group</td><td><code>taskkill /PID &lt;pid&gt; /T /F</code> run to completion before any fallback kill</td><td>H2</td></tr>
+<tr><td>dmg update asset + <span class="zh">「官网下载 dmg」</span> hint</td><td>NSIS <code>FanBox-&lt;ver&gt;-win-x64.exe</code> by exact asset name; hint drops “dmg”</td><td>§4 (update check), §3b</td></tr>
+<tr><td>IM6 <code>convert</code> thumbnail fallback</td><td><code>magick</code> (IM7 via winFindExe) → <code>ffmpeg</code> → generic tile</td><td>D6</td></tr>
+<tr><td>macOS screenshot filename patterns（<span class="zh">截屏/屏幕快照</span>）</td><td>Windows patterns（<span class="zh">屏幕截图</span>/Snipaste）in the win32 watcher arm</td><td>§4 (SHOT_NAME_RE)</td></tr>
+<tr><td>Lid-closed / sleep wording and mechanics</td><td><code>powerSaveBlocker</code> (no elevation) + Windows-worded power tips</td><td>§3a</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="high">Part I · 1 — High-severity fixes</h2>
+
+<div class="card">
+  <h3><span class="badge b-high">HIGH</span>H1+H3 · <code>/fs/</code> mirror is dead for Windows drive-letter paths — HTML preview, preview assets, md local images all 404/403</h3>
+  <p class="loc">server.js:2819 &amp; :3081 · public/app.js:747 (fsUrl) — one root cause, both ends fixed together</p>
+  <p><code>fsUrl()</code> packs <code>C:\Users\me\page.html</code> into a single URL segment; the server keeps the
+  leading <code>/</code> when decoding, so the path normalizes to the invalid <code>\C:\Users\…</code> and every
+  <code>/fs/</code> feature fails (closed) on Windows.</p>
+  <div class="decision"><b>Decision D1 — URL shape for Windows paths (recommended: Option A).</b><br>
+  <b>Option A (chosen):</b> keep <code>/fs/</code> URLs POSIX-shaped, mirroring the <code>file:///C:/…</code> convention:
+  <code>fsUrl()</code> splits on both separators (<code>/[\\/]/</code>) <b>only when <code>state.sep === '\\'</code></b> —
+  POSIX keeps master's <code>p.split('/')</code>, so a macOS filename legally containing a backslash still resolves —
+  → <code>/fs/C:/Users/me/page.html</code>;
+  server-side (both servers), after decoding, a win32-only step strips the leading slash when
+  <code>/^\/[A-Za-z]:[\\/]/</code> matches. Because each path component stays its own URL segment,
+  <b>relative asset references inside previewed HTML keep resolving</b> — identical to macOS preview behavior.
+  The injected <code>file://</code>→<code>/fs</code> rewrite maps <code>file:///C:/x</code> → <code>/fs/C:/x</code> for free.<br>
+  <b>Option B (rejected):</b> encode the whole path as one opaque segment and decode server-side — breaks
+  relative-asset resolution in the preview iframe, deviating from macOS UX.</div>
+  <p>Companion hardening (win32 branch only): <code>previewPathAllowed</code>'s $HOME-subtree containment compare
+  becomes case-insensitive and separator-normalized on Windows (NTFS is case-insensitive; the current check is
+  trivially bypassed by casing — it must fail closed <em>correctly</em>, not accidentally). POSIX compare untouched.</p>
+  <p><b>UX result:</b> preview iframe, relative assets, markdown local images, file-follow — all behave exactly as on macOS.</p>
+</div>
+
+<div class="card">
+  <h3><span class="badge b-high">HIGH</span>H2 · WeChat timeout kill orphans the real agent — tokens keep burning</h3>
+  <p class="loc">electron/wechat/driver.js:118–119</p>
+  <p><code>kill()</code> fires <code>taskkill /T /F</code> async and then immediately <code>child.kill()</code>s the root.
+  The root dies first, taskkill finds no tree, and the grandchild (<code>node.exe → codex.js → codex.exe</code>)
+  survives — up to 3 orphans with the retry loop.</p>
+  <div class="decision"><b>Fix (no alternatives worth weighing):</b> invert the order — run taskkill to completion
+  first; call <code>child.kill()</code> only in taskkill's callback (as fallback for taskkill failure/ENOENT).
+  Keep the 5 s taskkill timeout; log (don't swallow) a non-zero taskkill exit.
+  Audit confirms this is the only tree-kill site in the port.</div>
+  <p><b>UX result:</b> matches macOS <code>SIGKILL</code>-the-group semantics: after a timeout, nothing of the
+  agent survives, and the WeChat retry loop starts from a clean slate.</p>
+</div>
+
+<div class="card">
+  <h3><span class="badge b-high">HIGH</span>H4 · Right-click menu shows Chinese in EN mode on <em>every</em> platform (macOS regression)</h3>
+  <p class="loc">public/app.js:1968 · i18n-dict.js:171</p>
+  <p>The port replaced master's literal <span class="zh">「在 Finder 显示」</span> with
+  <code>`在 ${fileManagerName()} 显示`</code> → <span class="zh">「在 访达 显示」</span> on macOS — a string with no
+  dict key, so EN users see Chinese; on macOS this is a visible regression from upstream.</p>
+  <div class="decision"><b>Decision D2 — restore master on macOS, platform-name elsewhere (recommended).</b>
+  macOS renders master's exact <span class="zh">「在 Finder 显示」</span> (existing dict key works again).
+  <code>fileManagerName()</code> survives only inside the non-darwin arms:
+  Windows <span class="zh">「在 资源管理器 显示」</span> → “Reveal in File Explorer”,
+  Linux/browser <span class="zh">「在 文件管理器 显示」</span> → “Reveal in File Manager” (new dict keys, §3).
+  <span class="small">Alternative — keep 访达 as the macOS label and add a dict key: rejected; it deviates from
+  master's UI text for zero benefit.</span></div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="policy">Part I · 2 — Platform-policy &amp; architecture decisions</h2>
+<p>Each of these changes what a Windows user experiences, or how the fork relates to upstream.
+Defaults below are what I'll implement unless you override.</p>
+
+<div class="card">
+<h3>D3 · Git / MSYS tools currently speak Chinese to every Windows user</h3>
+<p class="loc">electron/main.js:769 <span class="badge b-med">MED</span></p>
+<p>The mac-motivated fallback forces <code>LANG=zh_CN.UTF-8</code> into every Windows PTY (LANG is never
+pre-set on Windows), so Git for Windows localizes its output to Chinese regardless of the user's locale —
+and pattern-matching agents see localized git text.</p>
+<div class="decision"><b>Recommended:</b> don't set <code>LANG</code> at all on win32 (restore the POSIX line to
+master bytes; the whole fallback becomes non-win32). Git and MSYS tools then follow the OS display language —
+native Windows behavior, and consistent for agents.
+<span class="small">Alternatives: (b) <code>LANG=C.UTF-8</code> — forces English even for zh-CN users, worse;
+(c) derive from FanBox's own language setting — couples terminal env to app UI language, surprising. </span></div>
+</div>
+
+<div class="card">
+<h3>D4 · Scheduled-task (cron) tabs: always spawn PowerShell on Windows</h3>
+<p class="loc">server.js:2668 (cronShq) <span class="badge b-low">LOW</span></p>
+<p><code>cronShq</code> quotes the agent prompt for PowerShell, but the PTY shell is user-configurable to
+<code>cmd.exe</code>, where single quotes are literal and <code>&amp;</code>/<code>%VAR%</code> get interpreted —
+a scheduled prompt like <span class="zh">「backup logs &amp; prune old ones」</span> silently splits.</p>
+<div class="decision"><b>Recommended:</b> <em>agent-type</em> cron tabs (claude/codex prompts, the ones cronShq
+quotes) always launch PowerShell on Windows, regardless of the user's default shell. One quoting discipline,
+semantics match macOS-cron-spawns-zsh. <em>Shell-type</em> tasks (<code>t.agent === 'shell'</code>, raw command
+typed verbatim) are <b>exempt</b> — they run in the user's default shell exactly as authored.<br>
+<span class="small">Plumbing note: <code>agentCreate</code> has no shell parameter today — this adds an
+<code>opts.shell</code> threaded through the whole channel: <code>global.__fanboxAgent.create</code> →
+<code>agent:term-create</code> IPC payload → renderer tab-create handler → <code>fanboxPty.spawn</code> →
+<code>pty:spawn</code> handler → shell override. Pure win32-gated addition; POSIX signatures and behavior stay
+master. Alternative — cmd-aware quoting: rejected; building cmd-safe strings is exactly what the port rules
+call unfixable.</span></div>
+</div>
+
+<div class="card">
+<h3>D5 · WeChat bridge: remove the PowerShell string-building fallback</h3>
+<p class="loc">electron/wechat/driver.js:96–102 <span class="badge b-med">MED</span></p>
+<p>When <code>resolveWinCli()</code> can't parse an npm shim, the bridge falls back to
+<code>powershell -Command "…persona text…"</code> — user-authored config embedded in a shell string
+(rule 1 violation; the “unreachable” comment was disproven with a hand-written <code>claude.cmd</code>).</p>
+<div class="decision"><b>Recommended:</b> delete the fallback. Extend <code>resolveWinCli</code> to first check
+for a real <code>claude.exe</code>/<code>codex.exe</code> on PATH (standalone installs — spawn directly, argv-style),
+then npm-shim resolution as today. If both fail, reply over WeChat with the same “CLI not found — install it
+with npm i -g …” message the desktop flow shows. Predictable failure beats a quoting-hazard code path.
+<span class="small">Alternative — keep fallback but via <code>-EncodedCommand</code> + args array: still executes
+through a shell for no gain once the exe probe exists.</span></div>
+</div>
+
+<div class="card">
+<h3>D6 · Thumbnails: never run bare <code>convert</code> on Windows</h3>
+<p class="loc">server.js:1625, :1788 <span class="badge b-med">MED</span></p>
+<p>Bare <code>convert</code> on Windows resolves to <b>System32's FAT→NTFS utility</b> (System32 precedes user
+PATH), so the ImageMagick-6 fallback can never work — and FanBox executes an unrelated disk tool with
+user paths as arguments.</p>
+<div class="decision"><b>Recommended:</b> win32 thumbnail/HEIC chain = <code>magick</code> (IM7, resolved via
+<code>winFindExe</code>) → <code>ffmpeg</code> → give up (frontend already renders a generic tile). IM6-on-Windows
+is not worth supporting. The POSIX chain returns to master bytes (see D8 for the Linux consequence).</div>
+</div>
+
+<div class="card">
+<h3>D7 · Copy/paste files: complete the round-trip on Windows</h3>
+<p class="loc">electron/main.js:827 (clip:read) <span class="badge b-low">LOW</span> · :857 (clip:file) <span class="badge b-med">MED</span></p>
+<p>Today the port writes files to the clipboard (with a wildcard bug) but never reads Explorer-copied files —
+so “copy in Explorer → paste path into terminal”, which works on macOS, silently yields nothing.</p>
+<div class="decision"><b>Recommended:</b> implement the read side via
+<code>clipboard.readBuffer('FileNameW')</code> in a win32 branch of <code>clip:read</code>,
+returning the same <code>{kind:'file'}</code> shape as the darwin pasteboard path — Explorer-copied files paste
+their quoted path into the terminal exactly like Finder-copied files do. Two implementation caveats:
+the buffer is NUL-terminated UTF-16LE (strip the trailing <code>\0</code> or the path is corrupt), and
+FileNameW carries only the <em>first</em> file of a multi-select copy — acceptable, since the macOS
+<code>public.file-url</code> path is single-file too. The write side switches to
+<code>Set-Clipboard -LiteralPath</code> with the path delivered via environment variable (fixes both the
+wildcard bug for <code>report[1].png</code>-style names and the rule-1 violation); it must keep spawning
+<code>powershell.exe</code> 5.1 — pwsh 6+ removed Set-Clipboard's file support.</div>
+</div>
+
+<div class="card">
+<h3>D8 · Linux stance: strict restore, no Linux-only improvements in this fork</h3>
+<p class="loc">main.js:75, :127 · server.js:1616 · app.js:5533 <span class="badge b-low">LOW</span> ×4</p>
+<p>Several port edits improve or alter Linux behavior (window chrome, quit label, thumbnail pipeline,
+⌘→Ctrl chrome rewriting, sleep-blocker calls). They all violate byte-for-byte and none serve the fork's
+mission — this repo ships Windows; upstream ships macOS; nobody ships Linux.</p>
+<div class="decision"><b>Recommended:</b> restore every one to master bytes; keep improvements only where they
+can live inside <code>IS_WIN</code>. Linux keeps behaving exactly like upstream (warts included).
+<span class="small">Alternative — keep Linux niceties behind <code>isLinux()</code> branches: defensible, but it
+grows a third platform surface nobody tests. Say the word if you want this instead.</span></div>
+</div>
+
+<div class="card">
+<h3>D9 · <code>FANBOX_SHELL</code> must beat an inherited <code>SHELL</code></h3>
+<p class="loc">electron/main.js:735 <span class="badge b-low">LOW</span></p>
+<div class="decision"><b>Recommended:</b> reorder the win32 candidate list to
+<code>FANBOX_SHELL → SHELL → powershell.exe</code>. The port-specific explicit setting should never lose to an
+env var leaked in by MSYS/Git-Bash. (POSIX list untouched — it doesn't have FANBOX_SHELL.)</div>
+</div>
+
+<div class="card">
+<h3>D10 · macOS behavioral parity restorations (the four that change what users/agents observe)</h3>
+<p class="loc">main.js:916 · :796 · :930 · :60 <span class="badge b-med">MED</span> ×4</p>
+<p>These four shared-path edits changed macOS runtime behavior and each gets platform-forked
+(POSIX = master bytes, Windows keeps the port behavior):</p>
+<ul>
+  <li><b>Busy detection</b> — <code>BARE_SHELL_RE</code> gained <code>powershell|pwsh|cmd</code>; on macOS a user
+  sitting inside <code>pwsh</code> now reads <em>idle</em>, so a sibling agent will type into their running program.
+  Split into POSIX regex (master) + win32 regex.</li>
+  <li><b>OSC stripping</b> in the PTY data path — changes <code>/api/agent/read</code> output and WeChat tails on
+  macOS (breaks <code>until</code> regexes written against upstream). OSC strip becomes win32-only.</li>
+  <li><b>cwd fallback</b> — macOS <code>pty:cwd</code>/<code>agentList</code> now report a stale spawn-time dir when
+  lsof fails, instead of upstream's honest <code>{ok:false}</code> (mis-navigates the file pane; feeds stale cwd to
+  agents). Fallback becomes win32-only (it IS the Windows mechanism; Windows has no lsof).</li>
+  <li><b>Window startup</b> — <code>show:false</code> + <code>ready-to-show</code> now hides the macOS window during
+  boot (and forever, if the renderer fails). Gate to win32, where it was presumably added against white-flash.</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="copy">Part I · 3 — User-facing copy (every string, tweakable)</h2>
+
+<h3>3a · New Chinese strings + EN dict entries (Windows/Linux vocabulary)</h3>
+<p>EN phrasing mirrors master's existing style (<i>“Moved to Trash — restorable from Trash”</i>). Chinese is the
+source language per project rule; each row lands in <code>i18n-dict.js</code> (plain keys) or
+<code>FANBOX_DICT_RULES</code> (patterns).</p>
+<div class="tblwrap">
+<table>
+<tr><th>Where</th><th>Chinese (source, exact key)</th><th>Proposed EN</th></tr>
+<tr><td>Context menu / skills panel</td><td class="zh">移到回收站</td><td>Move to Recycle Bin</td></tr>
+<tr><td>Delete toast</td><td class="zh">已移到回收站，可从回收站恢复</td><td>Moved to Recycle Bin — restorable from Recycle Bin</td></tr>
+<tr><td>Folder-delete confirm (rule)</td><td class="zh">把文件夹「…」移到回收站？可从回收站恢复。</td><td>Move folder “…” to Recycle Bin? You can restore it from the Recycle Bin.</td></tr>
+<tr><td>Skill-delete confirm (rule)</td><td class="zh">把「…」移到回收站？（系统回收站里随时可恢复）</td><td>Move “…” to Recycle Bin? (Restorable from the system Recycle Bin anytime)</td></tr>
+<tr><td>Copy-file toast (Win)</td><td class="zh">已复制文件，可在资源管理器里粘贴</td><td>File copied — paste it in File Explorer</td></tr>
+<tr><td>Copy-file toast (Linux/browser)</td><td class="zh">已复制文件，可在文件管理器里粘贴</td><td>File copied — paste it in your file manager</td></tr>
+<tr><td>Context menu (Win)</td><td class="zh">在 资源管理器 显示</td><td>Reveal in File Explorer</td></tr>
+<tr><td>Context menu (Linux/browser)</td><td class="zh">在 文件管理器 显示</td><td>Reveal in File Manager</td></tr>
+<tr><td>Desktop-agent launch toast (rule)</td><td class="zh">已启动 …</td><td>Launched …</td></tr>
+<tr><td>Power-tip state lines (rules)</td><td class="zh">…个终端会话运行中…（win 变体）</td><td>“… terminal session(s) running …” (mirror the macOS rule wording)</td></tr>
+<tr><td>Lid-tip body (Win)</td><td class="zh">开启后：只要还有终端会话在跑…</td><td>While on: as long as a terminal session is running, the system won't sleep…</td></tr>
+<tr><td>WeChat-tip body (Win)</td><td class="zh">…ClawBot 期间系统尽量不睡眠…</td><td>…keeps the system awake while ClawBot is connected…</td></tr>
+</table>
+</div>
+<p class="small">Exact Chinese for the last three comes from the strings already in <code>app.js</code>
+(they exist; only dict entries are missing) — the table abbreviates them.</p>
+
+<h3>3b · Copy reverts &amp; platform-conditional strings</h3>
+<ul>
+  <li><b>macOS View-menu label reverts</b> to master: <span class="zh">「合盖继续干活（生效中）」</span> /
+  “Keep working with lid closed (active)”. The Windows arm keeps its own
+  <span class="zh">「合盖后继续运行」</span> wording. <span class="loc">main.js:605</span></li>
+  <li><b>“Away from Mac” vs “Away from computer”</b> <span class="loc">i18n-dict.js:24</span> — the dict is keyed by
+  the shared Chinese <span class="zh">「离开电脑」</span>. Master EN says “Away from Mac”; the port flattened it to
+  “Away from computer”, deviating on macOS. <b>Recommended:</b> platform-conditional value in
+  <code>i18n-dict.js</code> (it's plain JS): <code>navigator.platform</code> contains “Mac” → “Away from Mac”,
+  else “Away from computer”. macOS parity restored, Windows stays natural.</li>
+  <li><b>Autosave hint</b> <span class="loc">app.js:1472</span> — dict already holds both
+  <span class="zh">「⌘S 立即保存」</span>/<span class="zh">「Ctrl+S 立即保存」</span> EN entries; app.js still
+  hard-codes ⌘S. Fix: build the hint with the platform modifier so the existing Ctrl+S key goes live on Windows
+  (macOS output byte-identical).</li>
+  <li><b>ZCode install hint</b> <span class="loc">app.js:2602</span> — macOS reverts to master
+  <span class="zh">「官网下载 dmg」</span>; the Windows arm says <span class="zh">「官网下载」</span>.</li>
+  <li><b>Windows-port badge SVG</b> <span class="loc">assets/badge-windows-x64.svg</span> — still reads
+  “x64 port · v2.7.0”. Update to v2.12.1 now, and add “regenerate badge version” to the release checklist so it
+  can't go stale again.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="golden">Part II · 4 — Golden-rule restoration (mechanical)</h2>
+<p>One pattern applied everywhere: <b>platform-fork the site</b> — the POSIX arm is pasted back from
+<code>git show master:&lt;file&gt;</code> verbatim; the port logic moves into the win32 arm. For shared constants
+(regexes), define both and select by platform. For frontend shared code, gate on <code>state.sep === '\\'</code> /
+the platform flag instead of broadening shared regexes. Acceptance for this whole section is textual (§6).</p>
+<div class="tblwrap">
+<table>
+<tr><th>Site</th><th>What deviated</th><th>Fork action</th></tr>
+<tr><td><code>main.js:916</code>+933/1028/1318</td><td>BARE_SHELL_RE broadened</td><td>POSIX regex = master; WIN regex used in win32 branches only (D10)</td></tr>
+<tr><td><code>main.js:796</code></td><td>OSC strip in shared onData</td><td>OSC alternative applied only when IS_WIN (D10)</td></tr>
+<tr><td><code>main.js:930,1279,1313</code></td><td>termCwds fallback on POSIX</td><td>fallback win32-only; POSIX returns master's <code>''</code>/<code>{ok:false}</code> (D10)</td></tr>
+<tr><td><code>main.js:60,84</code></td><td>show:false + ready-to-show</td><td>win32-only (D10)</td></tr>
+<tr><td><code>main.js:605</code></td><td>menu label rewritten</td><td>restore master strings in non-win arm (§3b)</td></tr>
+<tr><td><code>main.js:171</code></td><td>SHOT_NAME_RE broadened + watcher restructured</td><td>POSIX regex/body = master; win32 keeps Snipaste/屏幕截图 patterns</td></tr>
+<tr><td><code>main.js:334</code> (+220–230)</td><td>update check restructured into shared candidate loop; <code>REL_PAGE</code> became a template over <code>REL_REPO</code> and <code>fetchLatestRelease</code> now hits <code>${REL_REPO}</code></td><td>macOS body <em>and constants/fetcher</em> = master verbatim (literal REL_PAGE, hard-coded upstream URL); Windows gets <code>fetchLatestReleaseWin</code> + <code>REL_PAGE_WIN</code>; <code>update:download</code> stays shared with IS_WIN-guarded additions (e.g. the dmg-skip at :352)</td></tr>
+<tr><td><code>main.js:1112</code></td><td>POSIX ffmpeg candidates gained <code>which</code> lookup</td><td>restore master list; win32 uses winFindExe (D6 sibling)</td></tr>
+<tr><td><code>main.js:75,127</code></td><td>Linux chrome / unconditional trySetDisableSleep</td><td>restore master (D8)</td></tr>
+<tr><td><code>server.js:513</code></td><td>findAgentBin sanitizes before zsh probe</td><td>restore master probe text (names are internal constants; sanitize where win32 needs it)</td></tr>
+<tr><td><code>server.js:651</code></td><td>gh detection via zsh findAgentBin</td><td>restore <code>/bin/sh -lc 'command -v gh'</code> on POSIX; win32 → winFindExe('gh')</td></tr>
+<tr><td><code>server.js:1131</code></td><td>termVerify absolutization changed</td><td>POSIX = master; win32 branch handles drive-letter candidates</td></tr>
+<tr><td><code>server.js:1271</code></td><td>SYS refusal set grew Windows names (macOS ~/OneDrive lost its snapshot safety belt)</td><td>POSIX set = master; win32-only set adds AppData/OneDrive/… (+ D11 casing below)</td></tr>
+<tr><td><code>server.js:1312</code></td><td>trailing-backslash strip on POSIX paths</td><td>strip only when win32</td></tr>
+<tr><td><code>server.js:1616</code></td><td>Linux thumbnail pipeline changed</td><td>restore master; win32 chain per D6</td></tr>
+<tr><td><code>env.js:53</code></td><td>POSIX env parsing refactored (parseEnvLines)</td><td>POSIX path = master bytes; parseEnvLines stays for the win32 dump</td></tr>
+<tr><td><code>env.js:156</code></td><td>LANG normalization regex widened</td><td>restore master regex on POSIX (D3 handles win32)</td></tr>
+<tr><td><code>driver.js:295</code></td><td>stripAnsi regex changed for all platforms</td><td>two constants, selected by platform; POSIX = master</td></tr>
+<tr><td><code>app.js:3830,3840</code></td><td>link-detection regexes accept backslash/drive on macOS</td><td>backslash/drive alternatives active only when platform is win</td></tr>
+<tr><td><code>app.js:5533,224</code></td><td>applyPlatformChrome runs at init on POSIX; web-mode defaults to darwin</td><td>run only when it would change something (win); web-mode platform from <code>navigator.platform</code>, not a darwin default</td></tr>
+<tr><td><code>app.js:1939</code></td><td>diskPanel max fallback</td><td>restore master expression (win32 null-size handling stays separate)</td></tr>
+<tr><td><code>app.js:265</code></td><td>dirOf rewritten</td><td>master body for POSIX; drive-letter special case behind sep check</td></tr>
+<tr><td><code>i18n-dict.js:24</code></td><td>shared EN value changed</td><td>platform-conditional value (§3b)</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="mech">Part II · 5 — Mechanical correctness &amp; port-rule fixes (Windows-only surface)</h2>
+<div class="tblwrap">
+<table>
+<tr><th>Site</th><th>Bug</th><th>Fix</th></tr>
+<tr><td><code>main.js:1120</code> <span class="badge b-med">MED</span></td><td>findFfmpeg parses where.exe stdout (OEM mojibake under CJK usernames)</td><td>replace with <code>winFindExe('ffmpeg')</code> — the rule's own prescription</td></tr>
+<tr><td><code>server.js:1262</code> <span class="badge b-med">MED</span></td><td>snapEligible refusals case-sensitive; <code>c:\users\yx</code> snapshots the whole profile</td><td><b>D11:</b> on win32, canonicalize once (lowercase + separator-normalize) and run <em>all</em> refusal checks on the canonical form; POSIX checks byte-restored</td></tr>
+<tr><td><code>server.js:450</code> <span class="badge b-med">MED</span></td><td>trashPath: exec() → cmd.exe string; <code>%VAR%</code>-shaped names expand</td><td>execFile powershell argv-style with a <em>constant</em> <code>-Command</code> script that reads <code>$env:FANBOX_TRASH_PATH</code> (path via execFile's <code>env</code>), keeping the VB <code>FileSystem::DeleteFile/DeleteDirectory</code> recycle calls. <b>Do not</b> substitute <code>Remove-Item</code> — it deletes permanently, not to the Recycle Bin</td></tr>
+<tr><td><code>main.js:857</code> <span class="badge b-med">MED</span></td><td>clip:file wildcard + rule-1</td><td>D7 (env var + -LiteralPath)</td></tr>
+<tr><td><code>server.js:943</code> <span class="badge b-low">LOW</span></td><td>winDirSizes interpolates path into -Command</td><td>path via env var; <code>-LiteralPath $env:…</code>; script text becomes constant</td></tr>
+<tr><td><code>app.js:1943</code> <span class="badge b-med">MED</span></td><td>disk panel joins with '/', dirOf splits on '\\' — “up” teleports; C:\ up-row loops</td><td>join children with <code>state.sep</code>; hide up-row at drive root (win) as at '/' (mac)</td></tr>
+<tr><td><code>app.js:5553</code> <span class="badge b-med">MED</span></td><td>md-image fallback hard-codes '/', drops document dir; final join <code>'/fs' + encodeURI(abs)</code> yields <code>/fsC:\…</code> on Windows</td><td>resolve via sep-aware dirOf; treat <code>/^[A-Za-z]:[\\/]/</code> as absolute; emit <code>'/fs/'</code> + forward-slash form of abs (the D1 URL shape) so the server's win32 leading-slash strip applies</td></tr>
+<tr><td><code>app.js:2627</code> <span class="badge b-med">MED</span></td><td>single-app which-map overwrites cache; “not installed” badges vanish</td><td><code>Object.assign</code> into existing map, never replace; badge check treats missing key as unknown → probe</td></tr>
+<tr><td><code>driver.js:16</code> <span class="badge b-low">LOW</span></td><td>quoted PATH entries not unquoted</td><td>strip surrounding quotes per entry (matches winFindExe behavior)</td></tr>
+<tr><td><code>main.js:735</code> <span class="badge b-low">LOW</span></td><td>SHELL beats FANBOX_SHELL</td><td>D9 reorder</td></tr>
+<tr><td><code>main.js:827</code> <span class="badge b-low">LOW</span></td><td>no Explorer-file paste</td><td>D7 FileNameW read</td></tr>
+<tr><td><code>server.js:2668</code> <span class="badge b-low">LOW</span></td><td>cron quoting vs cmd.exe</td><td>D4 force PowerShell for cron tabs</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="verify">Part II · 6 — Phasing, verification, release</h2>
+<h3>Phases (each lands as its own conventional commit on <code>dev</code>)</h3>
+<ol>
+  <li><b>P1 highs:</b> D1 /fs scheme (both ends + preview containment), taskkill ordering, Finder-label revert. </li>
+  <li><b>P2 user-facing:</b> §3 dict entries + copy reverts, D3 LANG, D6 thumbnails, D7 clipboard both ways, badge.</li>
+  <li><b>P3 golden-rule sweep:</b> the §4 table, file by file (main.js → server.js → wechat → app.js).</li>
+  <li><b>P4 mechanical:</b> remaining §5 rows (snapEligible casing, trashPath argv, winDirSizes, disk panel, md fallback, which-cache, cron shell, FANBOX_SHELL, PATH quotes).</li>
+</ol>
+<h3>Acceptance</h3>
+<ul>
+  <li><b>Golden-rule audit (the load-bearing check):</b> after P3, review <code>git diff master...dev</code> for the
+  five core JS files and require every remaining hunk to fall into one of <b>three</b> accepted categories:
+  (a) inside an <code>IS_WIN</code>/<code>isWindows()</code>/<code>PLATFORM==='win32'</code> guard;
+  (b) a pure addition (new win-only function, new dict entries);
+  (c) a whitelisted one-liner rewrite whose only behavioral branch is behind a platform/sep guard — unavoidable
+  for shared one-line sites like <code>dirOf</code>, <code>fsUrl</code>, <code>i18n-dict.js:24</code>, and the
+  <code>REL_*</code> constant selections, where the guard necessarily lives <em>inside</em> the hunk.
+  Preserve the reviewed diff as <code>experiments/winport-parity-202607/</code> with a <code>verify.js</code> that
+  mechanically re-checks “no hunk outside categories a/b/c” (category c against the explicit whitelist) — per the
+  repo's acceptance-campaign convention.</li>
+  <li><b>Per-commit:</b> <code>node --check</code> on every touched file; server smoke test
+  (<code>FANBOX_NO_OPEN=1 FANBOX_PORT=45991 node server.js</code> + the three curl probes).</li>
+  <li><b>macOS-term leak audit:</b> grep the Windows-reachable surface (win32 branches, shared frontend strings,
+  EN dict values selected on Windows) for <code>Finder</code>/<span class="zh">访达</span>/<span class="zh">废纸篓</span>/⌘/<code>dmg</code>/<code>zsh</code>/<code>lsof</code>/<code>pbpaste</code>/<code>osascript</code> —
+  nothing macOS-only may be visible or executable on Windows (occurrences inside darwin-only arms are fine);
+  cross-check against the §“macOS-only surface” mapping table.</li>
+  <li><b>Windows manual matrix — run on a physical Windows 10/11 x64 machine; passing it is the merge gate for
+  <code>dev</code> → <code>windows</code>:</b> HTML preview with relative assets; md with relative + absolute local images;
+  EN-mode trash flow (menu → confirm → toast); Explorer copy → paste into terminal; <code>report[1].png</code>
+  copy-file; WeChat codex timeout → <code>tasklist</code> shows no orphan; ffmpeg under a CJK username;
+  IM7 thumbnails; snapshot attempt from a <code>c:\users\…</code>-cased cwd (must refuse); scheduled task with
+  <code>&amp;</code> in the prompt; disk-panel descend/ascend; update check against a docs-only release (no toast).</li>
+  <li><b>macOS regression:</b> textual — the §4 audit above <i>is</i> the macOS test (byte-identical code needs no
+  behavioral retest); plus one smoke build if convenient.</li>
+</ul>
+<h3>Release — target v2.12.1, gated on real-Windows testing</h3>
+<ul>
+  <li><b>Version stays 2.12.1.</b> <code>package.json</code> already reads 2.12.1 and the CHANGELOG already
+  carries a <code>[2.12.1] → ### Windows port</code> subsection; remediation entries (root-cause narratives) are
+  folded into that subsection as each phase lands. No 2.12.2, no version bump — the remediated port <em>is</em>
+  the v2.12.1 Windows release.</li>
+  <li><b>All remediation commits land on <code>dev</code>.</b> <code>windows</code> is the release line only:
+  <b>do not merge <code>dev</code> → <code>windows</code> until the full Windows manual matrix above passes on a
+  physical Windows 10/11 x64 machine.</b></li>
+  <li>Once the matrix passes: merge <code>dev</code> → <code>windows</code>, tag, and publish the GitHub Release
+  with <b>both</b> assets attached at publish time (<code>FanBox-2.12.1-win-x64.exe</code> +
+  <code>-portable.exe</code>).</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="trace">Part II · 7 — Traceability: 57 findings → plan</h2>
+<p class="small">Review report of 2026-07-29 (4 high / 22 medium / 31 low, all adversarially verified).
+Machine-readable source: session scratchpad <code>final.json</code>.</p>
+<div class="tblwrap">
+<table>
+<tr><th>#</th><th>Finding</th><th>Sev</th><th>Plan item</th></tr>
+<tr><td>1</td><td>server.js:2819 /fs drive-letter decode</td><td>high</td><td>H1 / D1</td></tr>
+<tr><td>2</td><td>driver.js:119 taskkill defeated</td><td>high</td><td>H2</td></tr>
+<tr><td>3</td><td>app.js:747 fsUrl single-segment</td><td>high</td><td>H3 / D1</td></tr>
+<tr><td>4</td><td>app.js:1968 访达 menu string</td><td>high</td><td>H4 / D2</td></tr>
+<tr><td>5</td><td>main.js:857 clip:file PS wildcards</td><td>med</td><td>D7 / §5</td></tr>
+<tr><td>6</td><td>main.js:1120 findFfmpeg where.exe</td><td>med</td><td>§5</td></tr>
+<tr><td>7</td><td>main.js:769 LANG=zh_CN forced</td><td>med</td><td>D3</td></tr>
+<tr><td>8</td><td>main.js:916 BARE_SHELL_RE shared</td><td>med</td><td>D10 / §4</td></tr>
+<tr><td>9</td><td>server.js:1262 snapEligible casing</td><td>med</td><td>D11 / §5</td></tr>
+<tr><td>10</td><td>driver.js:98 PS fallback persona</td><td>med</td><td>D5</td></tr>
+<tr><td>11</td><td>app.js:5553 md-image fallback</td><td>med</td><td>§5</td></tr>
+<tr><td>12</td><td>app.js:1943 disk panel separators</td><td>med</td><td>§5</td></tr>
+<tr><td>13</td><td>app.js:2627 which-cache poisoning</td><td>med</td><td>§5</td></tr>
+<tr><td>14–18</td><td>app.js:1653/1645/1973/4390/849 回收站 i18n cluster</td><td>med</td><td>§3a</td></tr>
+<tr><td>19</td><td>main.js:60 show:false unconditional</td><td>med</td><td>D10 / §4</td></tr>
+<tr><td>20</td><td>main.js:796 OSC strip shared</td><td>med</td><td>D10 / §4</td></tr>
+<tr><td>21</td><td>main.js:930 cwd fallback POSIX</td><td>med</td><td>D10 / §4</td></tr>
+<tr><td>22</td><td>server.js:1271 SYS set on macOS</td><td>med</td><td>§4</td></tr>
+<tr><td>23</td><td>server.js:651 gh via zsh</td><td>med</td><td>§4</td></tr>
+<tr><td>24</td><td>main.js:605 menu label</td><td>med</td><td>§3b</td></tr>
+<tr><td>25</td><td>server.js:1625/1788 bare convert</td><td>med</td><td>D6</td></tr>
+<tr><td>26</td><td>server.js:450 trashPath cmd string</td><td>med</td><td>§5</td></tr>
+<tr><td>27</td><td>main.js:735 FANBOX_SHELL order</td><td>low</td><td>D9</td></tr>
+<tr><td>28</td><td>main.js:827 clip:read gap</td><td>low</td><td>D7</td></tr>
+<tr><td>29</td><td>server.js:943 winDirSizes -Command</td><td>low</td><td>§5</td></tr>
+<tr><td>30</td><td>server.js:2668 cronShq vs cmd.exe</td><td>low</td><td>D4</td></tr>
+<tr><td>31</td><td>driver.js:16 quoted PATH entries</td><td>low</td><td>§5</td></tr>
+<tr><td>32</td><td>env.js:156 LANG regex POSIX</td><td>low</td><td>§4</td></tr>
+<tr><td>33–36</td><td>app.js:2632/5207/5215/5234 Windows tip/toast i18n</td><td>low</td><td>§3a</td></tr>
+<tr><td>37</td><td>app.js:1472 ⌘S hard-coded</td><td>low</td><td>§3b</td></tr>
+<tr><td>38</td><td>app.js:224 web-mode darwin default</td><td>low</td><td>§4</td></tr>
+<tr><td>39</td><td>app.js:3830 quoted-link backslash</td><td>low</td><td>§4</td></tr>
+<tr><td>40</td><td>i18n-dict.js:24 Away from Mac</td><td>low</td><td>§3b</td></tr>
+<tr><td>41</td><td>main.js:171 SHOT_NAME_RE</td><td>low</td><td>§4</td></tr>
+<tr><td>42</td><td>main.js:1112 POSIX which ffmpeg</td><td>low</td><td>§4</td></tr>
+<tr><td>43</td><td>driver.js:295 stripAnsi shared</td><td>low</td><td>§4</td></tr>
+<tr><td>44</td><td>env.js:53 parseEnvLines POSIX</td><td>low</td><td>§4</td></tr>
+<tr><td>45</td><td>server.js:513 findAgentBin sanitize</td><td>low</td><td>§4</td></tr>
+<tr><td>46</td><td>server.js:1131 termVerify POSIX</td><td>low</td><td>§4</td></tr>
+<tr><td>47</td><td>app.js:3840 path-link regex</td><td>low</td><td>§4</td></tr>
+<tr><td>48</td><td>server.js:1312 trailing backslash</td><td>low</td><td>§4</td></tr>
+<tr><td>49</td><td>app.js:1939 diskPanel max fallback</td><td>low</td><td>§4</td></tr>
+<tr><td>50</td><td>app.js:2602 ZCode hint macOS</td><td>low</td><td>§3b</td></tr>
+<tr><td>51</td><td>app.js:5533 applyPlatformChrome POSIX</td><td>low</td><td>§4 / D8</td></tr>
+<tr><td>52</td><td>main.js:75 Linux chrome</td><td>low</td><td>D8</td></tr>
+<tr><td>53</td><td>server.js:1616 Linux thumbnails</td><td>low</td><td>D8 / D6</td></tr>
+<tr><td>54</td><td>main.js:334 update-check restructure</td><td>low</td><td>§4</td></tr>
+<tr><td>55</td><td>main.js:127 trySetDisableSleep</td><td>low</td><td>§4 / D8</td></tr>
+<tr><td>56</td><td>app.js:265 dirOf rewrite</td><td>low</td><td>§4</td></tr>
+<tr><td>57</td><td>badge-windows-x64.svg v2.7.0</td><td>low</td><td>§3b</td></tr>
+</table>
+</div>
+
+<p class="small">Refuted during review (no action): <code>useConpty:true</code> does not disable the winpty
+fallback — node-pty 1.x treats <code>true</code> as build-number auto-detection.</p>
+
+</body>
+</html>
