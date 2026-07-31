@@ -18,6 +18,22 @@
 
 ### Windows port
 
+- **恶意 Markdown 文件可在主渲染进程中执行任意脚本**（本次 Windows 发版随附，上游 PR 待合并）：marked.parse 解析生成的 HTML 字符串曾有五条渲染路径未经过滤便写入 innerHTML，涵盖 mdReadBody、semanticSig、微信消息体、版本历史以及 typeset.js 的排版档。
+
+  Markdown 语法原生支持内嵌 HTML 标记，例如用于折叠展开的 details 标签。因此文件内部注入的 img onerror 等恶意标签会被当作合法 DOM 节点解析执行。
+
+  由于代码运行在主渲染进程中，preload 暴露的 fanboxPty、fanboxFs 和 fanboxAgentCtl 等 IPC 桥接对象均挂载于当前 window 作用域。攻击脚本由此获得创建终端进程、输入指令以及读写本地文件的系统级权限，而非受限的 Web 沙箱权限。虽然 contextIsolation 和 nodeIntegration 的配置本身符合安全规范，但漏洞根源在于 Markdown 渲染发生在具备高权限的渲染进程一侧。
+
+  该漏洞无需社交工程诱骗即可触发。在 FanBox 的日常使用中，Agent 自动抓取外部内容并写入项目 Markdown 文件属于标准流程，用户只需点击查看文件即可触发攻击。
+
+  用于编辑器入口无损判定的 semanticSig 同样使用了这条 innerHTML 渲染链条，这意味着用户仅仅打开文件就会触发漏洞，无需专门切换到阅读模式。
+
+  目前已内置 DOMPurify 消毒库，并将 Markdown 渲染收敛至唯一的 mdHtml 入口，上述五条渲染路径已全部重构切换至此入口。在 DOMPurify 缺失或加载失败时，系统将执行 fail closed 策略，强制退回纯文本转义处理。安全组件决不能在自身失效时选择默认放行。
+
+  基于预览端口的沙箱预览 iframe 原本即处于跨源隔离状态，不受此漏洞影响，本次修正未做变动。
+
+  该修复触及 POSIX 与 Windows 共用的渲染代码，属于金规（POSIX 路径与 master 逐字一致）的一次有意偏离：漏洞已在本机验证可利用，不应为保持代码整洁而让 Windows 用户继续暴露。上游 PR 合并后，此改动将与上游版本收敛，届时可回退为直接继承。偏离记录见 experiments/winport-parity-202607/README.md。
+
 - **v2.12.1 移植修复（57 项 code review 清账，见 docs/win-port-implementation-plan-v2.12.1.html）**：
   - **H1/H3 `/fs/` 盘符路径**：前端 `fsUrl` 在 win 上按段切分两边分隔符 → `/fs/C:/…`；主服务与预览服务 decode 后 win32-only 剥前导 `/`；预览 `$HOME` 子树校验改大小写不敏感。HTML 相对资源 / md 本地图重新可用
   - **H2 WeChat 超时杀树**：`taskkill /T /F` 跑完再 `child.kill` 兜底，避免根进程先死导致孙进程孤儿烧 token
