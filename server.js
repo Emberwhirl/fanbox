@@ -978,7 +978,7 @@ function winDirSizes(dir) {
   return new Promise((resolve) => {
     // §5: constant -Command script; path via env + -LiteralPath (no user-path interpolation)
     const ps = [
-      `$ErrorActionPreference='SilentlyContinue'`,
+      `$ErrorActionPreference='SilentlyContinue';`,
       `Get-ChildItem -LiteralPath $env:FANBOX_DIR_SIZES -Directory -Force | ForEach-Object {`,
       `$s=(Get-ChildItem -LiteralPath $_.FullName -Recurse -Force -File | Measure-Object -Property Length -Sum).Sum;`,
       `if($null -eq $s){$s=0};`,
@@ -1278,7 +1278,9 @@ const SNAP_EXCLUDE = [
 const snapThrottle = new Map(); // project → 上次尝试 ms（15s 内不重复扫）
 const snapDead = new Set();     // 本次运行内放弃的目录（太大/超时），别每轮都撞一次
 // 符号链接归一化：/tmp → /private/tmp 这类别名会让 cwd 和 HOME 字符串对不上、绕过资格守卫
-const snapReal = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
+// win：realpathSync.native 会把大小写归一成磁盘真实形态（c:\users → C:\Users），
+// 否则同一项目两种写法会算出两把 throttle 键/两个影子仓库；POSIX 保持 master 的 realpathSync
+const snapReal = (p) => { try { return PLATFORM === 'win32' ? fs.realpathSync.native(p) : fs.realpathSync(p); } catch { return p; } };
 
 function snapGitDir(project) {
   return path.join(SNAP_ROOT, crypto.createHash('sha1').update(project).digest('hex').slice(0, 16));

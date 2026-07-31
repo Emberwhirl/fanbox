@@ -721,7 +721,21 @@ function fixLocalImages(root, srcPath) {
     if (!raw || /^(https?:|data:|blob:|\/api\/|\/fs\/)/i.test(raw)) return;
     let rel = raw.split('#')[0].split('?')[0];
     try { rel = decodeURIComponent(rel); } catch { /* 本来就没编码 */ }
-    const abs = rel.startsWith('/') ? rel : normPath(base + '/' + rel);
+    let abs;
+    if (state.sep === '\\') {
+      // win：盘符/UNC 开头就是绝对路径；相对路径按文档目录逐段折叠（两种斜杠都认）。
+      // 不能走下面 POSIX 的 normPath——它会拼出带前导 / 的 /C:\…，/api/raw 解析必 404
+      if (/^[A-Za-z]:[\\/]/.test(rel) || rel.startsWith('\\\\')) abs = rel;
+      else {
+        const stack = base.split(/[\\/]/).filter(Boolean);
+        for (const seg of rel.split(/[\\/]/)) {
+          if (seg === '..') stack.pop(); else if (seg && seg !== '.') stack.push(seg);
+        }
+        abs = stack.join('/');
+      }
+    } else {
+      abs = rel.startsWith('/') ? rel : normPath(base + '/' + rel);
+    }
     im.setAttribute('src', '/api/raw?path=' + encodeURIComponent(abs));
   });
 }
