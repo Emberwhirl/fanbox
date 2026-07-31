@@ -13,7 +13,14 @@ const loginShell = () => process.env.SHELL || (isWin() ? 'powershell.exe' : '/bi
 // 它们的输出按 OEM 代码页编码，中文用户名路径会被 UTF-8 误解码成乱码 → existsSync 失败
 function winFindOnPath(name, env) {
   const e = env || process.env;
-  const dirs = String(e.Path || e.PATH || '').split(';').map((s) => s.trim()).filter(Boolean);
+  // §5: strip surrounding quotes on PATH entries (matches winFindExe in server.js)
+  const dirs = String(e.Path || e.PATH || '').split(';').map((s) => {
+    let t = s.trim();
+    if (t.length >= 2 && ((t[0] === '"' && t[t.length - 1] === '"') || (t[0] === "'" && t[t.length - 1] === "'"))) {
+      t = t.slice(1, -1);
+    }
+    return t;
+  }).filter(Boolean);
   const exts = String(e.PATHEXT || process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
   const hasExt = /\.[^\\/.]+$/.test(name);
   for (const d of dirs) {
@@ -36,6 +43,7 @@ function winFindOnPath(name, env) {
 // 好处一次讲清：stdin 字节透明（中文不被 PS 按控制台代码页重编码成 ???）、参数是真 argv
 //（人格带引号/换行不会被 .cmd/PS 的再引用规则拆碎）、kill 杀得到本体（不会留孤儿烧 token）
 function resolveWinCli(name, env) {
+  // D5: probe real .exe first (standalone installs), then npm-shim → node entry. No shell string fallback.
   const hit = winFindOnPath(name, env);
   if (!hit) return null;
   const ext = path.extname(hit).toLowerCase();
@@ -87,20 +95,19 @@ async function run(cmd, stdinText, cwd, opts = {}, onLine = null) {
       const [name, ...rest] = Array.isArray(cmd) ? cmd : [String(cmd)];
       const spawnCwd = cwd || env.HOME || env.USERPROFILE || process.env.USERPROFILE || process.env.HOME;
       const resolved = resolveWinCli(name, env);
-      if (resolved) {
-        child = spawn(resolved.file, [...resolved.preArgs, ...rest], {
-          cwd: spawnCwd,
-          env: resolved.extraEnv ? { ...env, ...resolved.extraEnv } : env,
-          windowsHide: true,
+      if (!resolved) {
+        // D5: no PowerShell string-building fallback (rule 1). Predictable "CLI not found".
+        resolve({
+          ok: false, out: '', err: `CLI not found: ${name} — install it with npm i -g ${name === 'codex' ? '@openai/codex' : '@anthropic-ai/claude-code'}`,
+          ms: Date.now() - started,
         });
-      } else {
-        // 兜底（基本走不到：which() 探测不到时上层根本不会调进来）：退回 PowerShell 中转
-        const psq = (s) => `'${String(s).replace(/'/g, "''")}'`;
-        child = spawn('powershell.exe', [
-          '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-          '-Command', [name, ...rest.map(psq)].join(' '),
-        ], { cwd: spawnCwd, env, windowsHide: true });
+        return;
       }
+      child = spawn(resolved.file, [...resolved.preArgs, ...rest], {
+        cwd: spawnCwd,
+        env: resolved.extraEnv ? { ...env, ...resolved.extraEnv } : env,
+        windowsHide: true,
+      });
     } else {
       child = spawn(loginShell(), ['-lc', cmd], {
         cwd: cwd || env.HOME || process.env.HOME,
@@ -110,13 +117,22 @@ async function run(cmd, stdinText, cwd, opts = {}, onLine = null) {
     let out = '', err = '', done = false, lineBuf = '', idleTimer = null;
     const finish = (r) => { if (done) return; done = true; clearTimeout(idleTimer); clearTimeout(maxTimer); resolve({ ...r, ms: Date.now() - started }); };
     const kill = (reason) => {
+      // H2: run taskkill to completion first; child.kill only as fallback (macOS: SIGKILL group semantics).
+      // Inverting order let the root die first so taskkill found no tree and grandchildren survived.
       try {
         if (isWin()) {
-          // taskkill /T 杀整棵进程树：child 可能是 node 直跑的本体（自己还会再开 helper），
-          // 也可能是兜底的 PS 壳——只 child.kill() 会把真正干活的 claude/codex 留成孤儿，
-          // 超时重试 3 次就是 3 个孤儿同时改同一个项目、一起烧 token
-          if (child.pid) execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, timeout: 5000 }, () => { /* */ });
-          child.kill();
+          const fallbackKill = () => { try { child.kill(); } catch { /* */ } };
+          if (child.pid) {
+            // 绝对路径：裸名会先在 cwd（用户项目目录）里找 taskkill.exe
+            const taskkillExe = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe');
+            execFile(taskkillExe, ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, timeout: 5000 }, (tkErr, _o, tkStderr) => {
+              if (tkErr) {
+                // non-zero exit / ENOENT: log, then fall back to killing the root handle
+                try { console.error('[wechat/driver] taskkill failed', tkErr.code || tkErr.message, String(tkStderr || '').trim()); } catch { /* */ }
+                fallbackKill();
+              }
+            });
+          } else fallbackKill();
         } else child.kill('SIGKILL');
       } catch { /* */ }
       finish({ ok: false, out, err: err + `\n[超时:${reason}]`, timedOut: true, timeoutReason: reason });

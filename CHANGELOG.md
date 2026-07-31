@@ -17,6 +17,23 @@
 - **侧栏「定时任务」入口对齐修复**：入口此前没有自己的样式规则，只吃 `.nav-title` 默认值——左边比「Skills 透视」「Agent 用量」突出 8px、紧贴上一行像折行，鼠标手型和 hover 反馈也没有。补上与相邻入口一致的内边距（16px 左、10px 上）、cursor 和 hover
 
 ### Windows port
+
+- **v2.12.1 移植修复（57 项 code review 清账，见 docs/win-port-implementation-plan-v2.12.1.html）**：
+  - **H1/H3 `/fs/` 盘符路径**：前端 `fsUrl` 在 win 上按段切分两边分隔符 → `/fs/C:/…`；主服务与预览服务 decode 后 win32-only 剥前导 `/`；预览 `$HOME` 子树校验改大小写不敏感。HTML 相对资源 / md 本地图重新可用
+  - **H2 WeChat 超时杀树**：`taskkill /T /F` 跑完再 `child.kill` 兜底，避免根进程先死导致孙进程孤儿烧 token
+  - **H4/D2 Finder 标签**：macOS 恢复 master「在 Finder 显示」；Windows「在 资源管理器 显示」、其它「在 文件管理器 显示」；配套 i18n
+  - **D1–D11 默认决策**：不设 win32 `LANG`（Git 跟系统语言）；agent 定时任务强制 PowerShell；删 WeChat PS 字符串兜底；缩略图 win 链 `magick→ffmpeg` 永不裸 `convert`；Explorer 剪贴板 `FileNameW` 读 + `Set-Clipboard -LiteralPath` 写；Linux 严格回 master；`FANBOX_SHELL` 优先于 `SHELL`；忙闲/OSC/cwd 兜底/`show:false` 全部 win32 分叉
+  - **金规恢复**：POSIX 路径按 master 字节恢复（`snapEligible` SYS 集、`findAgentBin` zsh probe、`generateThumb` sips/qlmanage、env 的 `/UTF-8/i` 等）；Windows 逻辑进 `IS_WIN`/`PLATFORM==='win32'` 分支
+  - **机械修复**：`trashPath`/`winDirSizes` 路径走 env 变量 argv 式 PowerShell；`snapEligible` win 大小写规范化；磁盘面板 sep 拼接 + 盘符根隐藏「上一级」；which 缓存 `Object.assign`；badge → v2.12.1
+  - 验收：`experiments/winport-parity-202607/verify.js`；实现笔记 `docs/win-port-implementation-notes-v2.12.1.html`。物理 Windows 矩阵仍是 `dev→windows` 合并门禁
+- **移植修复的二轮复审清账**：对上一条的改动再跑一遍多路 code review，修掉它自己引入的问题——
+  - **预览服务器点目录闸被 8.3 短名整条绕过**：NTFS 在系统盘默认生成短名（`.ssh`→`SSH~1`、`.claude`→`CLAUDE~1`），短名里没有点，而闸门是按「段名开头是不是 `.`」判的。预览 iframe 开着 `allow-same-origin`，恶意预览页的 JS 能 `fetch('/fs/C:/Users/x/SSH~1/id_rsa')` 拿到私钥再外发。改成先 `fs.realpathSync.native` 展成长名再判（顺带解开目录联接，堵死 `mklink /J` 指到 `C:\Windows` 的花招）；realpath 失败且路径含 `~n` 一律拒。回归用例见 `experiments/winport-parity-202607/preview-guard.test.js`
+  - **裸命令名在 Windows 上会先搜当前目录**：libuv 解析不带路径的命令时先看 cwd 再查 PATH，而 `/api/git` 恰好用「用户正在浏览的目录」当 cwd——仓库里放个 `git.exe` 就能在点开文件夹时以用户身份执行。git/快照/发版三处 `execFile` 加 `NoDefaultCurrentDirectoryInExePath`（只作用于自己 spawn 的子进程，用户终端 PTY 保持原生语义）；powershell/cmd/explorer/taskkill 一律改走 `System32` 绝对路径
+  - **md 相对图在 Windows 上全 404**：兜底解析把盘符算了两次（`stack` 首段已是 `C:`，又另外拼了一次 `drive`），得到 `C:/C:/Users/…`。同时该兜底被改成走预览端口，而预览端口只出 `$HOME` 子树——macOS 上 `/tmp`、`/Volumes` 里的图片因此从能显示变成 403。改回主端口 `/fs/`（POSIX 与 master 逐字一致），win 多补一个前导 `/` 交给服务端剥
+  - **PowerShell 引号转义**：拖入/粘贴路径的 `shQuote` 与发版向导的 `shellQuote` 都只做 POSIX 的 `'\''`，而 Windows 的 PTY 是 PowerShell（转义靠 `''`）——文件名带 `'` 时后半段会跑到引号外面。两处按平台分叉。发版命令串联符同理：PowerShell 5.1 不认 `&&`，改用右折叠的 `if($?){…}` 保住「前一步失败就不往下走」
+  - **发版/整理里的 mac 残留**：AI 整理的默认策略仍写着「移入废纸篓 `~/.Trash/`」，Windows 上等于指挥 agent 去建一个假回收站；发版命令的产物 glob 还是 `dist/*.dmg`。两处按平台给 Windows 的说法（回收站 / `*win*.exe`）
+  - **其它**：`FFMPEG_PATH` 恢复为最高优先级（否则被 PATH 上功能阉割的 ffmpeg 顶掉）；多帧 GIF/HEIC 缩略图加 `-delete 1--1`（否则 magick 写成 `xxx-0.png`，等的文件根本不存在）；目录联接的回收改用 `stat` 判类型（`lstat` 报 link → 派给 `DeleteFile` 必失败）；`termVerify` 的 win 绝对路径判断改用 `path.isAbsolute` 并删掉已死的 `isAbsPathCand`
+  - **i18n 与金规回收**：补上 EN 模式下仍漏中文的 Windows 文案（电源提示整句、终端数状态行、启动失败 toast），「this Mac」类英文按平台改成 computer/PC；macOS 恢复 master 的「在访达显示」「在访达打开」原文；反斜杠分隔符、`isRel`/basename、Linux 的退出菜单与 `clip:file` 全部退回 master 行为
 - **对齐上游 v2.12.1**：在 v2.7.0 Windows 移植线上合并上游 2.8.0–2.12.1（阅读/排版档、导出长图、`/api/img-proxy`、侧栏「离开电脑」+ `fanboxPower` IPC、版本历史、定时任务、会话布局还原、剪贴板图粘终端、milkdown 图注修复等）。冲突面收敛到 `electron/main.js` / `public/app.js`；`server.js` 等自动合并后审计保留 `winFindExe` / `snapEligible` / `parseWinProxyServer` 等 Windows 分支
 - **电源 IPC 收编 + Windows 仍可用**：上游把 `wechat:setStayAwake` / `wechat:powerState` 收到 `power:state` / `power:setLid` / `power:setWechat` + `power:changed`。Windows 继续用 `powerSaveBlocker`（无需提权）；侧栏「离开电脑」对 `win32` 显示，「合盖继续干活」文案改为「有任务时保持唤醒」。忙闲：macOS 用前台进程名 + 2 分钟收工缓冲；win32 上 `p.process` 静态，电源侧按「有终端会话」计（agent 互控仍走 `winPtyBusy` 子进程探测）
 - **更新下载 no-asset 守卫平台化**：上游只认 `FanBox-<ver>-<arch>.dmg`；Windows 候选为 fork 的 `FanBox-<ver>-win-<arch>.exe` / `-portable.exe`，并与 `latestAssets` 清单对齐——当前架构没有安装包时开发布页并返回 `no-asset`，前端 toast 不再只写 dmg

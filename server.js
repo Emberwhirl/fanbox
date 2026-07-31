@@ -24,6 +24,20 @@ const THUMB_DIR = path.join(CONFIG_DIR, 'thumbs');
 const PUBLIC = path.join(__dirname, 'public');
 const PLATFORM = process.platform;
 
+// Windows 专用：系统自带程序一律走绝对路径，第三方裸命令名（git 等）走 winSpawnEnv()。
+// 原因见下：libuv 解析裸名时会先搜「当前目录」。POSIX 上这些常量都用不到。
+const WIN_SYS32 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
+const WIN_PS = path.join(WIN_SYS32, 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+const WIN_CMD = path.join(WIN_SYS32, 'cmd.exe');
+const WIN_EXPLORER = path.join(process.env.SystemRoot || 'C:\\Windows', 'explorer.exe');
+// Windows 上 libuv 解析裸命令名时先搜 cwd 再搜 PATH：被浏览的仓库里放个 git.exe，
+// /api/git 就会以用户身份执行它。给「我们自己 spawn 的」子进程关掉这个行为
+// （NoDefaultCurrentDirectoryInExePath），用户终端 PTY 不受影响，仍是原生 Windows 语义。
+function winSpawnEnv(extra) {
+  if (PLATFORM !== 'win32') return extra ? { ...process.env, ...extra } : undefined;
+  return { ...process.env, NoDefaultCurrentDirectoryInExePath: '1', ...(extra || {}) };
+}
+
 // 搜索 / 遍历时跳过的重目录，避免 vibe coding 项目里 node_modules 拖垮速度
 const IGNORE_DIRS = new Set([
   'node_modules', '.git', '.next', 'dist', 'build', '.cache', '.venv', 'venv',
@@ -445,9 +459,23 @@ function trashPath(p) {
       // POSIX file 必须 as alias 强转，否则 Finder 解析不了报 -1728
       cmd = `osascript -e 'on run argv' -e 'tell application "Finder" to delete (POSIX file (item 1 of argv) as alias)' -e 'end run' ${shellQuote(target)}`;
     } else if (PLATFORM === 'win32') {
-      const method = isDir ? 'DeleteDirectory' : 'DeleteFile';
-      const ps = target.replace(/'/g, "''");
-      cmd = `powershell -NoProfile -Command "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::${method}('${ps}','OnlyErrorDialogs','SendToRecycleBin')"`;
+      // §5: argv-style PowerShell — path via env (never interpolates user path into -Command).
+      // Keep VB FileSystem::Delete* SendToRecycleBin (Remove-Item is permanent delete).
+      // 目录联接/符号链接的 lstat 报的是 link 不是 dir，会被派到 DeleteFile，而 VB 那边
+      // File.Exists 对目录为 false → 必然抛错。win 上用 stat（跟随链接）重判一次
+      let winIsDir = isDir;
+      try { winIsDir = fs.statSync(target).isDirectory(); } catch { /* 断链就沿用 lstat 的判断 */ }
+      const method = winIsDir ? 'DeleteDirectory' : 'DeleteFile';
+      const script = `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::${method}($env:FANBOX_TRASH_PATH,'OnlyErrorDialogs','SendToRecycleBin')`;
+      execFile(WIN_PS, ['-NoProfile', '-NonInteractive', '-Command', script], {
+        env: { ...process.env, FANBOX_TRASH_PATH: target },
+        windowsHide: true,
+        timeout: 30000,
+      }, (err) => {
+        if (!err) return resolve({ ok: true });
+        resolve({ ok: false, error: err.message });
+      });
+      return;
     } else {
       cmd = `gio trash ${shellQuote(target)} || trash-put ${shellQuote(target)} || trash ${shellQuote(target)}`;
     }
@@ -486,10 +514,14 @@ async function renamePath(p, newName) {
 const ORGANIZE_LOG_DIR = path.join(CONFIG_DIR, 'organize-log');
 const ORGANIZE_PREFS_FILE = path.join(CONFIG_DIR, 'organize-prefs.md');
 const ORGANIZE_BRIEF_FILE = path.join(CONFIG_DIR, 'organize-brief.md');
+// 删除那条按平台给不同的「回收位置」：Windows 上没有 ~/.Trash/，照抄会让 agent 真去建一个
+const ORGANIZE_TRASH_LINE = PLATFORM === 'win32'
+  ? '- 删除须用户逐条点头；确认后移入回收站（用 PowerShell 的 Shell.Application / VB FileSystem 回收接口，不要 Remove-Item 直删），并照常记进回滚日志'
+  : '- 删除须用户逐条点头；确认后移入废纸篓 ~/.Trash/（不直接 rm），并照常记进回滚日志';
 const DEFAULT_ORGANIZE_STRATEGY = `- 默认归档：过时/低频的文件移入 _archive/ 下的语义子目录（如 _archive/截图/2026-06/）
 - 同一主题的散文件归进语义明确的项目文件夹（项目制：一个项目一个文件夹，按需建议新文件夹）
 - 归档之外，单独提一份「建议删除」清单（什么算该删由你判断：明显垃圾、可再生成的产物、过期大文件……），逐条给理由
-- 删除须用户逐条点头；确认后移入废纸篓 ~/.Trash/（不直接 rm），并照常记进回滚日志
+${ORGANIZE_TRASH_LINE}
 - 最近 7 天内有动静的文件视为正在进行的工作，不要动
 - 文件夹一律不动，只整理松散文件
 - 拿不准的单独列出来问，宁可少动不要乱动`;
@@ -509,21 +541,18 @@ async function codexOrganizeFlags(bin) {
 }
 
 async function findAgentBin(name) {
-  // GUI 启动的 app 没有用户 shell 的 PATH，走登录 shell / where 找一次绝对路径
-  const safe = String(name || '').replace(/[^A-Za-z0-9._-]/g, '');
-  if (!safe) return null;
+  // GUI 启动的 app 没有用户 shell 的 PATH，走登录 shell 找一次绝对路径
+  if (PLATFORM === 'win32') {
+    // sanitize only on win32; pure Node PATH walk (winFindExe) — no where.exe OEM mojibake
+    const safe = String(name || '').replace(/[^A-Za-z0-9._-]/g, '');
+    if (!safe) return null;
+    return winFindExe(safe, [
+      process.env.APPDATA && path.join(process.env.APPDATA, 'npm'),
+      process.env.USERPROFILE && path.join(process.env.USERPROFILE, '.local', 'bin'),
+    ].filter(Boolean));
+  }
   return new Promise((resolve) => {
-    if (PLATFORM === 'win32') {
-      // 纯 Node PATH 走查（见 winFindExe）：where.exe / Get-Command 输出按 OEM 代码页编码，
-      // 中文用户名下的 npm 全局路径按 UTF-8 解出来是乱码 → existsSync 必失败 → 误判「未装」。
-      // 额外补两个 GUI 启动时 PATH 常缺的高频安装位：npm 全局默认前缀、claude 原生安装器目录
-      resolve(winFindExe(safe, [
-        process.env.APPDATA && path.join(process.env.APPDATA, 'npm'),
-        process.env.USERPROFILE && path.join(process.env.USERPROFILE, '.local', 'bin'),
-      ].filter(Boolean)));
-      return;
-    }
-    execFile('/bin/zsh', ['-lc', `command -v ${safe}`], { timeout: 8000 }, (err, stdout) => {
+    execFile('/bin/zsh', ['-lc', `command -v ${name}`], { timeout: 8000 }, (err, stdout) => {
       const out = String(stdout || '').trim().split('\n').pop();
       resolve(!err && out && out.startsWith('/') ? out : null);
     });
@@ -637,7 +666,7 @@ ${history || '（还没有历史记录）'}
 // ---------- 发版向导：检查项目状态 → 改版本号/CHANGELOG → 命令序列交给内嵌终端跑（每步可见可拦）----------
 async function releaseInspect(p) {
   const dir = resolvePath(p);
-  const sh = (cmd, args) => new Promise((resolve) => execFile(cmd, args, { cwd: dir, timeout: 8000 }, (err, stdout) => resolve(err ? null : String(stdout).trim())));
+  const sh = (cmd, args) => new Promise((resolve) => execFile(cmd, args, { cwd: dir, timeout: 8000, env: winSpawnEnv() }, (err, stdout) => resolve(err ? null : String(stdout).trim())));
   let pkg;
   try { pkg = JSON.parse(await fsp.readFile(path.join(dir, 'package.json'), 'utf8')); }
   catch { return { ok: false, error: '这里没有 package.json——发版向导目前只认 node 项目' }; }
@@ -648,7 +677,7 @@ async function releaseInspect(p) {
   const status = await sh('git', ['status', '--porcelain']);
   out.isRepo = status !== null;
   out.dirty = !!(status && status.length);
-  out.gh = !!(await findAgentBin('gh'));
+  out.gh = PLATFORM === 'win32' ? !!winFindExe('gh') : !!(await sh('/bin/sh', ['-lc', 'command -v gh']));
   out.unreleased = ''; out.hasChangelog = false;
   try {
     const cl = await fsp.readFile(path.join(dir, 'CHANGELOG.md'), 'utf8');
@@ -692,8 +721,15 @@ async function releasePrepare(b) {
   if (b.doDist) steps.push('npm run dist');
   steps.push('git add -A', `git commit -m ${shellQuote(`v${version}: ${title || '发版'}`)}`);
   if (b.doPush) steps.push('git push');
-  if (b.doRelease) steps.push(`gh release create v${version} --title ${shellQuote(`v${version}${title ? ' · ' + title : ''}`)} --notes-file ${shellQuote(notesFile)}${b.doDist ? ` dist/*${version}*.dmg` : ''}`);
-  return { ok: true, cmd: steps.join(' && ') };
+  // 产物 glob 按平台：Windows 打出来的是 NSIS/portable exe，跟着 mac 写 *.dmg 永远匹配不到
+  const distGlob = PLATFORM === 'win32' ? ` dist/*${version}*win*.exe` : ` dist/*${version}*.dmg`;
+  if (b.doRelease) steps.push(`gh release create v${version} --title ${shellQuote(`v${version}${title ? ' · ' + title : ''}`)} --notes-file ${shellQuote(notesFile)}${b.doDist ? distGlob : ''}`);
+  // 串联符按目标 shell：Windows 默认 PTY 是 PowerShell 5.1，它不认 &&（PS 7 才支持）。
+  // 用右折叠嵌 if($?){…} 复刻「前一步失败就不往下走」——发版链里这条语义不能丢
+  const cmd = PLATFORM === 'win32'
+    ? steps.reduceRight((acc, s) => (acc ? `${s}; if($?){ ${acc} }` : s))
+    : steps.join(' && ');
+  return { ok: true, cmd };
 }
 
 // ---------- 项目记忆：这个文件夹里 AI 干过什么 ----------
@@ -940,15 +976,16 @@ async function diskUsage(p) {
 // 整体超时被杀时已输出的行照常解析，缺的目录由调用方标 null
 function winDirSizes(dir) {
   return new Promise((resolve) => {
-    const lit = String(dir).replace(/'/g, "''");
+    // §5: constant -Command script; path via env + -LiteralPath (no user-path interpolation)
     const ps = [
       `$ErrorActionPreference='SilentlyContinue'`,
-      `Get-ChildItem -LiteralPath '${lit}' -Directory -Force | ForEach-Object {`,
+      `Get-ChildItem -LiteralPath $env:FANBOX_DIR_SIZES -Directory -Force | ForEach-Object {`,
       `$s=(Get-ChildItem -LiteralPath $_.FullName -Recurse -Force -File | Measure-Object -Property Length -Sum).Sum;`,
       `if($null -eq $s){$s=0};`,
       `Write-Output ([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($_.Name)) + '|' + $s) }`,
     ].join(' ');
-    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
+    execFile(WIN_PS, ['-NoProfile', '-NonInteractive', '-Command', ps], {
+      env: { ...process.env, FANBOX_DIR_SIZES: String(dir) },
       timeout: 180000, windowsHide: true, maxBuffer: 4 * 1024 * 1024,
     }, (err, stdout) => {
       const map = new Map();
@@ -1117,18 +1154,21 @@ async function statWithTail(p, tail) {
 }
 
 // 终端划线前的批量验证：候选路径 stat 得到才配下划线，中文散文里的「分发/产品演示」不再误标
-// 绝对路径与前端 openTermPath 对齐：POSIX 的 / 和 ~，Windows 盘符（C:\ / C:/）和 UNC（\\server\share）
-function isAbsPathCand(p) {
-  return p.startsWith('/') || p.startsWith('~')
-    || /^[A-Za-z]:[\\/]/.test(p) || p.startsWith('\\\\');
-}
 async function termVerify(b) {
   const cwd = b.cwd ? resolvePath(b.cwd) : HOME;
   const items = Array.isArray(b.items) ? b.items.slice(0, 24) : [];
   const results = await Promise.all(items.map(async (it) => {
     if (!it || typeof it.cand !== 'string') return false;
     let p = it.cand;
-    if (!isAbsPathCand(p)) p = path.join(cwd, p.replace(/^\.[\\/]/, ''));
+    if (PLATFORM === 'win32') {
+      // win32 的「绝对」口径直接用 path.isAbsolute：盘符 C:\ / C:/、UNC \\server\share，
+      // 以及单个 \ 或 / 开头的根相对路径（Git-Bash/MSYS 会打印这种）都算，其余才拼 cwd
+      if (!path.isAbsolute(p) && !p.startsWith('~')) {
+        p = path.join(cwd, p.replace(/^\.[\\/]/, ''));
+      }
+    } else if (!p.startsWith('/') && !p.startsWith('~')) {
+      p = cwd.replace(/\/$/, '') + '/' + p.replace(/^\.\//, '');
+    }
     return !!(await statWithTail(p, it.tail || ''));
   }));
   return { ok: true, results };
@@ -1184,7 +1224,8 @@ async function locatePath(p, name, root, tail, alt, roots) {
 // ---------- Git（只读）：让「看 agent 改了什么」从瞬时高亮升级为可回看的 diff ----------
 function execGit(args, cwd) {
   return new Promise((resolve) => {
-    execFile('git', args, { cwd, timeout: 6000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+    // cwd 是用户正在浏览的目录：Windows 上裸命令名会先在 cwd 里找 git.exe，必须关掉（winSpawnEnv）
+    execFile('git', args, { cwd, timeout: 6000, maxBuffer: 16 * 1024 * 1024, env: winSpawnEnv() }, (err, stdout, stderr) => {
       resolve({ ok: !err, stdout: stdout || '', stderr: stderr || '' });
     });
   });
@@ -1245,7 +1286,7 @@ function snapGitDir(project) {
 function execSnap(gitDir, project, args, timeout = 10000) {
   return new Promise((resolve) => {
     execFile('git', ['--git-dir', gitDir, '--work-tree', project, ...args],
-      { cwd: project, timeout, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+      { cwd: project, timeout, maxBuffer: 16 * 1024 * 1024, env: winSpawnEnv() }, (err, stdout, stderr) => {
         resolve({ ok: !err, killed: !!(err && err.killed), stdout: stdout || '', stderr: stderr || '' });
       });
   });
@@ -1254,40 +1295,58 @@ function execSnap(gitDir, project, args, timeout = 10000) {
 // 传入的 project 必须已经 snapReal 归一化（snapshot() 入口统一做）
 function snapEligible(project) {
   if (!project || !path.isAbsolute(project)) return false;
-  // Windows 去尾部 \ /；POSIX 去尾部 /
-  const p = path.normalize(project).replace(/[\\/]+$/, '') || project;
+  if (PLATFORM === 'win32') {
+    // D11: canonicalize once (lowercase + sep-normalize) for all refusal checks
+    const p = path.normalize(project).replace(/[\\/]+$/, '') || project;
+    const canon = (s) => String(s).replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+    const pc = canon(p);
+    const realHome = snapReal(HOME);
+    const homeC = canon(HOME), realHomeC = canon(realHome);
+    const root = path.parse(p).root;
+    const rootC = canon(root);
+    if (!pc || pc === rootC || pc === homeC || pc === realHomeC) return false;
+    if (pc.startsWith(canon(CONFIG_DIR)) || pc.startsWith(canon(snapReal(CONFIG_DIR)))) return false;
+    const baseRaw = [realHome, HOME].find((h) => {
+      const hc = canon(h);
+      return pc === hc || pc.startsWith(hc + '/');
+    });
+    if (baseRaw) {
+      const segs = path.relative(baseRaw, p).split(path.sep).filter(Boolean);
+      const top = (segs[0] || '').toLowerCase();
+      // POSIX master SYS + Windows profile system dirs
+      const SYS = new Set([
+        'documents', 'desktop', 'downloads', 'pictures', 'movies', 'music', 'public',
+        'applications', 'library', '.trash',
+        'appdata', 'application data', 'local settings', 'onedrive', 'videos',
+        'contacts', 'favorites', 'links', 'saved games', 'searches',
+      ]);
+      if (segs.length === 1 && SYS.has(top)) return false;
+      if (top === 'library' || top === '.trash' || top === 'appdata') return false;
+    } else {
+      const rel = p.slice(root.length).split(path.sep).filter(Boolean);
+      const top = (rel[0] || '').toLowerCase();
+      const SYS_TREES = new Set(['windows', 'program files', 'program files (x86)', 'programdata', '$recycle.bin', 'system volume information']);
+      if (!rel.length) return false;
+      if (SYS_TREES.has(top)) return false;
+      if (rel.length === 1 && top === 'users') return false;
+      const sysDrive = String(process.env.SystemDrive || 'C:').toLowerCase();
+      if (root.toLowerCase().startsWith(sysDrive) && rel.length < 2) return false;
+    }
+    try { return fs.statSync(p).isDirectory(); } catch { return false; }
+  }
+  // master POSIX body (byte-for-byte intent)
+  const p = path.normalize(project).replace(/\/+$/, '');
   const realHome = snapReal(HOME);
-  // 拒根：/ 或 C:\ 等盘符根
-  const isRoot = p === '/' || p === path.parse(p).root.replace(/[\\/]+$/, '') || p === path.parse(p).root;
-  if (!p || isRoot || p === HOME || p === realHome) return false;
+  if (!p || p === '/' || p === HOME || p === realHome) return false;
   if (p.startsWith(CONFIG_DIR) || p.startsWith(snapReal(CONFIG_DIR))) return false;
-  const base = [realHome, HOME].find((h) => p.startsWith(h + path.sep) || p.toLowerCase().startsWith((h + path.sep).toLowerCase()));
+  const base = [realHome, HOME].find((h) => p.startsWith(h + path.sep));
   if (base) {
     const segs = path.relative(base, p).split(path.sep);
     // ~/Documents 这类系统大目录整层不给存（自定义的 ~/myproj 一层目录放行）
-    const SYS = new Set([
-      'Documents', 'Desktop', 'Downloads', 'Pictures', 'Movies', 'Music', 'Public',
-      'Applications', 'Library', '.Trash',
-      'AppData', 'Application Data', 'Local Settings', 'OneDrive', 'Videos',
-      'Contacts', 'Favorites', 'Links', 'Saved Games', 'Searches',
-    ]);
+    const SYS = new Set(['Documents', 'Desktop', 'Downloads', 'Pictures', 'Movies', 'Music', 'Public', 'Applications', 'Library', '.Trash']);
     if (segs.length === 1 && SYS.has(segs[0])) return false;
-    if (segs[0] === 'Library' || segs[0] === '.Trash' || segs[0] === 'AppData') return false;
-  } else if (PLATFORM === 'win32') {
-    // 盘符不能算层级：'C:\Users'.split(sep) 会把 'C:' 数进去凑成 2 层，让 C:\Users / C:\Windows
-    // 混过 <2 检查——agent 一跑就 git add -A 整个用户树。深度一律相对盘根算。
-    // 系统盘根下一层不收（对齐 macOS 拒 /tmp、/Users）；数据盘放行一层（D:\myproject 很常见，
-    // 拒了它就等于悄悄没收安全带）；系统目录整棵、任意盘的 Users 这层永远不收。
-    const root = path.parse(p).root;
-    const rel = p.slice(root.length).split(path.sep).filter(Boolean);
-    const top = (rel[0] || '').toLowerCase();
-    const SYS_TREES = new Set(['windows', 'program files', 'program files (x86)', 'programdata', '$recycle.bin', 'system volume information']);
-    if (!rel.length) return false;
-    if (SYS_TREES.has(top)) return false;
-    if (rel.length === 1 && top === 'users') return false; // 所有用户主目录的父目录
-    const sysDrive = String(process.env.SystemDrive || 'C:').toLowerCase();
-    if (root.toLowerCase().startsWith(sysDrive) && rel.length < 2) return false;
-  } else if (p.split(path.sep).filter(Boolean).length < 2) return false; // / 下一层不收
+    if (segs[0] === 'Library' || segs[0] === '.Trash') return false;
+  } else if (p.split(path.sep).filter(Boolean).length < 2) return false; // / 下一层（/tmp 等）不收
   try { return fs.statSync(p).isDirectory(); } catch { return false; }
 }
 async function snapEnsureRepo(project) {
@@ -1309,7 +1368,7 @@ async function snapEnsureRepo(project) {
 // 打一个快照：无变化不建 commit（天然去重），add 超时视为项目太大、本次运行内放弃
 async function snapshot(project, label) {
   // 与 snapEligible 一致：Windows 可能留下尾部 \，只 strip / 会让 throttle/dead 键与资格检查不一致
-  project = snapReal(path.normalize(resolvePath(project)).replace(/[\\/]+$/, ''));
+  project = snapReal(path.normalize(resolvePath(project)).replace(PLATFORM === 'win32' ? /[\\/]+$/ : /\/+$/, ''));
   if (!snapEligible(project)) return { ok: false, skipped: 'ineligible' };
   if (snapDead.has(project)) return { ok: false, skipped: 'dead' };
   const last = snapThrottle.get(project) || 0;
@@ -1339,7 +1398,8 @@ async function snapshot(project, label) {
 }
 // 列出某目录的快照：精确命中或该目录在某个已存档项目内（取最长前缀）
 async function snapResolveProject(p) {
-  const norm = snapReal(path.normalize(resolvePath(p)).replace(/[\\/]+$/, ''));
+  // 与 snapshot() 的 key 归一化保持同一口径（反斜杠只在 win 上算分隔符）
+  const norm = snapReal(path.normalize(resolvePath(p)).replace(PLATFORM === 'win32' ? /[\\/]+$/ : /\/+$/, ''));
   let idx = {};
   try { idx = JSON.parse(await fsp.readFile(SNAP_INDEX, 'utf8')); } catch { return null; }
   let best = null;
@@ -1425,7 +1485,11 @@ async function saveImage({ path: target, dataUrl, newName }) {
 // UTF-8 误解码成乱码 → existsSync 失败 → 误判「未装」
 function winFindExe(name, extraDirs) {
   const dirs = String(process.env.Path || process.env.PATH || '')
-    .split(';').map((s) => s.trim()).filter(Boolean).concat(extraDirs || []);
+    .split(';').map((s) => {
+      let t = s.trim();
+      if (t.length >= 2 && ((t[0] === '"' && t[t.length - 1] === '"') || (t[0] === "'" && t[t.length - 1] === "'"))) t = t.slice(1, -1);
+      return t;
+    }).filter(Boolean).concat(extraDirs || []);
   const exts = String(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
   const hasExt = /\.[^\\/.]+$/.test(name);
   for (const d of dirs) {
@@ -1480,7 +1544,7 @@ function openInOS(target, withApp) {
           child = spawn(wt, ['-d', dir], { stdio: 'ignore', detached: true, windowsHide: false });
         } else {
           // 命令行上没有任何用户数据；detached 的 cmd 自己没有控制台，start 会给 powershell 新开一个窗口
-          child = spawn('cmd.exe', ['/c', 'start', '', 'powershell.exe', '-NoExit'], {
+          child = spawn(WIN_CMD, ['/c', 'start', '', 'powershell.exe', '-NoExit'], {
             cwd: dir, stdio: 'ignore', detached: true, windowsHide: false,
           });
         }
@@ -1530,7 +1594,7 @@ function openDefault(target, withApp) {
         // explorer /select,path — 逗号后路径不要多余引号嵌套
         let settled = false;
         const done = (r) => { if (settled) return; settled = true; resolve(r); };
-        const child = spawn('explorer.exe', [`/select,${target}`], { stdio: 'ignore', detached: true });
+        const child = spawn(WIN_EXPLORER, [`/select,${target}`], { stdio: 'ignore', detached: true });
         child.on('error', (err) => done({ ok: false, error: err.message }));
         child.on('spawn', () => { child.unref(); done({ ok: true, with: 'reveal' }); });
         // explorer 有时非 0 退出但已打开，超时也算成功
@@ -1539,7 +1603,7 @@ function openDefault(target, withApp) {
       }
       // explorer.exe 打开默认关联：路径走 argv，不经 cmd 的 start——start 只保护含空格的参数，
       // 像 a&whoami.txt 这种带元字符不带空格的文件名会裸着进 cmd 被当命令执行
-      const child = spawn('explorer.exe', [target], { stdio: 'ignore', detached: true, windowsHide: true });
+      const child = spawn(WIN_EXPLORER, [target], { stdio: 'ignore', detached: true, windowsHide: true });
       child.on('error', (err) => resolve({ ok: false, error: err.message }));
       child.on('spawn', () => { child.unref(); resolve({ ok: true, with: withApp || 'default' }); });
       return;
@@ -1552,6 +1616,9 @@ function openDefault(target, withApp) {
 }
 
 function shellQuote(s) {
+  // 其余调用点都在 darwin/linux 分支里；只有发版向导拼的命令会进 Windows 的 PowerShell，
+  // 那里转义单引号靠翻倍（'' ），POSIX 的 '\'' 写法会把命令拆坏（同 cronShq）
+  if (PLATFORM === 'win32') return `'${String(s).replace(/'/g, "''")}'`;
   return `'${String(s).replace(/'/g, `'\\''`)}'`;
 }
 
@@ -1597,46 +1664,42 @@ function run(cmd, args) {
 // 缩略图：macOS 走 sips / qlmanage；其它平台优先 magick/convert（ImageMagick），视频走 ffmpeg
 async function generateThumb(src, e, size, cacheFile, isImg) {
   await fsp.mkdir(THUMB_DIR, { recursive: true });
-  if (PLATFORM === 'darwin') {
+  if (PLATFORM === 'win32') {
+    // D6: magick (IM7 via winFindExe) → ffmpeg → give up. Never bare convert (System32 FAT→NTFS).
+    const magick = winFindExe('magick');
+    const ffmpeg = winFindExe('ffmpeg');
+    const runExe = (file, args) => new Promise((resolve, reject) => {
+      execFile(file, args, { timeout: 60000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (err) => err ? reject(err) : resolve());
+    });
     if (isImg) {
-      const fmt = cacheFile.endsWith('.png') ? 'png' : 'jpeg';
-      await run('sips', ['-s', 'format', fmt, '-Z', String(size), src, '--out', cacheFile]);
+      if (magick) {
+        // -delete 1--1：多帧输入（GIF 动图、HEIC 连拍）只留第一帧，否则 magick 会写成
+        // cache-0.png / cache-1.png…，我们等的 cacheFile 反而不存在。
+        // 用它而不是 src+'[0]'：文件名里真带方括号时不会被当成帧选择器
+        try { await runExe(magick, [src, '-delete', '1--1', '-auto-orient', '-thumbnail', `${size}x${size}>`, cacheFile]); return; } catch { /* ffmpeg */ }
+      }
+      if (!ffmpeg) throw new Error('no thumb tools');
+      await runExe(ffmpeg, ['-y', '-i', src, '-vf', `scale=${size}:${size}:force_original_aspect_ratio=decrease`, '-frames:v', '1', cacheFile]);
       return;
     }
-    const tmpDir = path.join(THUMB_DIR, '_ql_' + process.pid + '_' + crypto.randomBytes(4).toString('hex'));
-    await fsp.mkdir(tmpDir, { recursive: true });
-    try {
-      await run('qlmanage', ['-t', '-s', String(size), '-o', tmpDir, src]);
-      const png = (await fsp.readdir(tmpDir)).find((f) => f.endsWith('.png'));
-      if (!png) throw new Error('no thumb');
-      await fsp.rename(path.join(tmpDir, png), cacheFile);
-    } finally { fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {}); }
+    if (!ffmpeg) throw new Error('no thumb tools');
+    await runExe(ffmpeg, ['-y', '-ss', '0', '-i', src, '-frames:v', '1', '-vf', `scale=${size}:${size}:force_original_aspect_ratio=decrease`, cacheFile]);
     return;
   }
-  // Windows / Linux：ImageMagick 或 ffmpeg；都没有则抛错，前端回退矢量图标
+  // master body (darwin; Linux inherits upstream wart per D8)
   if (isImg) {
-    const fmt = cacheFile.endsWith('.png') ? 'png' : 'jpg';
-    // magick (IM7) → convert (IM6)
-    try {
-      await run('magick', [src, '-auto-orient', '-thumbnail', `${size}x${size}>`, cacheFile]);
-      return;
-    } catch { /* try convert */ }
-    try {
-      await run('convert', [src, '-auto-orient', '-thumbnail', `${size}x${size}>`, cacheFile]);
-      return;
-    } catch { /* try ffmpeg still */ }
-    await run(PLATFORM === 'win32' ? 'ffmpeg.exe' : 'ffmpeg', [
-      '-y', '-i', src, '-vf', `scale=${size}:${size}:force_original_aspect_ratio=decrease`,
-      '-frames:v', '1', cacheFile,
-    ]);
+    const fmt = cacheFile.endsWith('.png') ? 'png' : 'jpeg';
+    await run('sips', ['-s', 'format', fmt, '-Z', String(size), src, '--out', cacheFile]);
     return;
   }
-  // 视频/PDF 等：ffmpeg 抽一帧
-  await run(PLATFORM === 'win32' ? 'ffmpeg.exe' : 'ffmpeg', [
-    '-y', '-ss', '0', '-i', src, '-frames:v', '1',
-    '-vf', `scale=${size}:${size}:force_original_aspect_ratio=decrease`,
-    cacheFile,
-  ]);
+  const tmpDir = path.join(THUMB_DIR, '_ql_' + process.pid + '_' + crypto.randomBytes(4).toString('hex'));
+  await fsp.mkdir(tmpDir, { recursive: true });
+  try {
+    await run('qlmanage', ['-t', '-s', String(size), '-o', tmpDir, src]);
+    const png = (await fsp.readdir(tmpDir)).find((f) => f.endsWith('.png'));
+    if (!png) throw new Error('no thumb');
+    await fsp.rename(path.join(tmpDir, png), cacheFile);
+  } finally { fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {}); }
 }
 // 缩略图缓存按总体积上限做 LRU 裁剪（同一文件改一次就多一个缓存键，不清会无限涨）
 async function pruneThumbs(maxBytes = 400 * 1024 * 1024) {
@@ -1782,10 +1845,17 @@ async function serveHeicAsJpeg(req, res, file, st) {
       await fsp.mkdir(THUMB_DIR, { recursive: true });
       if (PLATFORM === 'darwin') {
         await run('sips', ['-s', 'format', 'jpeg', file, '--out', cacheFile]);
+      } else if (PLATFORM === 'win32') {
+        // D6: magick only (no convert); fail → generic tile
+        const magick = winFindExe('magick');
+        if (!magick) throw new Error('no magick');
+        await new Promise((resolve, reject) => {
+          // -delete 1--1 同缩略图：HEIC 连拍是多帧，不删会写成 xxx-0.jpg/xxx-1.jpg，cacheFile 落空
+          execFile(magick, [file, '-delete', '1--1', cacheFile], { timeout: 60000, windowsHide: true }, (err) => err ? reject(err) : resolve());
+        });
       } else {
-        // Windows/Linux：ImageMagick 若支持 heic 则转；否则失败回退图标
-        try { await run('magick', [file, cacheFile]); }
-        catch { await run('convert', [file, cacheFile]); }
+        // D8: Linux keeps master — master only had sips; leave failure → tile
+        await run('sips', ['-s', 'format', 'jpeg', file, '--out', cacheFile]);
       }
     })().finally(() => thumbInflight.delete(cacheFile));
     thumbInflight.set(cacheFile, pr);
@@ -2102,7 +2172,7 @@ async function curlSysProxyLine() {
   if (PLATFORM === 'win32') {
     try {
       const out = await new Promise((resolve, reject) => {
-        execFile('powershell.exe', [
+        execFile(WIN_PS, [
           '-NoProfile', '-NonInteractive', '-Command',
           `$p=Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings' -ErrorAction SilentlyContinue; if($p -and $p.ProxyEnable -eq 1 -and $p.ProxyServer){Write-Output $p.ProxyServer}`,
         ], { timeout: 4000, windowsHide: true }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
@@ -2683,7 +2753,10 @@ async function cronFire(t, manual) {
   const A = global.__fanboxAgent;
   if (!A) { rec.ok = false; rec.error = '需要桌面版（浏览器版没有内嵌终端）'; }
   else {
-    const r = await A.create({ cwd: t.cwd || HOME, autorun: cronCommand(t) }).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+    // D4: agent-type cron tabs always PowerShell on Windows (shell tasks exempt)
+    const createOpts = { cwd: t.cwd || HOME, autorun: cronCommand(t) };
+    if (PLATFORM === 'win32' && t.agent !== 'shell') createOpts.shell = 'powershell.exe';
+    const r = await A.create(createOpts).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
     rec.ok = !!(r && r.ok); if (r && r.error) rec.error = r.error; if (r && r.id) rec.term = r.id;
   }
   t.lastFire = rec.t;
@@ -2816,7 +2889,9 @@ const server = http.createServer(async (req, res) => {
     // 暴露面与 /api/raw 等价（都接受任意绝对路径），且同样只对本机回环开放。
     // HTML 文件额外注入 viewport，让预览框内宽度自适应、滚动稳定。
     if (p.startsWith('/fs/')) {
-      const fsPath = decodeURIComponent(p.slice(3));
+      // D1: win32 only — strip leading slash so /fs/C:/Users… → C:/Users… (not \C:\Users…)
+      let fsPath = decodeURIComponent(p.slice(3));
+      if (PLATFORM === 'win32' && /^\/[A-Za-z]:[\\/]/.test(fsPath)) fsPath = fsPath.slice(1);
       const fsExt = (ext(fsPath) || '').toLowerCase();
       if (fsExt === 'html' || fsExt === 'htm') {
         return serveHtmlPreview(req, res, fsPath);
@@ -3070,6 +3145,23 @@ const PREVIEW_PORT = PORT + 1;
 function previewPathAllowed(file) {
   const real = path.resolve(file);
   const home = path.resolve(HOME);
+  // D1 companion: NTFS is case-insensitive — compare case-insensitively + sep-normalized on win32 only
+  if (PLATFORM === 'win32') {
+    // 点目录检查是按「段名开头是不是 .」判的，而 NTFS 默认在系统盘生成 8.3 短名：
+    // .ssh → SSH~1、.claude → CLAUDE~1，短名里没有点，直接绕过下面这道闸。
+    // 所以先 realpath 展成长名（同时解开目录联接，挡住 mklink /J 指到 C:\Windows 的花招）。
+    const expand = (p) => { try { return fs.realpathSync.native(p); } catch { return null; } };
+    const homeC = expand(home) || home;
+    const canon = expand(real);
+    const target = canon || real;
+    const n = (s) => String(s).replace(/\\/g, '/').toLowerCase();
+    const r = n(target), h = n(homeC);
+    if (r !== h && !r.startsWith(h + '/')) return false;
+    const rest = target.slice(homeC.length);
+    // realpath 失败（文件不存在等）时短名可能还没展开 → 见到 xxx~1 一律拒，宁可少放行
+    if (!canon && /(^|[\\/])[^\\/]*~\d/.test(rest)) return false;
+    return !rest.split(/[\\/]/).some((s) => s.startsWith('.'));
+  }
   if (real !== home && !real.startsWith(home + path.sep)) return false; // 只放行主目录以下
   return !real.slice(home.length).split(path.sep).some((s) => s.startsWith('.')); // 任一段是点目录/点文件 → 拒
 }
@@ -3078,7 +3170,9 @@ const previewServer = http.createServer(async (req, res) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); res.end('method not allowed'); return; }
   const p = new URL(req.url, `http://localhost:${PREVIEW_PORT}`).pathname;
   if (!p.startsWith('/fs/')) { res.writeHead(403); res.end('preview server serves /fs/ only'); return; }
-  const raw = decodeURIComponent(p.slice(3));
+  // D1: same win32 leading-slash strip as main /fs/ handler
+  let raw = decodeURIComponent(p.slice(3));
+  if (PLATFORM === 'win32' && /^\/[A-Za-z]:[\\/]/.test(raw)) raw = raw.slice(1);
   let resolved;
   try { resolved = resolvePath(raw); } catch { res.writeHead(400); res.end('bad path'); return; }
   if (!previewPathAllowed(resolved)) { res.writeHead(403); res.end('outside preview scope'); return; }
@@ -3100,7 +3194,7 @@ server.listen(PORT, '127.0.0.1', () => {
   pruneThumbs().catch(() => {}); // 启动时裁剪缩略图缓存，防止无限增长
   if (!process.env.FANBOX_NO_OPEN) {
     if (PLATFORM === 'darwin') exec(`open ${link}`, () => {});
-    else if (PLATFORM === 'win32') spawn('cmd.exe', ['/c', 'start', '', link], { detached: true, stdio: 'ignore' }).unref();
+    else if (PLATFORM === 'win32') spawn(WIN_CMD, ['/c', 'start', '', link], { detached: true, stdio: 'ignore' }).unref();
     else exec(`xdg-open ${link}`, () => {});
   }
 });

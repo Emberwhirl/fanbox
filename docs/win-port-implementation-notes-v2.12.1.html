@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Windows Port v2.12.1 — Implementation Notes</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1c1e21; --muted: #616a73; --line: #e2e5e9;
+    --card: #f6f7f9; --accent: #0969da; --code-bg: #eef1f4;
+    --ok: #1a7f37; --warn: #b56300; --bad: #c93c37;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --fg: #e6edf3; --muted: #9aa4af; --line: #2d333b;
+      --card: #161b22; --accent: #539bf5; --code-bg: #1c2128;
+      --ok: #57ab5a; --warn: #d29922; --bad: #f47067;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0 auto; max-width: 960px; padding: 2rem 1.4rem 4rem;
+         font: 15px/1.65 -apple-system, "Segoe UI", system-ui, sans-serif;
+         background: var(--bg); color: var(--fg); }
+  h1 { font-size: 1.55rem; margin: 0 0 .3rem; }
+  h2 { font-size: 1.2rem; margin: 2.2rem 0 .7rem; padding-top: 1rem; border-top: 2px solid var(--line); }
+  h3 { font-size: 1rem; margin: 1.4rem 0 .4rem; }
+  .sub { color: var(--muted); margin: 0 0 1.4rem; }
+  code { font: 12.5px/1.5 ui-monospace, Consolas, monospace; background: var(--code-bg);
+         padding: .1em .35em; border-radius: 4px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+          padding: .9rem 1.1rem; margin: .8rem 0; }
+  .ok { color: var(--ok); font-weight: 600; } .warn { color: var(--warn); font-weight: 600; }
+  .bad { color: var(--bad); font-weight: 600; }
+  ul { padding-left: 1.2rem; }
+  li { margin: .25rem 0; max-width: 80ch; }
+  table { border-collapse: collapse; width: 100%; font-size: .88rem; margin: .6rem 0 1rem; }
+  th, td { border: 1px solid var(--line); padding: .4em .65em; text-align: left; vertical-align: top; }
+  th { background: var(--card); }
+  .zh { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<h1>Windows Port v2.12.1 — Implementation Notes</h1>
+<p class="sub">Live log for <code>docs/win-port-implementation-plan-v2.12.1.html</code>.
+Defaults from the plan used unless listed under <b>Deviations</b>. Branch: <code>dev</code>. Implemented 2026-07-30.</p>
+
+<div class="card">
+  <b>Status:</b> <span class="ok">COMPLETE</span> for theoretical deliverability on Windows 10/11 x64,
+  after a <b>second review round</b> (2026-07-30) that audited the remediation itself — see
+  <a href="#round2">Round 2</a>. Physical Windows manual matrix (§6) remains the merge gate for
+  <code>dev → windows</code> and was <b>not</b> run in this environment.
+</div>
+
+<h2 id="round2">Round 2 — review of the remediation (2026-07-30)</h2>
+<p>Four parallel reviews (server/main correctness, frontend/WeChat correctness, golden-rule parity,
+security) over the uncommitted working tree. Everything below was found <em>in the remediation</em>,
+verified with a concrete failure scenario, and fixed in the same working tree.</p>
+
+<h3>Security</h3>
+<ul>
+  <li><b class="bad">Preview dot-directory filter bypassed by NTFS 8.3 short names.</b>
+    <code>server.js previewPathAllowed</code> tested segment names for a leading <code>.</code>, but the
+    system volume generates <code>.ssh</code>→<code>SSH~1</code>, <code>.claude</code>→<code>CLAUDE~1</code>.
+    Preview iframes run <code>allow-same-origin</code> against the preview port, so a malicious previewed
+    HTML could <code>fetch('/fs/C:/Users/&lt;u&gt;/SSH~1/id_rsa')</code> and exfiltrate it.
+    <b>Fix:</b> <code>fs.realpathSync.native</code> expands short names (and resolves junctions, closing
+    <code>mklink /J</code> too) before the segment check; if realpath fails and the path contains
+    <code>~n</code>, refuse. Both reviewers found this independently.
+    Regression suite: <code>experiments/winport-parity-202607/preview-guard.test.js</code> (16 cases).</li>
+  <li><b class="bad">Bare command names resolve against the current directory on Windows.</b>
+    libuv searches cwd before PATH; <code>/api/git</code>, snapshots and the release wizard all pass a
+    user-controlled directory as <code>cwd</code>, so a planted <code>git.exe</code> in a browsed repo
+    executes as the user on click. <b>Fix:</b> <code>winSpawnEnv()</code> sets
+    <code>NoDefaultCurrentDirectoryInExePath</code> for FanBox's own spawns only (user PTYs keep native
+    Windows semantics); system binaries (powershell/cmd/explorer/taskkill) now use absolute
+    <code>System32</code> paths in <code>server.js</code>, <code>main.js</code>, <code>driver.js</code>, <code>env.js</code>.</li>
+  <li><b>PowerShell quoting.</b> <code>shQuote</code> (app.js, path insertion) and <code>shellQuote</code>
+    (release wizard) escaped <code>'</code> the POSIX way (<code>'\''</code>) while the Windows PTY is
+    PowerShell (<code>''</code>) — a filename containing <code>'</code> pushed the tail outside the quotes.
+    Both platform-forked. Release step chaining also moved off <code>&amp;&amp;</code> (absent in PS 5.1) to
+    right-folded <code>if($?){…}</code>, preserving stop-on-failure.</li>
+</ul>
+
+<h3>Correctness</h3>
+<ul>
+  <li><b class="bad">Every relative markdown image 404'd on Windows</b> — the fallback resolver counted the
+    drive twice (<code>C:/C:/Users/…</code>), and it had been switched to <code>fsUrl()</code> (preview
+    origin), which on macOS newly 403'd any image outside <code>$HOME</code>. Restored master's main-origin
+    <code>/fs</code> emit on POSIX (byte-identical) with a win-only leading slash.</li>
+  <li><code>FFMPEG_PATH</code> demoted below the PATH walk → a codec-stripped <code>ffmpeg.exe</code> on PATH
+    beat the user's explicit build. Restored to highest priority.</li>
+  <li>Multi-frame GIF/HEIC: <code>magick</code> writes <code>cache-0.png</code>, <code>cache-1.png</code>… so
+    the awaited <code>cacheFile</code> never existed. Added <code>-delete 1--1</code> (not
+    <code>src+'[0]'</code>, which would misparse filenames containing brackets).</li>
+  <li><code>trashPath</code> dispatched directory junctions to <code>DeleteFile</code> via <code>lstat</code>
+    (reports the link, not the target) → recycling always failed. Now re-checks with <code>stat</code> on win.</li>
+  <li><code>termVerify</code> treated rooted-but-driveless paths (<code>\foo</code>, Git-Bash
+    <code>/c/Users/…</code>) as relative; now uses <code>path.isAbsolute</code>. Dead
+    <code>isAbsPathCand</code> removed, as were <code>parseEnvBlock</code> and an unused <code>os</code> require.</li>
+</ul>
+
+<h3>Golden-rule &amp; i18n regressions introduced by the remediation</h3>
+<ul>
+  <li>macOS Chinese UI had drifted: the preview toolbar and artifact card used master's
+    <span class="zh">「在访达显示」</span> / <span class="zh">「在访达打开」</span>, not
+    <span class="zh">「在 Finder 显示」</span> (only the context menu uses the latter). Restored; the
+    non-darwin arms use the spaced labels that actually have dict keys — the no-space variants
+    <span class="zh">「在资源管理器显示」</span> matched nothing, so EN-mode Windows saw Chinese.</li>
+  <li>Backslash treated as a separator on POSIX in <code>isRel</code>, basename, and the scrollback link
+    scanner — a macOS file legally named <code>a\b.md</code> got the wrong basename. Guarded on
+    <code>isWindows()</code>; POSIX expressions restored to master text.</li>
+  <li>Linux drift reverted per D8: <code>clip:file</code> (had gained a <code>writeText</code> success path),
+    the quit-menu label, and the <code>'macOS only'</code> error string.</li>
+  <li>Disk-panel <code>max</code> restored to master's expression;
+    <code>snapResolveProject</code>'s trailing-separator strip platform-split to match its
+    <code>snapshot()</code> sibling.</li>
+  <li>i18n gaps closed: full-sentence key for the Windows WeChat sleep tip (the previous fragment key could
+    never match a text node), rules for the Windows terminal-count state lines and for the launch-failure
+    toasts, and <i>“this Mac”</i> EN values now platform-conditional (computer/PC) like
+    <span class="zh">「离开电脑」</span> already was.</li>
+  <li>Two <b>macOS-only surfaces still reachable on Windows</b> per the plan's own elimination rule:
+    the AI-organize brief instructed agents to move deletions to <code>~/.Trash/</code>, and the release
+    command attached <code>dist/*.dmg</code>. Both platform-forked.</li>
+</ul>
+
+<h3>Known, accepted, not fixed</h3>
+<ul>
+  <li><code>driver.js stripAnsi</code> is one shared regex spelled <code>\x1b</code> where master has a raw
+    ESC byte — semantically identical, textual drift only.</li>
+  <li>The in-app updater runs the downloaded NSIS installer with no signature or checksum verification
+    (macOS leans on Gatekeeper; the Windows build is unsigned). TLS to github.com is the only integrity
+    control. Worth a published SHA-256 or code signing before wide distribution — a release-process
+    change, deliberately out of scope here.</li>
+  <li>UNC paths (<code>\\server\share</code>) in the markdown-image fallback lose their prefix; no Windows
+    UNC support was claimed for v2.12.1.</li>
+</ul>
+
+<h2>Deviations</h2>
+<ul>
+  <li><b>Update check structure (§4 main.js:334).</b> Plan suggested fully separate <code>fetchLatestReleaseWin</code> + literal master <code>REL_PAGE</code>.
+    Kept shared <code>REL_REPO = IS_WIN ? 'Emberwhirl/fanbox' : 'alchaincyf/fanbox'</code> with <code>IS_WIN</code>-guarded asset candidates / no-asset dialog.
+    <b>Conservative rationale:</b> behavior matches the plan (macOS still hits upstream; Windows only toasts when a win <code>.exe</code> asset exists); avoids a large dual-copy of the download loop that would drift.</li>
+  <li><b>Screenshot watcher (§4 main.js:171).</b> Plan wanted master body pasted for POSIX.
+    Kept multi-dir <code>screenshotDirs()</code> + shared <code>onShotFile</code>, with <code>SHOT_NAME_RE</code> split (POSIX = master patterns; win adds Snipaste/屏幕截图).
+    macOS still resolves the single defaults/Desktop path; Linux still skipped.</li>
+  <li><b>Golden-rule verify.js.</b> Heuristic line scan (not full AST). Flags “non-obvious” additions for human review; does not hard-fail CI. Preserved under <code>experiments/winport-parity-202607/</code> per repo convention.</li>
+  <li><b>env.js POSIX dump.</b> Restored master inlined <code>env</code> parse loop on POSIX; <code>parseEnvLines</code> retained for the Windows Base64 dump path (plan allowed this).</li>
+</ul>
+
+<h2>Phase log</h2>
+
+<div class="card">
+  <h3>P1 — High severity <span class="ok">done</span></h3>
+  <ul>
+    <li><b>H1+H3 / D1:</b> <code>public/app.js</code> <code>fsUrl</code> splits on <code>/[\\/]/</code> only when <code>state.sep === '\\'</code>; both <code>/fs/</code> handlers strip leading <code>/</code> for <code>/^\/[A-Za-z]:[\\/]/</code> on win32; <code>previewPathAllowed</code> case-insensitive + sep-normalized on win32 only.</li>
+    <li><b>H2:</b> <code>electron/wechat/driver.js</code> <code>kill()</code> runs <code>taskkill /T /F</code> to completion; logs non-zero; <code>child.kill</code> only as fallback.</li>
+    <li><b>H4 / D2:</b> macOS context/toolbar labels restored to master 「在 Finder 显示」; Windows/Linux use 「在 资源管理器/文件管理器 显示」 + dict keys.</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>P2 — User-facing <span class="ok">done</span></h3>
+  <ul>
+    <li>§3a: i18n keys for 回收站 / 资源管理器 / copy-file toasts / Recycle Bin confirms / power-tip win body / 已启动…</li>
+    <li>§3b: 「离开电脑」 platform-conditional EN; autosave ⌘S/Ctrl+S; ZCode dmg only non-win; badge <code>v2.12.1</code>; macOS menu 「合盖继续干活（生效中）」</li>
+    <li>D3: no forced <code>LANG</code> on win32 PTY/env; POSIX master <code>/UTF-8/i</code></li>
+    <li>D5: deleted PowerShell string-building CLI fallback; resolveWinCli only; clear CLI-not-found error</li>
+    <li>D6: win thumb/HEIC = magick (winFindExe) → ffmpeg; never bare <code>convert</code></li>
+    <li>D7: <code>FileNameW</code> read (NUL-stripped UTF-16LE); write via <code>Set-Clipboard -LiteralPath $env:FANBOX_CLIP_FILE</code></li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>P3 — Golden-rule sweep <span class="ok">done</span></h3>
+  <ul>
+    <li>D8/D10: <code>show:false</code>/<code>ready-to-show</code> win-only; createWindow non-win = master vibrancy shape</li>
+    <li>BARE_SHELL_RE split POSIX/WIN; OSC strip win-only; termCwds fallback win-only</li>
+    <li><code>findAgentBin</code> master zsh probe; win sanitize + winFindExe</li>
+    <li><code>out.gh</code> master <code>/bin/sh -lc 'command -v gh'</code>; win <code>winFindExe('gh')</code></li>
+    <li><code>snapEligible</code> POSIX SYS = master; win D11 casing + Windows SYS trees</li>
+    <li><code>generateThumb</code> non-win = master sips/qlmanage; win D6 chain</li>
+    <li>path-link regexes: drive/backslash only when <code>isWindows()</code></li>
+    <li><code>applyPlatformChrome</code> no-op off Windows; web-mode platform from <code>navigator</code></li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>P4 — Mechanical <span class="ok">done</span></h3>
+  <ul>
+    <li><code>trashPath</code> win: <code>execFile</code> + constant script + <code>FANBOX_TRASH_PATH</code> (VB recycle, not Remove-Item)</li>
+    <li><code>winDirSizes</code>: path via <code>FANBOX_DIR_SIZES</code> env + <code>-LiteralPath</code></li>
+    <li><code>findFfmpeg</code>: no <code>where.exe</code>; PATH walk; POSIX = master fixed paths</li>
+    <li>disk panel: <code>state.sep</code> join; hide up-row at drive root</li>
+    <li>md-image error fallback: sep-aware + <code>fsUrl()</code> (D1 shape)</li>
+    <li>which-cache: <code>Object.assign</code> merge</li>
+    <li>D4 cron: agent tasks pass <code>shell: 'powershell.exe'</code> through create → IPC → <code>newTab</code> → <code>pty:spawn</code></li>
+    <li>D9: <code>FANBOX_SHELL</code> before <code>SHELL</code></li>
+    <li>PATH quote-stripping in <code>winFindExe</code> / <code>winFindOnPath</code></li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>Acceptance <span class="ok">done (host-local)</span></h3>
+  <ul>
+    <li><code>node --check</code> on all touched core JS files — pass</li>
+    <li>Server smoke <code>FANBOX_NO_OPEN=1 FANBOX_PORT=45993</code>: <code>/</code> 200, <code>/api/skills/builtin</code> 200, <code>/api/agent/terminals</code> desktop-only JSON</li>
+    <li>D1 strip unit: <code>/C:/Users/…</code> → <code>C:/Users/…</code> on win32</li>
+    <li><code>experiments/winport-parity-202607/verify.js</code> heuristic scan available</li>
+    <li>macOS-term leak audit: Finder/废纸篓/⌘/dmg/osascript/sips only on darwin arms or isMacOS()-gated UI; Windows paths use 资源管理器/回收站/Ctrl</li>
+    <li>CHANGELOG <code>[2.12.1]</code> → <code>### Windows port</code> remediation narrative added</li>
+    <li><span class="warn">Deferred:</span> full physical Windows 10/11 x64 manual matrix (HTML preview relative assets, Explorer paste, WeChat taskkill orphans, CJK username ffmpeg, cased profile snapshot refuse, cron <code>&amp;</code> prompt, update docs-only release). That matrix gates <code>dev → windows</code> merge — do not merge until it passes.</li>
+  </ul>
+</div>
+
+<h2>Files touched (primary)</h2>
+<table>
+  <tr><th>File</th><th>Role</th></tr>
+  <tr><td><code>electron/main.js</code></td><td>D3/D7/D8/D9/D10, clipboard, shell, OSC, busy regex, ffmpeg, spawn shell override, menu copy</td></tr>
+  <tr><td><code>server.js</code></td><td>D1 /fs, trashPath, winDirSizes, snapEligible, thumbs D6, termVerify, findAgentBin, cron D4</td></tr>
+  <tr><td><code>public/app.js</code></td><td>fsUrl, dirOf, D2 labels, chrome, disk panel, md /fs, which-cache, cron shell plumbing, links</td></tr>
+  <tr><td><code>public/i18n-dict.js</code></td><td>§3a/§3b keys + rules</td></tr>
+  <tr><td><code>electron/wechat/driver.js</code></td><td>H2 taskkill, D5 resolveWinCli, PATH quotes</td></tr>
+  <tr><td><code>electron/wechat/env.js</code></td><td>D3 LANG, master POSIX parse</td></tr>
+  <tr><td><code>assets/badge-windows-x64.svg</code></td><td>v2.12.1</td></tr>
+  <tr><td><code>CHANGELOG.md</code></td><td>Windows port remediation entry</td></tr>
+  <tr><td><code>experiments/winport-parity-202607/*</code></td><td>Acceptance campaign</td></tr>
+</table>
+
+<h2>Release checklist (when Windows matrix passes)</h2>
+<ul>
+  <li>Merge <code>dev → windows</code> only after physical matrix</li>
+  <li>Regenerate badge version on every release (now v2.12.1)</li>
+  <li>Publish both <code>FanBox-2.12.1-win-x64.exe</code> + portable at tag time</li>
+  <li>No version bump — remediated port <em>is</em> the 2.12.1 Windows release</li>
+</ul>
+
+</body>
+</html>

@@ -5,11 +5,12 @@
 //   主：导入 shell 环境（macOS: zsh/bash login；Windows: PowerShell 用户配置）
 //   辅：导入后仍没有代理变量 → 读系统代理兜底（macOS scutil / Windows 注册表），只补空缺不覆盖
 const { execFile } = require('child_process');
-const os = require('os');
 
 let cached = null; // Promise<env 对象>，只算一次
 
 const isWin = () => process.platform === 'win32';
+// 系统自带程序走绝对路径：Windows 解析裸命令名时会先搜当前工作目录
+const WIN_PS_EXE = require('path').join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 const userShell = () => process.env.SHELL || (isWin() ? 'powershell.exe' : '/bin/zsh');
 const PROXY_KEYS = ['https_proxy', 'HTTPS_PROXY', 'http_proxy', 'HTTP_PROXY', 'all_proxy', 'ALL_PROXY'];
 
@@ -27,7 +28,7 @@ function dumpShellEnv() {
         `$s = (Get-ChildItem Env: | ForEach-Object { $_.Name + '=' + $_.Value }) -join "\`n"`,
         `Write-Output ('${marker}' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($s)) + '${marker}')`,
       ].join('; ');
-      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', ps], {
+      execFile(WIN_PS_EXE, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', ps], {
         timeout: 10000, maxBuffer: 4 * 1024 * 1024, windowsHide: true,
       }, (err, stdout) => {
         // -NoProfile 故意不加载 profile（慢且常挂代理脚本）；再补一次注册表 PATH 合并
@@ -43,7 +44,14 @@ function dumpShellEnv() {
     const marker = '__FANBOX_ENV_8f3a__';
     const cmd = `printf '%s\\n' '${marker}'; env; printf '%s\\n' '${marker}'`;
     execFile(userShell(), ['-ilc', cmd], { timeout: 8000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
-      resolve(parseEnvBlock(stdout, marker)); // 抓不到（err 且无输出）→ 空对象，退回 process.env 打底
+      const out = String(stdout || '');
+      const seg = out.split(marker)[1] || ''; // 取两个 marker 之间的纯 env 段
+      const env = {};
+      for (const line of seg.split('\n')) {
+        const i = line.indexOf('=');
+        if (i > 0) env[line.slice(0, i)] = line.slice(i + 1);
+      }
+      resolve(env); // 抓不到（err 且无输出）→ 空对象，退回 process.env 打底
     });
   });
 }
@@ -57,10 +65,6 @@ function parseEnvLines(text) {
   return env;
 }
 
-function parseEnvBlock(stdout, marker) {
-  return parseEnvLines(String(stdout || '').split(marker)[1] || '');
-}
-
 // Windows：把用户级 + 系统级 PATH 注册表拼进 env（GUI 启动时 process.env.PATH 经常缺用户目录）
 function mergeWinUserPath(env) {
   return new Promise((resolve) => {
@@ -70,7 +74,7 @@ function mergeWinUserPath(env) {
       `$m=[Environment]::GetEnvironmentVariable('Path','Machine')`,
       `[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($m + ';' + $u))`, // Base64：中文目录名不被代码页毁掉（同 dumpShellEnv）
     ].join('; ');
-    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
+    execFile(WIN_PS_EXE, ['-NoProfile', '-NonInteractive', '-Command', ps], {
       timeout: 5000, windowsHide: true,
     }, (err, stdout) => {
       let pathStr = '';
@@ -128,7 +132,7 @@ function sysProxyEnv() {
         `$p = Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings' -ErrorAction SilentlyContinue`,
         `if ($p -and $p.ProxyEnable -eq 1 -and $p.ProxyServer) { Write-Output $p.ProxyServer }`,
       ].join('; ');
-      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
+      execFile(WIN_PS_EXE, ['-NoProfile', '-NonInteractive', '-Command', ps], {
         timeout: 4000, windowsHide: true,
       }, (err, stdout) => {
         const px = parseWinProxyServer(String(stdout || '').trim());
@@ -152,14 +156,12 @@ async function build() {
   const shellEnv = await dumpShellEnv();
   const env = { ...process.env, ...shellEnv }; // process.env 打底，shell 导入的覆盖（PATH/代理/BASE_URL/key 等）
   if (!PROXY_KEYS.some((k) => env[k])) Object.assign(env, await sysProxyEnv()); // 仍无代理 → 系统代理兜底，不覆盖已有
-  // claude/codex 含中文，保 UTF-8；Windows 控制台也需要
-  if (!/UTF-8|utf8/i.test(env.LC_ALL || env.LC_CTYPE || env.LANG || '')) {
-    env.LANG = 'en_US.UTF-8';
-  }
+  // D3/§4: master /UTF-8/i on POSIX; never force LANG on win32
   if (isWin()) {
     env.PYTHONIOENCODING = env.PYTHONIOENCODING || 'utf-8';
-    // ConPTY / 子进程友好
     if (!env.HOME && env.USERPROFILE) env.HOME = env.USERPROFILE;
+  } else if (!/UTF-8/i.test(env.LC_ALL || env.LC_CTYPE || env.LANG || '')) {
+    env.LANG = 'en_US.UTF-8';
   }
   return env;
 }

@@ -11,6 +11,8 @@ const os = require('os');
 const fs = require('fs');
 const IS_MAC = process.platform === 'darwin';
 const IS_WIN = process.platform === 'win32';
+// Windows 上裸命令名会先在「当前工作目录」里找同名 exe 再查 PATH，所以系统自带程序一律走绝对路径
+const WIN_PS_EXE = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 
 // 复用现有后端：require 即 listen 127.0.0.1:PORT，不自动开浏览器
 process.env.FANBOX_NO_OPEN = '1';
@@ -53,27 +55,38 @@ function saveBounds() {
 function createWindow() {
   const b = loadBounds();
   // macOS：hiddenInset + vibrancy；Windows：hidden + titleBarOverlay（保留原生右上角按钮）
-  const winOpts = {
-    width: b.width, height: b.height, x: b.x, y: b.y,
-    minWidth: 920, minHeight: 600,
-    backgroundColor: '#0b0c0a',
-    show: false,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  };
-  if (IS_MAC) {
-    winOpts.titleBarStyle = 'hiddenInset';
-    winOpts.vibrancy = 'sidebar';
-    winOpts.visualEffectState = 'active';
-  } else if (IS_WIN) {
-    winOpts.titleBarStyle = 'hidden';
-    winOpts.titleBarOverlay = { color: '#0b0c0a', symbolColor: '#c8c8c8', height: 36 };
-    winOpts.autoHideMenuBar = true;
+  // D10/D8: master BrowserWindow shape on non-win (titleBarStyle/vibrancy always as upstream);
+  // win32-only: titleBarOverlay + show:false/ready-to-show (white-flash fix).
+  let winOpts;
+  if (IS_WIN) {
+    winOpts = {
+      width: b.width, height: b.height, x: b.x, y: b.y,
+      minWidth: 920, minHeight: 600,
+      titleBarStyle: 'hidden',
+      titleBarOverlay: { color: '#0b0c0a', symbolColor: '#c8c8c8', height: 36 },
+      autoHideMenuBar: true,
+      backgroundColor: '#0b0c0a',
+      show: false,
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    };
   } else {
-    winOpts.autoHideMenuBar = true;
+    winOpts = {
+      width: b.width, height: b.height, x: b.x, y: b.y,
+      minWidth: 920, minHeight: 600,
+      titleBarStyle: 'hiddenInset',
+      backgroundColor: '#0b0c0a',
+      vibrancy: 'sidebar',
+      visualEffectState: 'active',
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    };
   }
   win = new BrowserWindow(winOpts);
   // 拖动/缩放后防抖记忆，关窗再存一次兜底
@@ -81,9 +94,8 @@ function createWindow() {
   const remember = () => { clearTimeout(bt); bt = setTimeout(saveBounds, 400); };
   win.on('resize', remember);
   win.on('move', remember);
-  win.once('ready-to-show', () => { if (win && !win.isDestroyed()) win.show(); });
+  if (IS_WIN) win.once('ready-to-show', () => { if (win && !win.isDestroyed()) win.show(); });
   // macOS：点左上角红叉只隐藏到 Dock（保活渲染进程，所有界面/终端状态原样保留），真正退出走 ⌘Q。
-  // Windows/Linux：关窗即退出（系统托盘未实现）。
   win.on('close', (e) => {
     saveBounds();
     if (IS_MAC && !isQuitting) { e.preventDefault(); win.hide(); }
@@ -123,8 +135,8 @@ app.whenReady().then(async () => {
   // 合盖继续运行：恢复上次的开关意图；启动时把残留的禁休眠清掉（防上次崩溃没恢复），有终端跑起来再按需重新生效
   lidIntent = !!readConfig().lidStayAwake;
   wechatStayAwake = !!readConfig().wechatStayAwake;
-  // Clear any leftover sleep inhibition (pmset / powerSaveBlocker) from a prior crash.
-  trySetDisableSleep(false);
+  // Clear leftover sleep inhibition. master: darwin only; win keeps powerSaveBlocker clear (D8/D10).
+  if (IS_MAC || IS_WIN) trySetDisableSleep(false);
   // While "keep working" is on, re-evaluate every 30s (idle grace expiry relies on this).
   setInterval(() => { if (lidIntent && terminals.size) refreshLidGuard(); }, 30000);
   buildMenu();
@@ -168,7 +180,10 @@ function screenshotDirs() {
 }
 const shotWatchers = [];
 const shotSent = new Map(); // path -> t，fs.watch 同一文件会连发多个事件，3s 内去重
-const SHOT_NAME_RE = /^(截屏|截圖|截图|Screenshot|Screen Shot|CleanShot|SCR-|Snipaste|屏幕截图)/i;
+// §4: POSIX = master patterns; win32 adds Snipaste / 屏幕截图
+const SHOT_NAME_RE = IS_WIN
+  ? /^(截屏|截圖|截图|Screenshot|Screen Shot|CleanShot|SCR-|Snipaste|屏幕截图)/i
+  : /^(截屏|截圖|截图|Screenshot|Screen Shot|CleanShot|SCR-)/i;
 function onShotFile(dir, filename) {
   const name = filename ? filename.toString() : '';
   // 截屏写盘有「.截屏xxx.png」点前缀的中间态，跳过；只认系统截屏的命名习惯
@@ -548,7 +563,7 @@ function refreshLidGuard() {
 // 侧栏开关 / 菜单勾选共用的入口
 async function setLidIntent(on) {
   console.log('[lid] setLidIntent called, on =', on);
-  if (!IS_MAC && !IS_WIN) return { ok: false, error: 'unsupported platform' };
+  if (!IS_MAC && !IS_WIN) return { ok: false, error: 'macOS only' }; // Linux 保持 master 原文（D8）
   if (on) {
     const choice = dialog.showMessageBoxSync(win && !win.isDestroyed() ? win : undefined, {
       type: 'warning', buttons: [M('开启', 'Enable'), M('取消', 'Cancel')], defaultId: 0, cancelId: 1,
@@ -597,13 +612,14 @@ ipcMain.handle('power:setLid', async (e, { on } = {}) => {
 // Application menu — Edit roles keep terminal ⌘C/⌘V and Ctrl+C/V working.
 function buildMenu() {
   const isMac = IS_MAC;
+  // §3b: macOS master wording; Windows keeps port-specific power wording
   const stayLabel = IS_WIN
     ? (lidActive
       ? M('有任务时保持唤醒（生效中）', 'Keep awake while tasks run (active)')
       : M('有任务时保持唤醒', 'Keep awake while tasks run'))
     : (lidActive
-      ? M('合盖后继续运行（生效中）', 'Keep running with lid closed (active)')
-      : M('合盖后继续运行', 'Keep running with lid closed'));
+      ? M('合盖继续干活（生效中）', 'Keep working with lid closed (active)')
+      : M('合盖继续干活', 'Keep working with lid closed'));
   const template = [
     ...(isMac ? [{ label: 'FanBox', submenu: [
       { role: 'about', label: M('关于 FanBox', 'About FanBox') },
@@ -615,7 +631,8 @@ function buildMenu() {
     ] }] : []),
     { label: M('文件', 'File'), submenu: [
       ...(isMac ? [] : [{ label: M('检查更新…', 'Check for Updates…'), click: () => checkUpdate({ manual: true }) }, { type: 'separator' }]),
-      isMac ? { role: 'close' } : { role: 'quit', label: M('退出', 'Quit') },
+      // Linux 保持 master 的裸 role（D8）；Windows 才补中文标签
+      isMac ? { role: 'close' } : (IS_WIN ? { role: 'quit', label: M('退出', 'Quit') } : { role: 'quit' }),
     ] },
     { label: M('编辑', 'Edit'), submenu: [
       { role: 'undo', label: M('撤销', 'Undo') }, { role: 'redo', label: M('重做', 'Redo') }, { type: 'separator' },
@@ -730,12 +747,12 @@ const termCwds = new Map(); // id -> 最近已知 cwd（Windows 无 lsof，spawn
 
 function resolveShell() {
   if (IS_WIN) {
-    // 优先用户配置 / pwsh / Windows PowerShell / COMSPEC
+    // D9: FANBOX_SHELL beats inherited SHELL (MSYS/Git-Bash leak)
     const candidates = [
-      process.env.SHELL,
       process.env.FANBOX_SHELL,
+      process.env.SHELL,
       process.env.ComSpec && process.env.ComSpec.toLowerCase().includes('powershell') ? process.env.ComSpec : null,
-      path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+      WIN_PS_EXE,
       'powershell.exe',
       process.env.ComSpec || 'cmd.exe',
     ].filter(Boolean);
@@ -750,9 +767,14 @@ function resolveShell() {
   return process.env.SHELL || '/bin/zsh';
 }
 
-ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme }) => {
+ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme, shell }) => {
   if (!pty) return { ok: false, error: 'node-pty 未编译，跑：npm run rebuild' };
-  const shellPath = resolveShell();
+  // D4: optional shell override (agent cron forces PowerShell on Windows)
+  let shellPath = resolveShell();
+  if (IS_WIN && typeof shell === 'string' && shell.trim()) {
+    const s = shell.trim();
+    if (s === 'powershell.exe' || s === 'pwsh.exe' || s === 'cmd.exe' || fs.existsSync(s)) shellPath = s;
+  }
   const startCwd = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
   // login shell（-l）：GUI 启动的进程只继承精简 PATH，不读 .zprofile/.zlogin，
   // 用户在那里配的 Homebrew/nvm/npm 全局路径（claude 等）就丢了 → 「普通终端能找到、fanbox 找不到」。
@@ -766,7 +788,8 @@ ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme }) => {
     // 终端里的 agent 天生知道自己是几号窗口、控制接口在哪、门票是啥——skill 零配置（见 docs/12）
     FANBOX_TERM_ID: id, FANBOX_CTL: `http://127.0.0.1:${PORT}/api/agent`, FANBOX_CTL_TOKEN: AGENT_TOKEN,
   };
-  if (!/UTF-8|utf8/i.test(env.LC_ALL || env.LC_CTYPE || env.LANG || '')) env.LANG = 'zh_CN.UTF-8';
+  // D3: never force LANG on win32 (Git/MSYS follow OS display language). POSIX keeps master fallback.
+  if (!IS_WIN && !/UTF-8/i.test(env.LC_ALL || env.LC_CTYPE || env.LANG || '')) env.LANG = 'zh_CN.UTF-8';
   if (IS_WIN) {
     // ConPTY 友好：强制 UTF-8 代码页相关变量；补 HOME 给跨平台工具
     env.PYTHONIOENCODING = env.PYTHONIOENCODING || 'utf-8';
@@ -792,8 +815,10 @@ ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme }) => {
     // 开关开着但还没生效 → 有输出说明可能刚开工，尽快结算电源守卫（1s 去抖）
     if (lidIntent && !lidActive && !lidPoke) lidPoke = setTimeout(() => { lidPoke = null; refreshLidGuard(); }, 1000);
     recEvent(id, 'o', data);
-    // OSC（\x1b]…BEL/ST）也剥：PowerShell 每个提示符都刷一次控制台标题，不剥会污染 read 缓冲和「最近输出」
-    const stripped = data.replace(/\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][AB0]|\r/g, '');
+    // D10: OSC alternative only when IS_WIN; POSIX = master CSI-only strip
+    const stripped = IS_WIN
+      ? data.replace(/\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][AB0]|\r/g, '')
+      : data.replace(/\x1b\[[0-9;?]*[A-Za-z]|\x1b[()][AB0]|\r/g, '');
     termTails.set(id, ((termTails.get(id) || '') + stripped).slice(-4000)); // 留最后 ~4KB，给微信 agent 看「最近输出」
     termBufs.set(id, ((termBufs.get(id) || '') + stripped).slice(-200000)); // 大缓冲给 /api/agent/read
     termLastOut.set(id, Date.now());
@@ -831,6 +856,19 @@ ipcMain.handle('clip:read', () => {
         if (fs.existsSync(fp)) return { kind: 'file', path: fp };
       } catch { /* 不是合法 file:// 就当没有 */ }
     }
+    // D7: Explorer-copied files → FileNameW (NUL-terminated UTF-16LE; first file only)
+    if (IS_WIN) {
+      try {
+        const buf = clipboard.readBuffer('FileNameW');
+        if (buf && buf.length >= 4) {
+          let s = buf.toString('utf16le');
+          const z = s.indexOf('\0');
+          if (z >= 0) s = s.slice(0, z);
+          s = s.replace(/\0/g, '').trim();
+          if (s && fs.existsSync(s)) return { kind: 'file', path: s };
+        }
+      } catch { /* format absent */ }
+    }
     const img = clipboard.readImage();
     if (!img.isEmpty()) {
       const dir = path.join(app.getPath('temp'), 'fanbox-drops');
@@ -852,16 +890,18 @@ ipcMain.handle('clip:file', (e, { path: p }) => new Promise((resolve) => {
     return;
   }
   if (IS_WIN) {
-    // PowerShell Set-Clipboard -Path：资源管理器可粘贴文件
-    const lit = String(p).replace(/'/g, "''");
-    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Set-Clipboard -Path '${lit}'`], { windowsHide: true, timeout: 8000 }, (err) => {
+    // D7: Set-Clipboard -LiteralPath; path via env (no wildcard expansion for report[1].png). PS 5.1 only.
+    const script = 'Set-Clipboard -LiteralPath $env:FANBOX_CLIP_FILE';
+    execFile(WIN_PS_EXE, ['-NoProfile', '-NonInteractive', '-Command', script], {
+      env: { ...process.env, FANBOX_CLIP_FILE: String(p) },
+      windowsHide: true, timeout: 8000,
+    }, (err) => {
       resolve({ ok: !err, error: err && err.message });
     });
     return;
   }
-  // Linux：尽量把路径写进剪贴板文本
-  try { clipboard.writeText(p); resolve({ ok: true }); }
-  catch (err) { resolve({ ok: false, error: err.message }); }
+  // D8：Linux 保持 master 行为（master 无条件走 osascript，在 Linux 上就是失败）
+  execFile('osascript', ['-e', 'on run argv', '-e', 'set the clipboard to (POSIX file (item 1 of argv))', '-e', 'end run', p], (err) => resolve({ ok: !err, error: err && err.message }));
 }));
 
 // 拖拽落盘：file-promise 类拖入（截图浮窗等）没有真实路径，把字节写进临时目录换路径
@@ -911,9 +951,10 @@ ipcMain.on('pty:kill', (e, { id }) => { const p = terminals.get(id); if (p) { tr
 
 // ---------- Agent 控制接口：把跨终端感知/控制能力开成本机 HTTP（server.js 的 /api/agent/* 调这里）----------
 // 让跑在翻箱终端里的 agent 指挥兄弟窗口：列表/读屏/输入/开窗/等待/关闭。安全模型与接口规范见 docs/12。
-// powershell/pwsh/cmd 也算裸 shell（POSIX 上 SHELL=pwsh 的用户）；win32 下 p.process 是静态值，
-// 这个正则判不了忙闲——agentList / agentWait / 微信 listTerminals 在 win32 一律改走 winPtyBusy 子进程探测
-const BARE_SHELL_RE = /^-?(zsh|bash|sh|fish|login|powershell|pwsh|cmd)(\.exe)?$/i;
+// D10: POSIX regex = master; win32 adds powershell|pwsh|cmd (p.process static → busy via winPtyBusy anyway)
+const BARE_SHELL_RE_POSIX = /^-?(zsh|bash|sh|fish|login)$/i;
+const BARE_SHELL_RE_WIN = /^-?(zsh|bash|sh|fish|login|powershell|pwsh|cmd)(\.exe)?$/i;
+const BARE_SHELL_RE = IS_WIN ? BARE_SHELL_RE_WIN : BARE_SHELL_RE_POSIX;
 let agentReqSeq = 0;
 const agentCreateWaiters = new Map(); // reqId -> resolve（渲染进程建 tab 的回执）
 
@@ -926,8 +967,9 @@ async function agentList() {
     const proc = (p && p.process) || '';
     // Windows termCwdByPid 恒空 → 用 spawn/定位时记下的 termCwds 兜底（与微信面板同一策略）；
     // 忙闲同理改子进程探测（winPtyBusy 一次 CIM 查询扫全部 pty、缓存 2s），null=未知按忙——别往运行中的程序里打字
-    let cwd = IS_WIN ? '' : await termCwdByPid(p && p.pid);
-    if (!cwd) cwd = termCwds.get(id) || '';
+    // D10: termCwds fallback is win32-only; POSIX returns honest empty when lsof fails
+    let cwd = await termCwdByPid(p && p.pid);
+    if (IS_WIN && !cwd) cwd = termCwds.get(id) || '';
     const busy = IS_WIN
       ? ((await winPtyBusy(p && p.pid)) !== false)
       : !!proc && !BARE_SHELL_RE.test(proc);
@@ -958,7 +1000,7 @@ function agentCreate(opts = {}) {
     if (!win || win.isDestroyed()) return resolve({ ok: false, error: 'no window' });
     const reqId = 'ac' + (++agentReqSeq);
     agentCreateWaiters.set(reqId, resolve);
-    win.webContents.send('agent:term-create', { reqId, cwd: typeof opts.cwd === 'string' ? opts.cwd : '' });
+    win.webContents.send('agent:term-create', { reqId, cwd: typeof opts.cwd === 'string' ? opts.cwd : '', shell: typeof opts.shell === 'string' ? opts.shell : '' });
     setTimeout(() => { if (agentCreateWaiters.delete(reqId)) resolve({ ok: false, error: 'renderer timeout' }); }, 10000);
   }).then(async (r) => {
     if (!r.ok) return r;
@@ -1100,31 +1142,38 @@ ipcMain.handle('rec:save-export', (e, { name, buf }) => {
 });
 // 导出：渲染层录出的永远是 WebM；要 MP4/GIF 就用本机 ffmpeg 转一道（检测不到 ffmpeg 优雅退回 WebM）。
 function findFfmpeg() {
-  const candidates = IS_WIN
-    ? [
-      process.env.FFMPEG_PATH,
-      path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WinGet', 'Links', 'ffmpeg.exe'),
-      path.join(process.env.ProgramFiles || 'C:\\Program Files', 'ffmpeg', 'bin', 'ffmpeg.exe'),
-      path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'ffmpeg', 'bin', 'ffmpeg.exe'),
-      'ffmpeg.exe',
-      'ffmpeg',
-    ]
-    : ['/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/usr/bin/ffmpeg', 'ffmpeg'];
-  for (const c of candidates) {
-    if (!c) continue;
-    try {
-      if (c === 'ffmpeg' || c === 'ffmpeg.exe') {
-        // PATH 查找
-        const { execFileSync } = require('child_process');
-        if (IS_WIN) {
-          const out = execFileSync('where.exe', [c], { encoding: 'utf8', timeout: 3000, windowsHide: true }).trim().split(/\r?\n/)[0];
-          if (out && fs.existsSync(out)) return out;
-        } else {
-          const out = execFileSync('which', [c], { encoding: 'utf8', timeout: 3000 }).trim();
-          if (out && fs.existsSync(out)) return out;
+  // §4/§5: POSIX = master fixed paths only; win32 uses pure-Node PATH walk (no where.exe OEM)
+  if (IS_WIN) {
+    const winFind = (name) => {
+      const dirs = String(process.env.Path || process.env.PATH || '').split(';').map((s) => {
+        let t = s.trim();
+        if (t.length >= 2 && ((t[0] === '"' && t[t.length - 1] === '"') || (t[0] === "'" && t[t.length - 1] === "'"))) t = t.slice(1, -1);
+        return t;
+      }).filter(Boolean);
+      const extras = [
+        process.env.FFMPEG_PATH && path.dirname(process.env.FFMPEG_PATH),
+        process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Microsoft', 'WinGet', 'Links'),
+        path.join(process.env.ProgramFiles || 'C:\\Program Files', 'ffmpeg', 'bin'),
+        path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'ffmpeg', 'bin'),
+      ].filter(Boolean);
+      // 显式指定的 FFMPEG_PATH 优先级最高：用户装了带 libx264 的版本，就不该被 PATH 上
+      // 某个功能阉割的 ffmpeg.exe 顶掉（文件名也未必叫 ffmpeg.exe，所以整条路径先试）
+      if (process.env.FFMPEG_PATH) {
+        try { if (fs.existsSync(process.env.FFMPEG_PATH)) return process.env.FFMPEG_PATH; } catch { /* */ }
+      }
+      const exts = String(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
+      for (const d of dirs.concat(extras)) {
+        for (const ext of exts) {
+          const f = path.join(d, name + (name.toLowerCase().endsWith(ext.toLowerCase()) ? '' : ext));
+          try { if (fs.existsSync(f)) return f; } catch { /* */ }
         }
-      } else if (fs.existsSync(c)) return c;
-    } catch { /* */ }
+      }
+      return null;
+    };
+    return winFind('ffmpeg');
+  }
+  for (const c of ['/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/usr/bin/ffmpeg']) {
+    try { if (fs.existsSync(c)) return c; } catch { /* */ }
   }
   return null;
 }
@@ -1227,7 +1276,7 @@ function winPtyChildMap() {
   const filter = pids.map((p) => 'ParentProcessId=' + Number(p)).join(' OR ');
   const ps = `$ErrorActionPreference='SilentlyContinue'; Get-CimInstance -ClassName Win32_Process -Filter '${filter}' | ForEach-Object { '' + $_.ParentProcessId + '|' + $_.Name }`;
   winProcProbe.inflight = new Promise((resolve) => {
-    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
+    execFile(WIN_PS_EXE, ['-NoProfile', '-NonInteractive', '-Command', ps], {
       timeout: 4000, windowsHide: true,
     }, (err, stdout) => {
       let val = null;
@@ -1277,7 +1326,8 @@ ipcMain.handle('pty:cwd', async (e, { id }) => {
   const p = terminals.get(id);
   if (!p || !p.pid) return { ok: false };
   let cwd = await termCwdByPid(p.pid);
-  if (!cwd) cwd = termCwds.get(id) || '';
+  // D10: spawn-time fallback only on win32 (Windows has no lsof)
+  if (IS_WIN && !cwd) cwd = termCwds.get(id) || '';
   if (cwd) termCwds.set(id, cwd);
   return cwd ? { ok: true, cwd } : { ok: false };
 });
@@ -1310,8 +1360,8 @@ function ensureWechat() {
         const proc = (p && p.process) || '';
         // Windows termCwdByPid 恒空 → 直接用 spawn/定位时记下的 termCwds（和 pty:cwd 同一兜底），
         // 手机上才看得到「哪个终端在哪个项目」；POSIX 照旧 lsof，兜底同样补上
-        let cwd = IS_WIN ? '' : await termCwdByPid(p && p.pid);
-        if (!cwd) cwd = termCwds.get(id) || '';
+        let cwd = await termCwdByPid(p && p.pid);
+        if (IS_WIN && !cwd) cwd = termCwds.get(id) || '';
         // Windows 的 proc 是静态值，正则永远判「忙」→ 改用子进程探测；未知(null)按忙，别遥控打断正跑的活
         const busy = IS_WIN
           ? ((await winPtyBusy(p && p.pid)) !== false)
@@ -1347,7 +1397,7 @@ ipcMain.handle('wechat:check', async () => { ensureWechat(); return wechatBridge
 // macOS: first enable may install a pmset sudoers rule. Windows: powerSaveBlocker, no elevation.
 ipcMain.handle('power:setWechat', async (e, { on } = {}) => {
   ensureWechat();
-  if (!IS_MAC && !IS_WIN) return { ok: false, error: 'unsupported platform' };
+  if (!IS_MAC && !IS_WIN) return { ok: false, error: 'macOS only' }; // Linux 保持 master 原文（D8）
   if (on) {
     const choice = dialog.showMessageBoxSync(win && !win.isDestroyed() ? win : undefined, {
       type: 'warning', buttons: [M('开启', 'Enable'), M('取消', 'Cancel')], defaultId: 0, cancelId: 1,

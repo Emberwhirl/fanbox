@@ -1,5 +1,9 @@
 'use strict';
 // FanBox 界面词典：中文原文 → 英文。由 i18n.js 消费；缺词条时英文界面回退显示中文。
+// 上游英文里有一批「this Mac / Away from Mac」措辞：Windows 版照搬会出现「这台 Mac」。
+// 中文原文是共用的（「本机」「全机」），所以按运行平台选英文值，macOS 上与上游逐字一致。
+var FANBOX_UI_MAC = typeof navigator !== 'undefined'
+  && /Mac/i.test((navigator.platform || '') + ' ' + (navigator.userAgent || ''));
 window.FANBOX_DICT = {
   // ---------- 侧栏 ----------
   'Coding Agent的驾驶舱': 'The cockpit for coding agents',
@@ -9,7 +13,7 @@ window.FANBOX_DICT = {
   'Agent 项目': 'Agent projects',
   '最近被 Claude Code / Codex 处理过的项目，自动从两者的本机会话记录扫出来': 'Projects recently worked on by Claude Code / Codex, auto-discovered from their local session logs',
   'Skills 透视': 'Skills overview',
-  '本机 Claude Code / Codex 的全部 skills：谁在干活、谁在吃灰、谁在静默失效': 'All Claude Code / Codex skills on this Mac: which ones pull their weight, which gather dust, which silently fail',
+  '本机 Claude Code / Codex 的全部 skills：谁在干活、谁在吃灰、谁在静默失效': `All Claude Code / Codex skills on this ${FANBOX_UI_MAC ? 'Mac' : 'computer'}: which ones pull their weight, which gather dust, which silently fail`,
   'Agent 用量': 'Agent usage',
   'Claude Code / Codex 用量——官方限额窗口 + 本机会话日志，不用开着它们': 'Claude Code / Codex usage — official limit windows + local session logs, without keeping them open',
   '皮肤': 'Theme',
@@ -19,11 +23,14 @@ window.FANBOX_DICT = {
   '暖色纸感档案馆': 'Warm paper archive',
   '终端核 Volt': 'Terminal-core Volt',
   '编辑式 · 索引日报': 'Editorial · index daily',
-  '本地运行 · 数据不出本机': 'Runs locally · data never leaves this Mac',
+  '本地运行 · 数据不出本机': `Runs locally · data never leaves this ${FANBOX_UI_MAC ? 'Mac' : 'computer'}`,
   // 侧栏「离开电脑」电源开关 + 版本号
-  '离开电脑': 'Away from computer',
+  '离开电脑': (typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform || '')) ? 'Away from Mac' : 'Away from computer',
   '合盖继续干活': 'Keep working, lid closed',
   '有任务时保持唤醒': 'Keep awake while tasks run',
+  '开启后：只要还有终端会话在跑，Windows 会尽量不进入睡眠，agent 任务能接着干；终端全退约两分钟后恢复正常休眠。笔记本合盖是否睡眠仍看「电源选项 → 合上盖子的操作」。': 'While on: as long as a terminal session is running, Windows tries not to sleep so agent tasks keep going; normal sleep resumes ~2 minutes after every terminal exits. Lid-close sleep still follows Power Options → “When I close the lid”.',
+  // win 变体：「系统尽量不睡眠」是模板里拼进去的片段，最终整段才是一个文本节点，按整句配 key
+  '开启后，手机微信连着 ClawBot 期间系统尽量不睡眠——人在外面也能一直用微信遥控本机的 Claude Code / Codex；微信断开自动恢复正常休眠。': 'While WeChat stays connected to ClawBot, the system tries not to sleep — you can keep remote-controlling Claude Code / Codex from your phone. Normal sleep resumes once WeChat disconnects.',
   '微信遥控不断线': 'Stay awake for WeChat',
   '已开启 · 有终端时尽量不睡眠': 'On · try not to sleep while terminals are open',
   '现在：未开启，系统照常休眠': 'Now: off — system sleeps as usual',
@@ -170,6 +177,15 @@ window.FANBOX_DICT = {
   '在编辑器打开': 'Open in editor',
   '在 Finder 显示': 'Reveal in Finder',
   '在访达显示': 'Reveal in Finder',
+  '在 资源管理器 显示': 'Reveal in File Explorer',
+  '在 文件管理器 显示': 'Reveal in File Manager',
+  '移到回收站': 'Move to Recycle Bin',
+  '已移到回收站，可从回收站恢复': 'Moved to Recycle Bin — restorable from Recycle Bin',
+  '已移到回收站': 'Moved to Recycle Bin',
+  '已复制文件，可在资源管理器里粘贴': 'File copied — paste it in File Explorer',
+  '已复制文件，可在文件管理器里粘贴': 'File copied — paste it in your file manager',
+  '复制文件（资源管理器里可粘贴）': 'Copy file (paste in File Explorer)',
+  '复制文件（文件管理器里可粘贴）': 'Copy file (paste in your file manager)',
   '复制路径': 'Copy path',
   '取消收藏': 'Unfavorite',
   '重命名…': 'Rename…',
@@ -328,11 +344,11 @@ window.FANBOX_DICT = {
   // ---------- 命令面板 ----------
   '按文件名搜索…   用 “内容:” 前缀搜文件内容，如 “内容:useState”': 'Search by filename…   prefix with “content:” to search inside files, e.g. “content:useState”',
   '切换搜索范围（Tab）': 'Toggle search scope (Tab)',
-  '⤢ 全机': '⤢ This Mac',
+  '⤢ 全机': `⤢ This ${FANBOX_UI_MAC ? 'Mac' : 'PC'}`,
   '▢ 当前目录': '▢ This folder',
   '范围：': 'Scope: ',
   '· Tab 切换范围 · ↑↓ 选择 · ↵ 打开 · ⌘↵ 在编辑器打开': '· Tab scope · ↑↓ select · ↵ open · ⌘↵ open in editor',
-  '全机（主目录及以下）': 'This Mac (home folder and below)',
+  '全机（主目录及以下）': `This ${FANBOX_UI_MAC ? 'Mac' : 'PC'} (home folder and below)`,
   '输入开始搜索 · 文件名模糊匹配，「内容:」搜全文（含 PDF、截图里的文字）': 'Type to search · fuzzy filename match; “content:” searches full text (incl. PDFs and text in screenshots)',
   '输入开始搜索': 'Type to search',
   '搜索中…': 'Searching…',
@@ -526,6 +542,11 @@ window.FANBOX_DICT_RULES = [
   [/^已另存为 (.+)$/, (m) => `Saved as ${m[1]}`],
   [/^把文件夹「(.+)」移到废纸篓？可从废纸篓恢复。$/, (m) => `Move folder "${m[1]}" to Trash? You can restore it from Trash.`],
   [/^把「(.+)」移到废纸篓？（系统废纸篓里随时可恢复）$/, (m) => `Move "${m[1]}" to Trash? (Restorable from the system Trash anytime)`],
+  [/^把文件夹「(.+)」移到回收站？可从回收站恢复。$/, (m) => `Move folder "${m[1]}" to Recycle Bin? You can restore it from the Recycle Bin.`],
+  [/^把「(.+)」移到回收站？（系统回收站里随时可恢复）$/, (m) => `Move "${m[1]}" to Recycle Bin? (Restorable from the system Recycle Bin anytime)`],
+  [/^已启动 (.+)$/, (m) => `Launched ${m[1]}`],
+  [/^没找到 (.+) 的安装位置（设置里可确认是否已装）$/, (m) => `Couldn't find where ${m[1]} is installed (check Settings to confirm it's installed)`],
+  [/^启动 (.+) 失败：([\s\S]*)$/, (m) => `Failed to launch ${m[1]}: ${m[2]}`],
   [/^刚变更：\n([\s\S]+)$/, (m) => `Just changed:\n${m[1]}`],
   [/^改·(\d+)$/, (m) => `edited·${m[1]}`],
   // 面包屑 / 标题
@@ -600,6 +621,9 @@ window.FANBOX_DICT_RULES = [
   [/^新版本 v(.+) 已发布$/, (m) => `v${m[1]} is out`],
   // 侧栏「离开电脑」状态行 + 版本悬停卡（动态数字/版本号）
   [/^现在：(\d+) 个终端开着，agent 正在干活 → 生效中，合盖也不休眠$/, (m) => `Now: ${m[1]} terminal(s) open, agents working → active, no sleep on lid close`],
+  // win 变体（powerSaveBlocker 按「有没有终端会话」计，没有 agent 忙闲判定）
+  [/^现在：(\d+) 个终端开着 → 生效中，尽量不睡眠$/, (m) => `Now: ${m[1]} terminal(s) open → active, trying not to sleep`],
+  [/^现在：(\d+) 个终端开着但判定空闲 → 系统照常休眠$/, (m) => `Now: ${m[1]} terminal(s) open but idle → normal sleep`],
   [/^现在：(\d+) 个终端开着但都空闲 → 合盖照常休眠$/, (m) => `Now: ${m[1]} terminal(s) open but all idle → normal sleep on lid close`],
   [/^v(.+) 更新了什么$/, (m) => `What's new in v${m[1]}`],
   // 定时任务：时间规则 / 下次 / 上次（复合 meta 行由 i18n.js 按 · 拆段后逐段命中这里）
