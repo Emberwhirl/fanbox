@@ -730,11 +730,21 @@ async function releasePrepare(b) {
   const firstPlain = lines.find((l) => !/^#/.test(l));
   const title = (firstBullet || firstPlain || '').replace(/^[#\-*\s]+/, '').slice(0, 60);
   const steps = [];
-  if (b.doDist) steps.push('npm run dist');
+  // 打包脚本按平台：npm run dist 是 macOS 那条（开头带 APPLE_KEYCHAIN_PROFILE=… 的行内环境变量，
+  // cmd/PowerShell 都不认），Windows 要走 dist:win，否则发版链第一步就崩在一句看不懂的报错上
+  if (b.doDist) steps.push(PLATFORM === 'win32' ? 'npm run dist:win' : 'npm run dist');
   steps.push('git add -A', `git commit -m ${shellQuote(`v${version}: ${title || '发版'}`)}`);
   if (b.doPush) steps.push('git push');
-  // 产物 glob 按平台：Windows 打出来的是 NSIS/portable exe，跟着 mac 写 *.dmg 永远匹配不到
-  const distGlob = PLATFORM === 'win32' ? ` dist/*${version}*win*.exe` : ` dist/*${version}*.dmg`;
+  // 产物按平台。注意不能把通配符原样交给命令行：PowerShell 不给原生命令展开通配符，
+  // gh 自己也不做 glob，于是它会去找一个名字里真带 * 的文件、失败、最后发出一个零资产的 Release——
+  // 而零资产的 Release 会让所有用户的更新提示被 hasWinInstallerAsset 静默吞掉。这里在 Node 侧展开。
+  const distDir = path.join(resolvePath(b.path || HOME), 'dist');
+  const distRe = PLATFORM === 'win32'
+    ? new RegExp(`${version.replace(/\./g, '\\.')}.*win.*\\.exe$`, 'i')
+    : new RegExp(`${version.replace(/\./g, '\\.')}.*\\.dmg$`, 'i');
+  let distFiles = [];
+  try { distFiles = fs.readdirSync(distDir).filter((f) => distRe.test(f)).map((f) => path.join(distDir, f)); } catch { /* 还没打包 */ }
+  const distGlob = distFiles.length ? ' ' + distFiles.map((f) => shellQuote(f)).join(' ') : '';
   if (b.doRelease) steps.push(`gh release create v${version} --title ${shellQuote(`v${version}${title ? ' · ' + title : ''}`)} --notes-file ${shellQuote(notesFile)}${b.doDist ? distGlob : ''}`);
   // 串联符按目标 shell：Windows 默认 PTY 是 PowerShell 5.1，它不认 &&（PS 7 才支持）。
   // 用右折叠嵌 if($?){…} 复刻「前一步失败就不往下走」——发版链里这条语义不能丢
@@ -2208,8 +2218,10 @@ async function claudeOfficialLimits() {
   // token 经 stdin 的 curl 配置传入，不暴露在进程列表里
   const proxyLine = await curlSysProxyLine();
   const body = await new Promise((resolve, reject) => {
-    const cp = execFile('curl', ['-sS', '--max-time', '8', '-K', '-', 'https://api.anthropic.com/api/oauth/usage'],
-      { timeout: 10000 }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
+    // curl 走绝对路径：裸名会先在 cwd 里找同名 exe，而这条请求的 stdin 里带着 OAuth token
+    const curlExe = PLATFORM === 'win32' ? (winFindExe('curl') || path.join(WIN_SYS32, 'curl.exe')) : 'curl';
+    const cp = execFile(curlExe, ['-sS', '--max-time', '8', '-K', '-', 'https://api.anthropic.com/api/oauth/usage'],
+      { timeout: 10000, env: winSpawnEnv() }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
     cp.stdin.end(`${proxyLine}header = "Authorization: Bearer ${token}"\nheader = "anthropic-beta: oauth-2025-04-20"\n`);
   });
   const d = JSON.parse(body);
@@ -2771,7 +2783,8 @@ async function cronFire(t, manual) {
   else {
     // D4: agent-type cron tabs always PowerShell on Windows (shell tasks exempt)
     const createOpts = { cwd: t.cwd || HOME, autorun: cronCommand(t) };
-    if (PLATFORM === 'win32' && t.agent !== 'shell') createOpts.shell = 'powershell.exe';
+    // 绝对路径：便携版常常从 ~\Downloads 跑起来，裸名会先命中那里的同名 exe
+    if (PLATFORM === 'win32' && t.agent !== 'shell') createOpts.shell = WIN_PS;
     const r = await A.create(createOpts).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
     rec.ok = !!(r && r.ok); if (r && r.error) rec.error = r.error; if (r && r.id) rec.term = r.id;
   }

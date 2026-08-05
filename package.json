@@ -28,7 +28,12 @@
     "asar": true,
     "npmRebuild": false,
     "asarUnpack": [
-      "**/node_modules/node-pty/**"
+      "**/node_modules/node-pty/lib/**",
+      "**/node_modules/node-pty/build/Release/*.node",
+      "**/node_modules/node-pty/build/Release/*.exe",
+      "**/node_modules/node-pty/build/Release/*.dll",
+      "**/node_modules/node-pty/prebuilds/**",
+      "**/node_modules/node-pty/third_party/**"
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
