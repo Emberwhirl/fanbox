@@ -71,6 +71,7 @@ constants to rerun elsewhere.
 | `phase3f.js` | D4: agent cron tab forces PowerShell under a cmd.exe default shell; argv-dump shim proves the `&`/quotes/em-dash prompt arrives byte-exact; shell tasks stay in cmd | ALL PASS |
 | `wechat/test-driver.js` + `wechat/test-shim.js` | H2 tree-kill (idle-timeout leaves no orphan), D5 exe probe + npm-shim resolution + CLI-not-found message, §5 quoted-PATH; plus a live `runCodex` end-to-end (“OK”, thread id captured) | ALL PASS |
 | `phase3h.js` | Disk panel descend/ascend, up-row hidden at drive root, winDirSizes real sizes, term path links (absolute drive + relative via pty cwd), updater: no offer on older release / offer on newer release with win `.exe` asset | ALL PASS after fix ③ |
+| `phase3i-xss.js` | Markdown sanitization gate: payload dead on all five render paths (incl. the ordinary double-click path and both `typeset.js` entries); `onerror` stripped while the `<img>` element survives; `javascript:` / `data:text/html` still blocked; drive-letter image paths still allowed; legitimate document renders unchanged with local images loading; fail-closed when DOMPurify is absent | ALL PASS after fix ④ |
 
 Bugs found by this matrix and fixed on `dev` (all inside win-gated branches;
 POSIX text untouched):
@@ -87,6 +88,15 @@ POSIX text untouched):
 3. **`winDirSizes` (server.js)** — the `-Command` fragments were joined with a
    space and the first fragment lacked `;`, a PS parse error → every directory
    size came back null (`—` in the disk panel). Added the missing semicolon.
+4. **`mdHtml` drive-letter URIs (app.js)** — found when the matrix was re-run after
+   back-porting the markdown sanitizer. DOMPurify reads `C:\pics\cover.png` as a URI with
+   an unknown scheme `c:` and strips the `src` — and it does so *before* `fixLocalImages`
+   can rewrite it to `/api/raw`, so every absolute-path image in markdown broke on Windows.
+   The Windows arm now passes an `ALLOWED_URI_REGEXP` that additionally permits a drive-letter
+   prefix, including the `C:%5C` form marked produces via `encodeURI`. Script schemes remain
+   blocked, asserted explicitly in `phase3i-xss.js`. POSIX passes no option and is unchanged —
+   `/path/to.png` was always on DOMPurify's default allowlist, which is why upstream/macOS
+   never saw this.
 
 Environment findings (not code bugs): the tester shell’s
 `NoDefaultCurrentDirectoryInExePath=1` breaks winpty’s `GetCommitHash.bat`
