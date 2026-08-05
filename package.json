@@ -28,12 +28,15 @@
     "asar": true,
     "npmRebuild": false,
     "asarUnpack": [
-      "**/node_modules/node-pty/lib/**",
-      "**/node_modules/node-pty/build/Release/*.node",
-      "**/node_modules/node-pty/build/Release/*.exe",
-      "**/node_modules/node-pty/build/Release/*.dll",
-      "**/node_modules/node-pty/prebuilds/**",
-      "**/node_modules/node-pty/third_party/**"
+      "**/node_modules/node-pty/**"
+    ],
+    "files": [
+      "**/*",
+      "!**/node_modules/**/*.{tlog,obj,pdb,iobj,ipdb,vcxproj,filters,lastbuildstate,recipe,exp,ilk}",
+      "!**/node_modules/**/Release/obj/**",
+      "!**/node_modules/node-pty/build/Release/.deps/**",
+      "!**/node_modules/node-pty/src/**",
+      "!**/node_modules/node-pty/deps/**/*.{cc,h,cpp,gyp,gypi}"
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
