@@ -268,7 +268,9 @@ window.FANBOX_DICT = {
 
   // ---------- 操作提示（toast）----------
   '打开失败': 'Open failed',
-  '已在文件管理器中显示': 'Revealed in Finder',
+  // 中文原文是共用的（「文件管理器」），英文按平台选：Windows 上说 Finder 等于把 macOS
+  // 的应用名摆到 Windows 用户面前，移植计划明令禁止（见 plan 的 macOS-only surface 表）
+  '已在文件管理器中显示': `Revealed in ${FANBOX_UI_MAC ? 'Finder' : 'File Explorer'}`,
   '已在终端打开此目录': 'Opened this folder in terminal',
   '已在编辑器打开': 'Opened in editor',
   '未找到 code 命令，已用默认应用打开': "'code' command not found — opened with default app",
@@ -345,6 +347,9 @@ window.FANBOX_DICT = {
   '按文件名搜索…   用 “内容:” 前缀搜文件内容，如 “内容:useState”': 'Search by filename…   prefix with “content:” to search inside files, e.g. “content:useState”',
   '切换搜索范围（Tab）': 'Toggle search scope (Tab)',
   '⤢ 全机': `⤢ This ${FANBOX_UI_MAC ? 'Mac' : 'PC'}`,
+  // Windows「有任务时保持唤醒」提示卡的注意事项行（合盖变体，与微信变体只差合盖那一句）
+  '持续耗电发热，建议接电源并把合盖设为「不采取任何操作」。无需管理员密码（powerSaveBlocker）。':
+    'Uses power and generates heat while on. Keep the machine plugged in, and set the lid action to "Do nothing". No administrator password required (powerSaveBlocker).',
   '▢ 当前目录': '▢ This folder',
   '范围：': 'Scope: ',
   '· Tab 切换范围 · ↑↓ 选择 · ↵ 打开 · ⌘↵ 在编辑器打开': '· Tab scope · ↑↓ select · ↵ open · ⌘↵ open in editor',

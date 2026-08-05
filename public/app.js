@@ -1466,8 +1466,15 @@ async function mdEditor(e, data, mode = 'rich') {
   // 两项都一致才算无损。只比文字会漏掉「图没了」，只比 HTML 会被排版差异带偏。
   // marked 不可用时退回严格比对（保守禁掉富文本，绝不误放行有损）。
   const semanticSig = (md) => {
-    const d = document.createElement('div');
-    d.innerHTML = mdHtml(md);
+    // 指纹这里必须看「未过滤」的解析结果，不能走 mdHtml：过滤是一次确定性的信息坍缩，
+    // 两侧同时过滤只会把差异抹平——DOMPurify 删掉的标签（iframe、script 等）从两份指纹里
+    // 一起消失，于是「Milkdown 把 iframe 吃了」这类真丢内容会被判成无损，富文本继续可用，
+    // 下一次自动保存就把丢失写回磁盘（本函数上方注释里点名要拦的正是「HTML 被删」）。
+    // 用 <template>：它的内容在惰性文档里解析，脚本不执行、子资源不加载，
+    // 所以既拿回了 master 的保真度，也没有把 XSS 面放回来。
+    const t = document.createElement('template');
+    t.innerHTML = window.marked.parse(md || '');
+    const d = t.content;
     const text = (d.textContent || '').replace(/\s+/g, ' ').trim();
     const bones = [];
     d.querySelectorAll('*').forEach((el) => {

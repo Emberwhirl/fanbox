@@ -794,6 +794,10 @@ ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme, shell }) => {
     // ConPTY 友好：强制 UTF-8 代码页相关变量；补 HOME 给跨平台工具
     env.PYTHONIOENCODING = env.PYTHONIOENCODING || 'utf-8';
     if (!env.HOME && env.USERPROFILE) env.HOME = env.USERPROFILE;
+    // server.js 在本进程上设了 NoDefaultCurrentDirectoryInExePath（libuv 只认调用方的这个变量，
+    // 见那边注释）。用户的终端不该被我们改掉原生语义：这里从 PTY 的 env 里删掉，
+    // 用户在自己 shell 里跑裸命令时行为与系统一致。
+    delete env.NoDefaultCurrentDirectoryInExePath;
   }
   let p;
   try {

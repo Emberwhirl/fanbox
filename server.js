@@ -37,6 +37,18 @@ function winSpawnEnv(extra) {
   if (PLATFORM !== 'win32') return extra ? { ...process.env, ...extra } : undefined;
   return { ...process.env, NoDefaultCurrentDirectoryInExePath: '1', ...(extra || {}) };
 }
+// 注意：单靠上面那个环境变量挡不住。libuv 走的是 NeedCurrentDirectoryForExePathW，
+// 它只读「调用方」的环境变量，塞进子进程 env 对「解析子进程可执行文件」这一步毫无作用；
+// 而在 Electron 主进程里运行期给 process.env 赋值同样不生效（拿编译出来的 git.exe 做过对照实验：
+// 变量已在 process.env 里、裸名仍然先命中 cwd）。所以凡是 cwd 可能落在用户目录的 spawn，
+// 一律先把可执行文件解析成绝对路径——这正是本移植对 ffmpeg / magick / gh 已经在用的老办法。
+// PATH 在进程生命周期内不变，解析一次缓存住即可。
+let winGitPath;
+function gitExe() {
+  if (PLATFORM !== 'win32') return 'git';
+  if (winGitPath === undefined) winGitPath = winFindExe('git') || null;
+  return winGitPath || 'git'; // 实在找不到就退回裸名：功能不该因为这层加固直接消失
+}
 
 // 搜索 / 遍历时跳过的重目录，避免 vibe coding 项目里 node_modules 拖垮速度
 const IGNORE_DIRS = new Set([
@@ -1225,7 +1237,7 @@ async function locatePath(p, name, root, tail, alt, roots) {
 function execGit(args, cwd) {
   return new Promise((resolve) => {
     // cwd 是用户正在浏览的目录：Windows 上裸命令名会先在 cwd 里找 git.exe，必须关掉（winSpawnEnv）
-    execFile('git', args, { cwd, timeout: 6000, maxBuffer: 16 * 1024 * 1024, env: winSpawnEnv() }, (err, stdout, stderr) => {
+    execFile(gitExe(), args, { cwd, timeout: 6000, maxBuffer: 16 * 1024 * 1024, env: winSpawnEnv() }, (err, stdout, stderr) => {
       resolve({ ok: !err, stdout: stdout || '', stderr: stderr || '' });
     });
   });
@@ -1287,7 +1299,7 @@ function snapGitDir(project) {
 }
 function execSnap(gitDir, project, args, timeout = 10000) {
   return new Promise((resolve) => {
-    execFile('git', ['--git-dir', gitDir, '--work-tree', project, ...args],
+    execFile(gitExe(), ['--git-dir', gitDir, '--work-tree', project, ...args],
       { cwd: project, timeout, maxBuffer: 16 * 1024 * 1024, env: winSpawnEnv() }, (err, stdout, stderr) => {
         resolve({ ok: !err, killed: !!(err && err.killed), stdout: stdout || '', stderr: stderr || '' });
       });
@@ -1545,9 +1557,11 @@ function openInOS(target, withApp) {
         if (wt) {
           child = spawn(wt, ['-d', dir], { stdio: 'ignore', detached: true, windowsHide: false });
         } else {
-          // 命令行上没有任何用户数据；detached 的 cmd 自己没有控制台，start 会给 powershell 新开一个窗口
-          child = spawn(WIN_CMD, ['/c', 'start', '', 'powershell.exe', '-NoExit'], {
-            cwd: dir, stdio: 'ignore', detached: true, windowsHide: false,
+          // 命令行上没有任何用户数据；detached 的 cmd 自己没有控制台，start 会给 powershell 新开一个窗口。
+          // powershell 必须写绝对路径：cmd 的 cwd 就是被浏览的目录，裸名会先在那里找同名 exe——
+          // 仓库里放一个 powershell.exe，点「在终端中打开」就以用户身份把它跑起来了
+          child = spawn(WIN_CMD, ['/c', 'start', '', WIN_PS, '-NoExit'], {
+            cwd: dir, stdio: 'ignore', detached: true, windowsHide: false, env: winSpawnEnv(),
           });
         }
         child.on('error', (err) => resolve({ ok: false, error: err.message }));
