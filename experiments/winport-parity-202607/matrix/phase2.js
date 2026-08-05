@@ -58,20 +58,8 @@ setTimeout(() => { console.error('FAIL: watchdog timeout'); process.exit(2); }, 
   });
   check(idle2.plain === true, 'busy probe: idle again after Ctrl+C', JSON.stringify(idle2));
 
-  await app.close();
-
-  // ---- Launch B: SHELL=cmd.exe honored when no FANBOX_SHELL ----
-  ({ app, win } = await launch({ SHELL: 'C:\\Windows\\System32\\cmd.exe' }, { port: '4652' }));
-  await win.waitForTimeout(2500);
-  let bufB = await win.evaluate(`(${BUF_FN})(null)`);
-  check(/Microsoft Windows \[/i.test(bufB) && !/PS [A-Z]:\\/.test(bufB), 'SHELL=cmd.exe respected (no FANBOX_SHELL)', bufB.split('\n').filter(Boolean).slice(0, 2).join(' | '));
-  await app.close();
-
-  // ---- Launch C: FANBOX_SHELL=powershell.exe beats SHELL=cmd.exe (D9) ----
-  ({ app, win } = await launch({ SHELL: 'C:\\Windows\\System32\\cmd.exe', FANBOX_SHELL: 'powershell.exe' }, { port: '4653' }));
-  await win.waitForTimeout(3000);
-  let bufC = await win.evaluate(`(${BUF_FN})(null)`);
-  check(/PS [A-Z]:\\/.test(bufC) && !/Microsoft Windows \[/i.test(bufC), 'D9: FANBOX_SHELL beats SHELL', bufC.split('\n').filter(Boolean).slice(0, 2).join(' | '));
-
+  // Shell-resolution order (SHELL vs FANBOX_SHELL) needs its own relaunches and lives in
+  // phase2b.js — it must use closeApp(), because plain app.close() hangs while a ConPTY
+  // child is alive and the watchdog then kills an otherwise-green run.
   await done(app);
 })().catch((e) => { console.error('FAIL: exception', e); process.exit(2); });
