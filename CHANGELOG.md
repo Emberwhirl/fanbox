@@ -32,6 +32,8 @@
 
   基于预览端口的沙箱预览 iframe 原本即处于跨源隔离状态，不受此漏洞影响，本次修正未做变动。
 
+  Windows 上额外放行了盘符前缀的图片地址。DOMPurify 默认把 `C:\图\封面.png` 里的 `c:` 当作未知协议、整条剥掉 src，而剥除发生在 fixLocalImages 把它改写成 `/api/raw` 之前，导致绝对路径的本地配图在 Windows 上一律裂图。放行范围仅限盘符前缀（含 marked 编码后的 `C:%5C` 形态），`javascript:`、`data:text/html` 等仍按 DOMPurify 默认拦截，已在验收中逐条断言。
+
   该修复触及 POSIX 与 Windows 共用的渲染代码，属于金规（POSIX 路径与 master 逐字一致）的一次有意偏离：漏洞已在本机验证可利用，不应为保持代码整洁而让 Windows 用户继续暴露。上游 PR 合并后，此改动将与上游版本收敛，届时可回退为直接继承。偏离记录见 experiments/winport-parity-202607/README.md。
 
 - **v2.12.1 移植修复（57 项 code review 清账，见 docs/win-port-implementation-plan-v2.12.1.html）**：

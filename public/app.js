@@ -291,11 +291,19 @@ function escapeHtml(s) {
 // 因此，一段注入的 img onerror 脚本拥有的是打开终端、执行命令、读写文件的高危权限，而非普通 Web 网页的沙箱权限。
 // 恶意 Markdown 的攻击来源十分隐蔽：例如 Agent 抓取外部内容并写入项目内的 .md 文件，用户打开或预览时即会触发攻击。
 // 当 DOMPurify 缺失或加载失败时，必须触发 fail closed 逻辑，即回退为纯文本转义。安全组件不能在自身失效时选择默认放行。
+// win 追加：Markdown 里的绝对路径配图写作 `![图](C:\图\封面.png)`，DOMPurify 默认把 `c:`
+// 当成未知协议、整条剥掉 src——图片还没轮到 fixLocalImages 改写成 /api/raw 就已经没了，
+// 于是「绝对路径的本地配图」在 Windows 上一律裂图。这里只放行盘符前缀：它在 http 源里本就
+// 加载不了，随后必被改写成 /api/raw，不构成可执行面；javascript:/data: 等仍按默认拦截。
+// 反斜杠要连 %5C 一起认：marked 会对链接目标做 encodeURI，`C:\图` 到这里已经是 `C:%5C图`。
+// POSIX 的 `/图/封面.png` 本就在 DOMPurify 默认白名单内，保持默认、不传这个参数。
+const MD_URI_RE_WIN = /^(?:[a-z]:(?:[\\/]|%5c)|(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i;
 function mdHtml(md, opts) {
   const raw = String(md || '');
   if (!window.marked || window.__noMarked) return '<pre>' + escapeHtml(raw) + '</pre>';
   if (!window.DOMPurify) return '<pre>' + escapeHtml(raw) + '</pre>';
-  return window.DOMPurify.sanitize(opts ? window.marked.parse(raw, opts) : window.marked.parse(raw));
+  const html = opts ? window.marked.parse(raw, opts) : window.marked.parse(raw);
+  return window.DOMPurify.sanitize(html, isWindows() ? { ALLOWED_URI_REGEXP: MD_URI_RE_WIN } : undefined);
 }
 
 // ---------- 未保存守卫 ----------
