@@ -59,9 +59,10 @@ const para = (tag, n) => Array.from({ length: n }, (_, i) => `${tag}第 ${i + 1}
   // ---------- ① 排版档 →「送去…」菜单：单张和分节两个入口并存 ----------
   await win.evaluate((p) => enterEditMode({ path: p, name: '多节文章.md', kind: 'text', isDir: false }), MD);
   await win.waitForTimeout(1500);
-  await win.click('.ed-modes .seg-btn[data-m="typeset"]');
+  await win.click('#ed-typeset-btn');
   await win.waitForTimeout(800);
-  check(await win.evaluate(() => typeof typeset.exportSlices === 'function'), 'typeset.exportSlices 存在');
+  check(await win.evaluate(() => typeof typeset.exportSlices === 'function' && !!document.querySelector('.typeset-dialog') && !!document.querySelector('.ts-preview')),
+    'typeset.exportSlices 存在且排版弹窗（.typeset-dialog / .ts-preview）已打开');
   await win.click('#ts-more');
   await win.waitForTimeout(300);
   const items = await win.evaluate(() => Array.from(document.querySelectorAll('#context-menu .ctx-item')).map((x) => x.textContent));

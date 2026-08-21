@@ -48,14 +48,15 @@ const pngSize = (fp) => {
   // ---------- ① 打开 md 编辑器 → 排版档 → 「送去…」菜单含「导出长图」 ----------
   await win.evaluate((p) => enterEditMode({ path: p, name: '文章.md', kind: 'text', isDir: false }), MD);
   await win.waitForTimeout(1500);
-  await win.click('.ed-modes .seg-btn[data-m="typeset"]');
+  await win.click('#ed-typeset-btn');
   await win.waitForTimeout(800);
   const r1 = await win.evaluate(() => ({
     bar: !!document.querySelector('#ts-more'),
     api: typeof typeset.exportImage === 'function',
-    painted: !!document.querySelector('.typeset-host div'),
+    painted: !!document.querySelector('.ts-preview div') || !!document.querySelector('.typeset-dialog'),
+    modal: !!document.querySelector('.typeset-dialog'),
   }));
-  check(r1.bar && r1.api && r1.painted, '排版档就位且 typeset.exportImage 存在', JSON.stringify(r1));
+  check(r1.bar && r1.api && r1.painted && r1.modal, '排版弹窗就位且 typeset.exportImage 存在（#ed-typeset-btn / .typeset-dialog / .ts-preview）', JSON.stringify(r1));
   await win.click('#ts-more');
   await win.waitForTimeout(300);
   const r2 = await win.evaluate(() => Array.from(document.querySelectorAll('#context-menu .ctx-item')).map((x) => x.textContent));

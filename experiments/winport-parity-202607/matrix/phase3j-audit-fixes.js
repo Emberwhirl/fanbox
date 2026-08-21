@@ -78,6 +78,22 @@ const TRAP = FAKE_HOME + '\\fanbox-test-fixtures\\trap-repo';
   });
   check(!/Finder/i.test(i18n.reveal) && /File Explorer/i.test(i18n.reveal), 'B7: reveal toast says File Explorer, not Finder', i18n.reveal);
   check(!/[一-鿿]/.test(i18n.lidNote), 'B6: Windows lid power-tip note is translated', i18n.lidNote.slice(0, 90));
+  check(!/Option|iTerm/.test(i18n.reveal + i18n.lidNote), 'B6: no leftover macOS Option/iTerm terms on sampled Windows strings');
+
+  try { fs.unlinkSync(marker); } catch {}
+  const inspect = await win.evaluate((p) => api('/api/release/inspect?path=' + encodeURIComponent(p)), TRAP);
+  check(!fs.existsSync(marker), 'B4-releaseInspect: planted git.exe NOT executed', fs.existsSync(marker) ? 'MARKER WRITTEN' : 'no marker');
+  check(inspect && (inspect.ok === true || inspect.ok === false), 'B4-releaseInspect: endpoint returned', JSON.stringify(inspect && { ok: inspect.ok, error: inspect.error }).slice(0, 160));
+
+  const prep = await win.evaluate((p) => apiPost('/api/release/prepare', {
+    path: p, version: '2.13.0', notes: 'EVIL_NOTES_TOKEN rm -rf', doDist: true, doPush: false, doRelease: true,
+  }), TRAP);
+  const cmd = String((prep && prep.cmd) || '');
+  check(/^npm run dist:win/.test(cmd) || /npm run dist:win; if\(\$\?\)/.test(cmd),
+    'releasePrepare: build first then pair', cmd.slice(0, 120));
+  check(/FanBox-2\.13\.0-win-x64\.exe/.test(cmd) && /FanBox-2\.13\.0-win-x64-portable\.exe/.test(cmd),
+    'releasePrepare: both exact artifact names', cmd.slice(0, 240));
+  check(!/EVIL_NOTES_TOKEN/.test(cmd), 'releasePrepare: hostile notes never enter command text', cmd.slice(0, 200));
 
   await done(app);
 })().catch((e) => { console.error('FAIL: exception', e); process.exit(2); });

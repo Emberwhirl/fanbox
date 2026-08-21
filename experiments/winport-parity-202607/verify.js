@@ -44,6 +44,9 @@ const WHITELIST_RES = [
   /Object\.assign\(.*which/,
   /previewPathAllowed|snapEligible/,
   /generateThumb|findFfmpeg|findAgentBin/,
+  /winHelpers|winPortHelpers|fanboxWinPath|containImage|selectWinReleaseAssets|spawnGit|FANBOX_HELPERS_ONLY|win-port-helpers/,
+  /edStr|winMdDest|normalizeForMarkdown|ed-typeset-btn|typeset-dialog|ts-preview/,
+  /exactWinAssetNames|verifiedWinAssetList|probeUrlExists|buildWinReleaseSteps|foldPwsh/,
 ];
 
 const WIN_GUARD = /IS_WIN|isWin\(|isWindows\(|PLATFORM === ['"]win32['"]|process\.platform === ['"]win32['"]|state\.sep === ['"]\\\\['"]|state\.platform === ['"]win32['"]/;

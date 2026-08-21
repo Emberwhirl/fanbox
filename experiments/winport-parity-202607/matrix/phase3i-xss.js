@@ -126,5 +126,28 @@ const readBuf = (id) => id;
   });
   check(/^<pre>/.test(closed) && !/<img /i.test(closed), 'DOMPurify absent → fail closed (escaped text)', closed.slice(0, 70));
 
+  // Typeset modal (replaces persistent typeset-host / v2.12 tab)
+  const ts = await win.evaluate(async (p) => {
+    const dir = p.slice(0, p.lastIndexOf('\\'));
+    const list = await api('/api/list?path=' + encodeURIComponent(dir));
+    const e = (list.entries || []).find((x) => x.name === 'real.md');
+    if (e && typeof enterEditMode === 'function') await enterEditMode(e);
+    await new Promise((r) => setTimeout(r, 1200));
+    const btn = document.querySelector('#ed-typeset-btn');
+    if (btn) btn.click();
+    await new Promise((r) => setTimeout(r, 500));
+    delete window.__XSS_PROOF;
+    const box = document.querySelector('.ts-preview');
+    return {
+      btn: !!document.querySelector('#ed-typeset-btn'),
+      dialog: !!document.querySelector('.typeset-dialog'),
+      preview: !!box,
+      noHost: !document.querySelector('.typeset-host'),
+      fired: window.__XSS_PROOF || null,
+    };
+  }, LEGIT);
+  check(ts.btn && ts.dialog && ts.preview && ts.noHost, 'Typeset modal #ed-typeset-btn/.typeset-dialog/.ts-preview; typeset-host gone', JSON.stringify(ts));
+  check(ts.fired === null, 'Typeset modal preview does not execute XSS', JSON.stringify(ts.fired));
+
   await done(app);
 })().catch((e) => { console.error('FAIL: exception', e); process.exit(2); });
