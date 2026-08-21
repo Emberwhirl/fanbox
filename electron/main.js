@@ -948,6 +948,21 @@ ipcMain.handle('drop:copy-into', (e, { srcPath, dir }) => {
     return { ok: true, path: dest };
   } catch (err) { return { ok: false, error: err.message }; }
 });
+// md 编辑器「插入图片」按钮：原生系统选图，默认目录是 md 文件所在目录——网页 <input type=file>
+// 没有办法指定起始目录，这是唯一能做到的地方，只能走 Electron 自己的 dialog
+ipcMain.handle('drop:pick-images', async (e, { defaultPath } = {}) => {
+  try {
+    const owner = win && !win.isDestroyed() ? win : undefined;
+    const r = await dialog.showOpenDialog(owner, {
+      title: '选择要插入的图片',
+      defaultPath: defaultPath && fs.existsSync(defaultPath) ? defaultPath : undefined,
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] }],
+    });
+    if (r.canceled) return { ok: true, paths: [] };
+    return { ok: true, paths: r.filePaths };
+  } catch (err) { return { ok: false, error: err.message }; }
+});
 
 ipcMain.on('pty:input', (e, { id, data }) => { const p = terminals.get(id); if (p) { p.write(data); recEvent(id, 'i', data); } });
 ipcMain.on('pty:resize', (e, { id, cols, rows }) => { const p = terminals.get(id); if (p) { try { p.resize(cols, rows); } catch { /* */ } recEvent(id, 'r', `${cols}x${rows}`); } });

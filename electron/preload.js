@@ -47,6 +47,8 @@ contextBridge.exposeInMainWorld('fanboxDrop', {
   saveInto: (dir, name, buf) => ipcRenderer.invoke('drop:save-into', { dir, name, buf }),
   // 拖进文件区：已有路径的文件（Finder 文件）复制进目标目录
   copyInto: (srcPath, dir) => ipcRenderer.invoke('drop:copy-into', { srcPath, dir }),
+  // md 编辑器「插入图片」按钮：原生选图对话框，defaultPath 控制默认打开的目录
+  pickImages: (defaultPath) => ipcRenderer.invoke('drop:pick-images', { defaultPath }),
 });
 
 contextBridge.exposeInMainWorld('fanboxShot', {

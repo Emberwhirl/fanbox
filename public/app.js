@@ -1452,6 +1452,21 @@ async function mdEditor(e, data, mode = 'rich') {
       (m, p) => { try { return decodeURIComponent(p); } catch { return m; } })
     .replace(/(?:https?:\/\/localhost:\d+)?\/fs\/([^)\s"']+)/g,
       (m, s) => { try { return '/' + s.split('?')[0].split('/').filter(Boolean).map(decodeURIComponent).join('/'); } catch { return m; } });
+  const imgDir = dirOf(e.path); // 粘贴/拖入/浏览插入的图片都存这——花叔已定：和 md 文件同目录
+  // 富文本编辑器粘贴/拖入/浏览插入图片的落盘出口：接到文件面板/终端粘贴截图已经在用的
+  // fanboxDrop.saveInto 上，别再造一套。返回绝对路径，写进 markdown 就是真文件，不是 blob:
+  async function saveEditorImage(fileOrBlob, suggestedName) {
+    if (!window.fanboxDrop) throw new Error('该环境不支持图片写盘');
+    let name = suggestedName;
+    if (!name || !/\.[a-z0-9]+$/i.test(name)) {
+      const ext = ((fileOrBlob.type ? fileOrBlob.type.split('/')[1] : '') || 'png').toLowerCase().replace('jpeg', 'jpg');
+      name = `图片-${fmtStamp()}.${ext}`;
+    }
+    const buf = await fileOrBlob.arrayBuffer();
+    const r = await window.fanboxDrop.saveInto(imgDir, name, buf);
+    if (!r || !r.ok) throw new Error((r && r.error) || '图片写盘失败');
+    return r.path;
+  }
   let baseMtime = data.mtime;
   let content0 = cleanImgUrls(data.content || ''); // canonical：磁盘原始 markdown（顺手还原历史遗留的内部预览 URL）；唯一事实源，编辑器只从它初始化
   let getValue = null, baseline = '';
@@ -1514,27 +1529,105 @@ async function mdEditor(e, data, mode = 'rich') {
   const flush = () => { clearTimeout(timer); chain = chain.then(() => doSave()); return chain; };
   autosaveFlush = flush;
   dirtyCheck = null;
+  // 排版：弹窗查看/导出，不再是编辑器的常驻模式——开这个面板不打断底下正在编辑的富文本/源码，
+  // 关掉面板原地还在改。内容和交互跟以前的排版档一模一样，只是换了个容器。
+  const openTypesetPanel = () => {
+    const old = $('.typeset-overlay'); if (old) old.remove();
+    const ov = document.createElement('div');
+    ov.className = 'input-overlay typeset-overlay';
+    ov.innerHTML = `<div class="input-dialog typeset-dialog">
+      <div class="editor-bar">
+        <select id="ts-style" class="ts-select"></select>
+        <button id="ts-wechat" class="primary">复制到公众号</button>
+        <button id="ts-more">送去… ▾</button>
+        <span id="ts-stat" class="editor-hint"></span>
+      </div>
+      <div id="ts-preview" class="ts-preview"></div>
+    </div>`;
+    document.body.appendChild(ov);
+    const onKey = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+    const close = () => { ov.remove(); document.removeEventListener('keydown', onKey, true); };
+    ov.onclick = (ev) => { if (ev.target === ov) close(); };
+    document.addEventListener('keydown', onKey, true);
+    const sel = ov.querySelector('#ts-style');
+    sel.innerHTML = typeset.list().map((s) =>
+      `<option value="${s.id}"${s.id === typeset.current() ? ' selected' : ''}>${escapeHtml(s.name)}</option>`).join('');
+    const preview = ov.querySelector('#ts-preview');
+    const paint = () => {
+      preview.innerHTML = '';
+      const box = typeset.build(content0, e.path, typeset.current());
+      preview.appendChild(box);
+      ov.querySelector('#ts-stat').textContent = typeset.stat(box); // 发文前每次都想知道的两个数
+    };
+    paint();
+    sel.onchange = () => { typeset.setCurrent(sel.value); paint(); };
+    const setTsStatus = (t) => { const s = ov.querySelector('#ts-stat'); if (s) s.textContent = t; };
+    const copy = async (btn, job) => {
+      btn.disabled = true;
+      try {
+        const r = await job((i, n) => setTsStatus(`处理图片 ${i}/${n}…`));
+        if (!r.ok) { setTsStatus('复制失败'); toast('复制失败，点一下窗口再试', true); }
+        else if (r.failed) { setTsStatus('已复制'); toast(`已复制，但 ${r.failed} 张图没取到，粘过去会缺图`, true); }
+        else { setTsStatus('已复制'); toast('已复制，去编辑器粘贴就行'); }
+      } catch (err) { setTsStatus('复制失败'); toast('复制失败：' + (err.message || err), true); }
+      finally { btn.disabled = false; }
+    };
+    ov.querySelector('#ts-wechat').onclick = (ev) => copy(ev.currentTarget, (onStep) => typeset.copyWechat(content0, e.path, typeset.current(), onStep));
+    // 导出长图：小红书/朋友圈/即刻要的是图不是文。PNG 落在文章旁边、命名跟着文章走，不覆盖旧图
+    const exportLong = async (btn) => {
+      btn.disabled = true;
+      setTsStatus('生成长图…');
+      try {
+        const r = await typeset.exportImage(content0, e.path, typeset.current(), (i, n) => setTsStatus(`处理图片 ${i}/${n}…`));
+        const name = r.path.split('/').pop();
+        setTsStatus('已导出');
+        if (r.failed) toast(`长图已导出（${name}），但 ${r.failed} 张图没取到，图里会缺`, true);
+        else toast(`长图已导出：${name}，就在文章旁边`);
+        if (dirOf(e.path) === state.cwd) refresh(); // 正浏览文章所在目录时文件区跟上，png 立刻可见；在「最近」视图或别的目录时不刷，toast 已说明 png 就在文章旁边
+      } catch (err) { setTsStatus('导出失败'); toast('导出失败：' + (err.message || err), true); }
+      finally { btn.disabled = false; }
+    };
+    // 分节多图：小红书一条笔记发的是多图不是单张。按 h2 切，编号连续落在文章旁边
+    const exportSlices = async (btn) => {
+      btn.disabled = true;
+      setTsStatus('切分节…');
+      try {
+        const r = await typeset.exportSlices(content0, e.path, typeset.current(),
+          (i, n, kind) => setTsStatus(kind === 'slice' ? `生成第 ${i}/${n} 张…` : `处理图片 ${i}/${n}…`));
+        const first = r.paths[0].split('/').pop();
+        setTsStatus('已导出');
+        // 18 是小红书一条笔记的图片上限，超了得自己挑——只提醒，不替他删
+        if (r.count > 18) toast(`已导出 ${r.count} 张（${first} 起），超过小红书 18 图上限，发之前挑一下`, true);
+        else if (r.failed) toast(`已导出 ${r.count} 张（${first} 起），但 ${r.failed} 张图没取到，图里会缺`, true);
+        else toast(`已导出 ${r.count} 张：${first} 起，就在文章旁边`);
+        if (dirOf(e.path) === state.cwd) refresh(); // 同单张导出：正浏览文章所在目录时文件区才跟上
+      } catch (err) { setTsStatus('导出失败'); toast('导出失败：' + (err.message || err), true); }
+      finally { btn.disabled = false; }
+    };
+    // 其余去向：剪贴板类/导出类自己干，平台类递一条指令给终端里的 agent（FanBox 不碰任何平台凭证）
+    ov.querySelector('#ts-more').onclick = (ev) => (ev.stopPropagation(), popupMenu(ev, [ // 不拦的话这次点击会冒泡到 document，把刚弹出的菜单当场关掉
+      { label: '复制到 X', fn: () => copy(ov.querySelector('#ts-more'), () => typeset.copyX(content0, e.path)) },
+      { label: '导出长图', fn: () => exportLong(ov.querySelector('#ts-more')) },
+      { label: '导出长图（分节）', fn: () => exportSlices(ov.querySelector('#ts-more')) },
+      { sep: true },
+      ...typeset.handoffs().map((d) => ({ label: d.label, fn: () => term.sendPrompt(d.prompt(e.path)) })),
+    ]));
+  };
   const render = async (m) => {
     if (forceCode && m === 'rich') m = 'read'; // 有损文件不给富文本改，但照样让人把文章看成文章
     mode = m;
     mona.disposeIfAny(); crepe.disposeIfAny();
-    const hostCls = { rich: 'crepe-host', read: 'read-host', code: 'mona-host', typeset: 'typeset-host' }[m];
+    const hostCls = { rich: 'crepe-host', read: 'read-host', code: 'mona-host' }[m];
     const seg = (id, label, on) =>
       `<button class="seg-btn${m === id ? ' active' : ''}" data-m="${id}"${on ? '' : ' disabled title="此文件含富文本无法无损保存的语法，改请用源码"'}>${label}</button>`;
-    const hint = m === 'typeset' ? '排好了直接粘进公众号'
-      : m === 'read' ? (forceCode ? '只读 · 此文件富文本往返有损，要改请点源码' : '只读 · 要改请点富文本或源码')
-        : '自动保存 · ' + (isMacOS() ? '⌘S' : 'Ctrl+S') + ' 立即保存';
-    // 排版档才出样式选择和出口按钮：其余三档的工具栏保持原样，不给写作过程添噪音。
-    // 公众号是主战场，主动作外露一键直达；其余去向收进「送去…」，菜单短到一眼看完
-    const tsBar = m === 'typeset'
-      ? `<select id="ts-style" class="ts-select">${typeset.list().map((s) =>
-        `<option value="${s.id}"${s.id === typeset.current() ? ' selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}</select>` +
-        `<button id="ts-wechat" class="primary">复制到公众号</button><button id="ts-more">送去… ▾</button>` +
-        `<span id="ts-stat" class="editor-hint"></span>`
-      : '';
+    const hint = m === 'read' ? (forceCode ? '只读 · 此文件富文本往返有损，要改请点源码' : '只读 · 要改请点富文本或源码')
+      : '自动保存 · ' + (isMacOS() ? '⌘S' : 'Ctrl+S') + ' 立即保存';
+    // 插入图片：source/rich 都能用，唯独只读（有损文件的兜底阅读态）没意义，不给按钮添乱
+    const insImgBtn = m !== 'read' ? `<button id="ed-insimg-btn" class="ghost-btn" type="button">+ 插入图片</button>` : '';
     body.innerHTML =
-      `<div class="editor-bar"><div class="ed-modes">${seg('rich', '富文本', !forceCode)}${seg('read', '阅读', true)}${seg('code', '源码', true)}${seg('typeset', '排版', true)}</div>` +
-      tsBar +
+      `<div class="editor-bar"><div class="ed-modes">${seg('rich', '富文本', !forceCode)}${seg('code', '源码', true)}</div>` +
+      insImgBtn +
+      `<button id="ed-typeset-btn" class="ghost-btn" type="button">排版…</button>` +
       `<span id="md-status" class="editor-hint">${hint}</span></div>` +
       `<div id="ed-host" class="${hostCls}"></div>`;
     body.querySelectorAll('.ed-modes .seg-btn').forEach((b) => {
@@ -1546,70 +1639,15 @@ async function mdEditor(e, data, mode = 'rich') {
         render(b.dataset.m);
       };
     });
+    // 排版不再是常驻模式——发文前想看看/复制走，弹一下就行，不该打断正在编辑的富文本/源码
+    $('#ed-typeset-btn').onclick = async () => {
+      await flush();
+      const cur = getValue ? getValue() : content0;
+      if (cur !== baseline) content0 = cleanImgUrls(cur);
+      openTypesetPanel();
+    };
     const host = $('#ed-host');
-    if (m === 'typeset') {
-      // 排版档只读：这里看到的就是粘出去的样子，改字回富文本或源码
-      const paint = () => {
-        host.innerHTML = '';
-        const box = typeset.build(content0, e.path, typeset.current());
-        host.appendChild(box);
-        $('#ts-stat').textContent = typeset.stat(box); // 发文前每次都想知道的两个数
-      };
-      paint();
-      getValue = () => content0;
-      const sel = $('#ts-style');
-      sel.onchange = () => { typeset.setCurrent(sel.value); paint(); };
-      const copy = async (btn, job) => {
-        btn.disabled = true;
-        try {
-          const r = await job((i, n) => setStatus(`处理图片 ${i}/${n}…`));
-          if (!r.ok) { setStatus('复制失败'); toast('复制失败，点一下窗口再试', true); }
-          else if (r.failed) { setStatus('已复制'); toast(`已复制，但 ${r.failed} 张图没取到，粘过去会缺图`, true); }
-          else { setStatus('已复制'); toast('已复制，去编辑器粘贴就行'); }
-        } catch (err) { setStatus('复制失败'); toast('复制失败：' + (err.message || err), true); }
-        finally { btn.disabled = false; }
-      };
-      $('#ts-wechat').onclick = (ev) => copy(ev.currentTarget, (onStep) => typeset.copyWechat(content0, e.path, typeset.current(), onStep));
-      // 导出长图：小红书/朋友圈/即刻要的是图不是文。PNG 落在文章旁边、命名跟着文章走，不覆盖旧图
-      const exportLong = async (btn) => {
-        btn.disabled = true;
-        setStatus('生成长图…');
-        try {
-          const r = await typeset.exportImage(content0, e.path, typeset.current(), (i, n) => setStatus(`处理图片 ${i}/${n}…`));
-          const name = r.path.split('/').pop();
-          setStatus('已导出');
-          if (r.failed) toast(`长图已导出（${name}），但 ${r.failed} 张图没取到，图里会缺`, true);
-          else toast(`长图已导出：${name}，就在文章旁边`);
-          if (dirOf(e.path) === state.cwd) refresh(); // 正浏览文章所在目录时文件区跟上，png 立刻可见；在「最近」视图或别的目录时不刷，toast 已说明 png 就在文章旁边
-        } catch (err) { setStatus('导出失败'); toast('导出失败：' + (err.message || err), true); }
-        finally { btn.disabled = false; }
-      };
-      // 分节多图：小红书一条笔记发的是多图不是单张。按 h2 切，编号连续落在文章旁边
-      const exportSlices = async (btn) => {
-        btn.disabled = true;
-        setStatus('切分节…');
-        try {
-          const r = await typeset.exportSlices(content0, e.path, typeset.current(),
-            (i, n, kind) => setStatus(kind === 'slice' ? `生成第 ${i}/${n} 张…` : `处理图片 ${i}/${n}…`));
-          const first = r.paths[0].split('/').pop();
-          setStatus('已导出');
-          // 18 是小红书一条笔记的图片上限，超了得自己挑——只提醒，不替他删
-          if (r.count > 18) toast(`已导出 ${r.count} 张（${first} 起），超过小红书 18 图上限，发之前挑一下`, true);
-          else if (r.failed) toast(`已导出 ${r.count} 张（${first} 起），但 ${r.failed} 张图没取到，图里会缺`, true);
-          else toast(`已导出 ${r.count} 张：${first} 起，就在文章旁边`);
-          if (dirOf(e.path) === state.cwd) refresh(); // 同单张导出：正浏览文章所在目录时文件区才跟上
-        } catch (err) { setStatus('导出失败'); toast('导出失败：' + (err.message || err), true); }
-        finally { btn.disabled = false; }
-      };
-      // 其余去向：剪贴板类/导出类自己干，平台类递一条指令给终端里的 agent（FanBox 不碰任何平台凭证）
-      $('#ts-more').onclick = (ev) => (ev.stopPropagation(), popupMenu(ev, [ // 不拦的话这次点击会冒泡到 document，把刚弹出的菜单当场关掉
-        { label: '复制到 X', fn: () => copy($('#ts-more'), () => typeset.copyX(content0, e.path)) },
-        { label: '导出长图', fn: () => exportLong($('#ts-more')) },
-        { label: '导出长图（分节）', fn: () => exportSlices($('#ts-more')) },
-        { sep: true },
-        ...typeset.handoffs().map((d) => ({ label: d.label, fn: () => term.sendPrompt(d.prompt(e.path)) })),
-      ]));
-    } else if (m === 'read') {
+    if (m === 'read') {
       host.appendChild(mdReadBody(content0, e.path));
       getValue = () => content0; // 只读：永远不脏，自动保存链路自然空转
     } else if (m === 'rich') {
@@ -1618,8 +1656,11 @@ async function mdEditor(e, data, mode = 'rich') {
       // 保护 YAML frontmatter：Crepe 不识别会丢掉，剥离后只把正文交给它，保存时再拼回
       const fm = /^(---\r?\n[\s\S]*?\r?\n---\r?\n)/.exec(content0);
       const front = fm ? fm[1] : '';
-      const inst = new C.Crepe({ root: host, defaultValue: front ? content0.slice(front.length) : content0 });
+      const featureConfigs = C.imageFeatureConfigs ? C.imageFeatureConfigs(saveEditorImage) : undefined;
+      const inst = new C.Crepe({ root: host, defaultValue: front ? content0.slice(front.length) : content0, featureConfigs });
       if (C.keepImageAlt) C.keepImageAlt(inst.editor); // 图注归 alt，别被 Milkdown 拿去存缩放比例
+      if (C.configureImageUpload) C.configureImageUpload(inst.editor, saveEditorImage); // 真截图粘贴 + Finder 拖文件 + 粘贴 HTML 里带 blob:/data: 的 <img> 都存成同目录真文件
+      if (C.addImageMoveControls) C.addImageMoveControls(inst.editor); // 每张图常驻的上移/下移按钮，重排不用等 Crepe 那个够不着的拖拽 handle
       await inst.create();
       // 语义无损校验：Milkdown 序列化回来若渲染结果和磁盘原文不同（<br/> 被吞、HTML 被删等真丢内容）→ 禁掉富文本，绝不让它静默落盘
       if (!semanticEqual(front + inst.getMarkdown(), content0)) {
@@ -1660,6 +1701,56 @@ async function mdEditor(e, data, mode = 'rich') {
         if ((ev.metaKey || ev.ctrlKey) && ev.key === 's') { ev.preventDefault(); flush(); }
         ev.stopPropagation(); // 别冒泡到主区键盘导航
       });
+    }
+    // 插入图片：按当前模式把真实路径插到光标处
+    const insertImagePath = (src) => {
+      if (m === 'rich' && crepe.editor && window.FanboxCrepe && window.FanboxCrepe.insertImageAtCursor) {
+        window.FanboxCrepe.insertImageAtCursor(crepe.editor.editor, src);
+      } else if (mona.editor) {
+        const ed = mona.editor;
+        ed.executeEdits('insert-image', [{ range: ed.getSelection(), text: `![](${src})`, forceMoveMarkers: true }]);
+        ed.focus();
+      } else {
+        const ta = $('.editor-area');
+        if (ta) {
+          ta.setRangeText(`![](${src})`, ta.selectionStart, ta.selectionEnd, 'end');
+          ta.dispatchEvent(new Event('input', { bubbles: true }));
+          ta.focus();
+        }
+      }
+    };
+    const insImgEl = $('#ed-insimg-btn');
+    if (insImgEl) {
+      insImgEl.onclick = async () => {
+        // 桌面 app：Electron 原生选图对话框，默认目录直接开在 md 文件所在目录；已经在这棵目录树下的图
+        // 直接引用真实路径不复制，不在树下的才复制进来，跟粘贴/拖入落点一致
+        if (window.fanboxDrop && window.fanboxDrop.pickImages) {
+          const r = await window.fanboxDrop.pickImages(imgDir);
+          if (!r || !r.ok) { toast('选图失败：' + ((r && r.error) || ''), true); return; }
+          for (const p of r.paths || []) {
+            try {
+              let src = p;
+              if (p !== imgDir && !p.startsWith(imgDir + '/')) {
+                const r2 = await window.fanboxDrop.copyInto(p, imgDir);
+                if (!r2 || !r2.ok) { toast('图片复制失败：' + ((r2 && r2.error) || ''), true); continue; }
+                src = r2.path;
+              }
+              insertImagePath(src);
+            } catch (err) { toast('插入图片失败：' + (err.message || err), true); }
+          }
+          return;
+        }
+        // 网页/开发环境兜底：普通 <input type=file>，浏览器不允许网页指定默认打开目录
+        const input = document.createElement('input');
+        input.type = 'file'; input.accept = 'image/*'; input.multiple = true;
+        input.onchange = async () => {
+          for (const f of [...(input.files || [])]) {
+            try { insertImagePath(await saveEditorImage(f, f.name)); }
+            catch (err) { toast('插入图片失败：' + (err.message || err), true); }
+          }
+        };
+        input.click();
+      };
     }
     baseline = getValue(); // 以编辑器规范化后的内容为基准：打开不编辑就不会触发写盘
   };
@@ -3438,6 +3529,9 @@ const term = {
     player.refreshHint(); // 有录像就给回放按钮点红点，提升发现性
     localStorage.setItem('fb_term_open', '1');
     if (!localStorage.getItem('fb_term_draghint')) { localStorage.setItem('fb_term_draghint', '1'); setTimeout(() => toast('提示：把左侧文件 / 文件夹拖进终端，即插入路径喂给 agent'), 700); }
+    // 终端里点击不移光标是终端协议使然（光标归 CLI 程序管，双击只是选词）。xterm 内置
+    // altClickMovesCursor（默认开）：Option+点击会合成方向键把光标移过去——补一条一次性提示让人发现（#59）
+    else if (!isWindows() && !localStorage.getItem('fb_term_optionhint')) { localStorage.setItem('fb_term_optionhint', '1'); setTimeout(() => toast('提示：按住 Option 点击输入行文字，光标会移到点击处（终端里普通点击/双击是选字，同 iTerm）'), 700); }
   },
   close() {
     if (this.maximized) this.toggleMax(false); // 铺满状态下收起终端，term-max 不清会把文件区一起藏没

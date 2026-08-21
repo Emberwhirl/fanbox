@@ -799,14 +799,16 @@ kbd {
 }
 .read-host .md-body { max-width: 760px; }
 .read-host .md-body img { max-width: 100%; height: auto; border-radius: 6px; }
-/* 排版档：文章按主题自带的白底/米底铺在深色工作区上，像一张放在桌面上的纸。
-   内部一律用内联样式（要粘到公众号），皮肤的 CSS 变量在这里一概不参与 */
-.typeset-host {
-  height: calc(100vh - 184px); min-height: 360px; overflow: auto;
+/* 排版：弹窗查看/导出（不再是常驻模式），文章按主题自带的白底/米底铺在深色工作区上，
+   像一张放在桌面上的纸。内部一律用内联样式（要粘到公众号），皮肤的 CSS 变量在这里一概不参与 */
+.typeset-dialog { width: min(1100px, 94vw); max-height: 88vh; display: flex; flex-direction: column; }
+.typeset-dialog .editor-bar { padding: 0 0 12px; flex: none; }
+.ts-preview {
+  flex: 1 1 auto; min-height: 0; overflow: auto;
   border: 1px solid var(--border); border-radius: var(--radius);
-  background: var(--bg-3); padding: 20px; box-sizing: border-box; animation: edIn 0.18s ease;
+  background: var(--bg-3); padding: 20px; box-sizing: border-box;
 }
-.typeset-host > div {
+.ts-preview > div {
   box-shadow: 0 2px 18px rgba(0, 0, 0, 0.22); border-radius: 4px;
   background-color: #fff; /* 主题没写底色时的兜底，免得深色皮肤下透出工作区背景 */
 }
@@ -850,7 +852,18 @@ kbd {
   --crepe-font-code: var(--font-mono);
   background: transparent;
 }
-.crepe-host .milkdown .ProseMirror { padding: 22px 26px; }
+/* 左边多留一截：Crepe 原生拖拽 handle 定位在编辑区内部（没 portal 到 body），
+   26px 装不下 handle 需要的空间，经常被这层 overflow:auto 裁掉/挤没 */
+.crepe-host .milkdown .ProseMirror { padding: 22px 26px 22px 56px; }
+/* 图片重排：不赌 Crepe 那个够不着的悬浮 handle，直接常驻嵌在图片自己框里的上移/下移按钮，
+   定位相对图片盒子本身，不会被 .crepe-host 的 overflow:auto 裁切 */
+.fanbox-img-move { position: absolute; top: 6px; right: 6px; display: flex; gap: 4px; z-index: 2; }
+.fanbox-img-move button {
+  width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text); cursor: pointer; font-size: 13px; line-height: 1;
+  display: flex; align-items: center; justify-content: center; box-shadow: var(--shadow);
+}
+.fanbox-img-move button:hover { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
 /* 编辑器面板进入的物理感淡入，避免 DOM 替换的硬切 */
 .crepe-host, .mona-host, .imgedit-canvas-wrap { animation: edIn 0.18s ease; }
 @keyframes edIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
