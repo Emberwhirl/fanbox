@@ -1,7 +1,7 @@
 # FanBox
 
 > [!IMPORTANT]
-> This is an unofficial **community Windows port** of [FanBox](https://github.com/alchaincyf/fanbox), tracking upstream **v2.12.1**. Windows installers are published in [this repository’s Releases](https://github.com/Emberwhirl/fanbox/releases). macOS users should use the [official project](https://github.com/alchaincyf/fanbox).
+> This is an unofficial **community Windows port** of [FanBox](https://github.com/alchaincyf/fanbox), tracking upstream **v2.13.0**. Windows installers are published in [this repository’s Releases](https://github.com/Emberwhirl/fanbox/releases). macOS users should use the [official project](https://github.com/alchaincyf/fanbox).
 
 [![Windows x64 port](assets/badge-windows-x64.svg)](https://github.com/Emberwhirl/fanbox/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -9,20 +9,20 @@
 
 ## About this Windows port
 
-FanBox officially ships for macOS only. This repository maintains a full-featured Windows 10/11 (x64) port on the `windows` branch: started from scratch at upstream v2.6.3, then kept in step with upstream releases—currently **v2.12.1**. Platform-specific paths that fail outside macOS were reworked for Windows conventions rather than left as half-ports.
+FanBox officially ships for macOS only. This repository maintains a full-featured Windows 10/11 (x64) port on the `windows` branch: started from scratch at upstream v2.6.3, then kept in step with upstream releases—currently **v2.13.0**. Platform-specific paths that fail outside macOS were reworked for Windows conventions rather than left as half-ports.
 
 ### What the port covers
 
 - **Embedded terminal.** PowerShell over ConPTY; CJK output renders correctly; agent-printed `C:\...` paths are clickable.
 - **Agent cross-control.** Full `/api/agent/*` support: list sibling terminals, read output, send input, open windows, wait for completion. Busy/idle uses a child-process probe (Windows does not expose the PTY foreground process name), so `wait` for external CLI agents matches macOS semantics. Pure in-process PowerShell work can look idle—use `"idle":"quiet"` or `"until"` (see platform notes). The bundled `fanbox-agent` skill is shipped byte-identical to upstream; install it from Settings into `%USERPROFILE%\.claude\skills`.
 - **Scheduled tasks (v2.11+).** Cron, one-shot, and interval schedules open a real terminal tab on the agent-control path; agents may author schedules via token-gated `/api/agent/cron*`.
-- **Typeset and long-image export (v2.9–2.12).** Markdown includes a typeset mode; export full-article or sectioned PNG long images for social posts; `/api/img-proxy` fetches remote images for inlining.
+- **Typeset and long-image export (v2.9–2.13).** Markdown has Insert image plus a Typeset modal (no persistent typeset tab); export full-article or sectioned PNG long images for social posts; `/api/img-proxy` fetches remote images for inlining. Windows image paths are percent-encoded once into Markdown and displayed via `/api/raw`.
 - **One-click open.** Editor: VS Code when present, otherwise the system default app. Terminal: Windows Terminal preferred. Reveal in Explorer is safe for spaces, non-ASCII, and special characters.
 - **WeChat ClawBot bridge.** Chinese messages and multiline personas survive end to end. On timeout, the whole process tree is killed so orphaned agents do not keep burning tokens.
 - **Stay awake (sidebar Away section).** Uses Electron `powerSaveBlocker` while terminals are open or WeChat is connected. Lid-close sleep still follows OS power options; UI copy omits macOS lid-only wording on Windows.
 - **Snapshot safety belt.** Drive-aware eligibility: projects such as `D:\myproject` remain eligible; `C:\Users` and `C:\Windows` are refused.
 - **Environment and proxy.** On launch, User and Machine registry PATH entries are merged so the embedded terminal, agent binary probes, and WeChat bridge find `claude` / `codex` / npm globals even when started from the GUI. System proxy is honored, including SOCKS-only setups (Clash, v2rayN). Localized profile paths work throughout.
-- **Updates.** Checks target this repository’s Releases. When the GitHub API returns assets, the app only prompts if a Windows installer (`.exe`) is present—docs-only tags do not toast. Missing architecture assets open the release page with a clear message.
+- **Updates.** Checks target this repository’s Releases. The app only prompts when both exact x64 artifacts exist (`FanBox-<ver>-win-x64.exe` and `-portable.exe`); fuzzy names, a single file, or the wrong architecture fail closed. HTML fallback probes those exact URLs with HEAD then a bounded GET and never treats an unknown asset list as a bypass.
 - **Shortcuts.** Every `⌘` binding maps to `Ctrl` (for example `Ctrl+K` global search, `Ctrl+Enter` open in editor). Dynamic labels use platform-correct modifiers.
 
 ### Install
@@ -48,7 +48,7 @@ npm run dist:win     # NSIS installer + portable exe → dist/
 |---|---|
 | Embedded terminal | node-pty with ConPTY; PowerShell by default; registry PATH merged at startup |
 | Agent cross-control | Busy/idle via child-process probe (external CLIs); pure in-process PowerShell can false-idle — default `wait` idleMs is 3500 ms; use `"idle":"quiet"` or `"until"` for cmdlet-only work; `terminals` reports last-known directory (spawn/locate), not live cwd |
-| Updates | GitHub API asset check requires `FanBox-*-win-*.exe` before prompting; HTML redirect fallback is tag-only |
+| Updates | Exact pair `FanBox-<ver>-win-x64.exe` + `-portable.exe` required; HTML fallback probes those URLs (HEAD, then bounded GET) and returns `[]` if unverified |
 | Screenshot express | Watches `Pictures\Screenshots` and the Desktop |
 | Stay awake | Sidebar power switches + `powerSaveBlocker`; lid-close sleep still follows OS power options |
 | Scheduled tasks | Same scheduler as macOS; fires only while FanBox is running (no Windows Task Scheduler install) |
@@ -63,7 +63,7 @@ Please file port-related issues in [this repository’s Issues](https://github.c
 
 ## Upstream README (verbatim)
 
-<sub>The content below is kept verbatim from <a href="https://github.com/alchaincyf/fanbox">alchaincyf/fanbox</a> <strong>v2.12.1</strong> and describes the official macOS product. Download links, install steps, and community-port lists reflect the upstream author’s view. For Windows, use the section above.</sub>
+<sub>The content below is kept verbatim from <a href="https://github.com/alchaincyf/fanbox">alchaincyf/fanbox</a> <strong>v2.13.0</strong> and describes the official macOS product. Download links, install steps, and community-port lists reflect the upstream author’s view. For Windows, use the section above.</sub>
 
 </div>
 

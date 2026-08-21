@@ -21,6 +21,16 @@
 ### Changed
 - **排版从编辑器里常驻的第四个页签改成弹窗**：点「排版…」按钮才弹出查看/导出面板，关掉面板原地还在改，不再打断正在编辑的富文本/源码
 
+### Windows port
+
+- **绝对路径本地配图在 Windows 上会复制错文件、写进 Markdown 的路径也无法往返**：上游插入图片用 `startsWith(dir + '/')` 判断「已在树内」，在 `C:\proj\a.png` 上永远不成立（分隔符是反斜杠），于是树内图被再复制一份；`drop:copy-into` 又拿 `uniqueDest()` 加过后缀的路径做同文件比较，源文件自己存在时会被当成碰撞而写出 `foo 2.png`。UNC 份额名和盘符的兄弟前缀（`C:\proj` vs `C:\proj-extra`）同样没有按「等或子孙」比较。修复把包含判定收到 `path.win32` 上：等/子孙（大小写与分隔符不敏感）不复制；树外、跨盘、不同 UNC 份额才复制到 md 旁，且永不覆盖。`copy-into` 的同文件检查改为对着未加后缀的目标路径。
+
+- **Windows 路径一旦进 Markdown 就会被 marked / Milkdown / DOMPurify 各编一次，保存再打开变成裂图或 `%255C` 套娃**：反斜杠、空格、`#`、`%`、括号、撇号和中文文件名没有单一的「绝对原生路径 → Markdown 目标」出口。本版只保留一个序列化器：盘符 `C:` 原样保留、UNC 从编码后的 `\\` 起、整段只 percent-encode 一次；字面量 `%5C` 变成 `%255C`，decode 一次回到原生路径。picker、截图落盘、资源管理器拖入、File input 和内部 `/api/raw` 还原都只插入这种规范形式，禁止把 `file://`、`/api/raw`、`/fs`、`blob:`、`data:image:`、`pending-upload:` 写进文档。显示侧 decode 一次后走 `/api/raw`。Milkdown `toMarkdown` 可接幂等规范化，避免第二趟再编码。
+
+- **发版检查仍 spawn 裸 `git`，HTML 更新兜底把 `assets: null` 当成「不要设闸」**：浏览目录里放一个 `git.exe` 就会在点发版向导时以用户身份执行（libuv 先搜 cwd）。向导拼出的 PowerShell 还曾把用户 notes 写进 commit 标题，并用模糊 `*win*.exe` glob 附资产——缺一个便发出零资产 Release，应用内更新再被模糊匹配误报。`releaseInspect` 的 git 调用改为 `gitExe()` + `winSpawnEnv()`；notes 只进 notes 文件；Windows 命令序列先 `npm run dist:win`，再要求两个精确非空文件 `FanBox-2.13.0-win-x64.exe` 与 `-portable.exe` 才调用 `gh`，且始终附上这两个名字。更新器按规范化版本和架构计算精确名；API 模式必须两个都在；HTML 兜底对这两个 URL 先 HEAD、不行再带 Range 的可中止 GET，返回核验列表或 `[]`，不再返回 null。
+
+- **排版常驻页签换成弹窗后，Windows 英文界面会露出中文按钮和 Option/iTerm 提示**：`#preview-body` 整区被 i18n 跳过，「插入图片」「排版…」停在中文；终端打开提示仍讲 Option / iTerm。Windows 在跳过区内显式翻译编辑器控件，词典补上图片/移动/弹窗/导出词条；原生选图对话框走 `M(zh, en)`；Option/iTerm 提示只在非 Windows 出现；非 Windows 的 `⌘S` 字面量保持与 master 一致，Windows 用 `Ctrl+S`。PR #60 的 `mdHtml()` 闸、DOMPurify 失败关闭、inert `semanticSig()` 和预览源隔离未改。
+
 ## [2.12.1] - 2026-07-26
 
 ### Fixed
