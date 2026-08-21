@@ -13,7 +13,7 @@ import '@milkdown/crepe/theme/frame.css';
 // alt 在花叔的文章里是图注正文（排版器、公众号都要读），丢了整篇就判「往返有损」被锁进源码模式。
 // 这里把语义改回「alt 归 alt」：alt 文本原样往返；缩放比只在 alt 为空时借那个位置，
 // 于是 Crepe 自己写出来的老文件（![1.00](url)）仍能读回比例，而人写的图注一个字都不动。
-function keepImageAlt(editor) {
+function keepImageAlt(editor, normalizeUrl) {
   return editor.config((ctx) => {
     ctx.update(imageBlockSchema.key, (make) => (c) => {
       const s = make(c);
@@ -51,10 +51,11 @@ function keepImageAlt(editor) {
             const r = Number.parseFloat(node.attrs.ratio);
             // 有图注写图注；没图注且被缩放过才写比例，免得给 ![](url) 平白塞个 1.00
             const alt = node.attrs.alt || (Number.isFinite(r) && r !== 1 ? r.toFixed(2) : '');
+            const url = normalizeUrl ? (normalizeUrl(node.attrs.src) || node.attrs.src) : node.attrs.src;
             state.openNode('paragraph');
             state.addNode('image', undefined, undefined, {
               title: node.attrs.caption,
-              url: node.attrs.src,
+              url,
               alt,
             });
             state.closeNode();
@@ -178,15 +179,16 @@ function configureImageUpload(editor, saveFn) {
 // 又只有 flip() 没有 shift() 中间件——FanBox 的编辑区左内边距完全不够它的定位空间，
 // 挪不出来就等于看不见摸不着。不修这条路，直接在每张图自己的框里塞常驻的上移/下移按钮：
 // 定位相对图片自己的盒子，不依赖任何浮层定位，不会被滚动容器裁切。
-function addImageMoveControls(editor) {
+function addImageMoveControls(editor, labels) {
   editor.use($prose(() => new Plugin({
-    view(view) { return new ImageMoveView(view); },
+    view(view) { return new ImageMoveView(view, labels); },
   })));
 }
 
 class ImageMoveView {
-  constructor(view) {
+  constructor(view, labels) {
     this.view = view;
+    this.labels = labels;
     this.update(view);
   }
   update(view) {
@@ -204,6 +206,12 @@ class ImageMoveView {
         ctl = document.createElement('div');
         ctl.className = 'fanbox-img-move';
         ctl.innerHTML = '<button type="button" data-dir="-1" title="上移">↑</button><button type="button" data-dir="1" title="下移">↓</button>';
+        if (this.labels) {
+          const up = ctl.querySelector('[data-dir="-1"]');
+          const down = ctl.querySelector('[data-dir="1"]');
+          if (up && this.labels.up) { up.setAttribute('title', this.labels.up); up.setAttribute('aria-label', this.labels.up); }
+          if (down && this.labels.down) { down.setAttribute('title', this.labels.down); down.setAttribute('aria-label', this.labels.down); }
+        }
         if (!dom.style.position) dom.style.position = 'relative';
         dom.appendChild(ctl);
         ctl.addEventListener('mousedown', (ev) => ev.preventDefault()); // 别抢走编辑器的选区/焦点

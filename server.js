@@ -15,6 +15,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { exec, spawn, execFile } = require('child_process');
 const { URL } = require('url');
+const winPortHelpers = require('./win-port-helpers');
 
 const HOME = os.homedir();
 const PORT = Number(process.env.FANBOX_PORT) || 4567;
@@ -47,7 +48,7 @@ let winGitPath;
 function gitExe() {
   if (PLATFORM !== 'win32') return 'git';
   if (winGitPath === undefined) winGitPath = winFindExe('git') || null;
-  return winGitPath || 'git'; // 实在找不到就退回裸名：功能不该因为这层加固直接消失
+  return winPortHelpers.resolveGitExe(PLATFORM, () => winGitPath);
 }
 
 // 搜索 / 遍历时跳过的重目录，避免 vibe coding 项目里 node_modules 拖垮速度
@@ -678,15 +679,17 @@ ${history || '（还没有历史记录）'}
 // ---------- 发版向导：检查项目状态 → 改版本号/CHANGELOG → 命令序列交给内嵌终端跑（每步可见可拦）----------
 async function releaseInspect(p) {
   const dir = resolvePath(p);
+  const git = gitExe();
+  const gitSh = (args) => winPortHelpers.spawnGit(execFile, git, winSpawnEnv(), dir, args);
   const sh = (cmd, args) => new Promise((resolve) => execFile(cmd, args, { cwd: dir, timeout: 8000, env: winSpawnEnv() }, (err, stdout) => resolve(err ? null : String(stdout).trim())));
   let pkg;
   try { pkg = JSON.parse(await fsp.readFile(path.join(dir, 'package.json'), 'utf8')); }
   catch { return { ok: false, error: '这里没有 package.json——发版向导目前只认 node 项目' }; }
   const out = { ok: true, dir, name: pkg.name || path.basename(dir), version: pkg.version || '0.0.0' };
   out.hasDist = !!(pkg.scripts && pkg.scripts.dist);
-  out.remote = await sh('git', ['remote', 'get-url', 'origin']);
-  out.branch = await sh('git', ['rev-parse', '--abbrev-ref', 'HEAD']);
-  const status = await sh('git', ['status', '--porcelain']);
+  out.remote = await gitSh(['remote', 'get-url', 'origin']);
+  out.branch = await gitSh(['rev-parse', '--abbrev-ref', 'HEAD']);
+  const status = await gitSh(['status', '--porcelain']);
   out.isRepo = status !== null;
   out.dirty = !!(status && status.length);
   out.gh = PLATFORM === 'win32' ? !!winFindExe('gh') : !!(await sh('/bin/sh', ['-lc', 'command -v gh']));
@@ -703,7 +706,7 @@ async function releaseInspect(p) {
 async function releasePrepare(b) {
   const dir = resolvePath(b.path);
   const version = String(b.version || '').trim();
-  if (!/^\d+\.\d+\.\d+/.test(version)) return { ok: false, error: '版本号格式不对（要 x.y.z）' };
+  if (PLATFORM === 'win32' ? !/^\d+\.\d+\.\d+$/.test(version) : !/^\d+\.\d+\.\d+/.test(version)) return { ok: false, error: '版本号格式不对（要 x.y.z）' };
   const notes = String(b.notes || '').trim();
   // 1) package.json 版本号
   const pkgFile = path.join(dir, 'package.json');
@@ -732,25 +735,28 @@ async function releasePrepare(b) {
   const steps = [];
   // 打包脚本按平台：npm run dist 是 macOS 那条（开头带 APPLE_KEYCHAIN_PROFILE=… 的行内环境变量，
   // cmd/PowerShell 都不认），Windows 要走 dist:win，否则发版链第一步就崩在一句看不懂的报错上
-  if (b.doDist) steps.push(PLATFORM === 'win32' ? 'npm run dist:win' : 'npm run dist');
+  if (PLATFORM === 'win32') {
+    const winSteps = winPortHelpers.buildWinReleaseSteps({
+      version, notesFile, doDist: !!b.doDist, doPush: !!b.doPush, doRelease: !!b.doRelease,
+      dir, shellQuote,
+    });
+    return { ok: true, cmd: winPortHelpers.foldPwsh(winSteps) };
+  }
+  if (b.doDist) steps.push('npm run dist');
   steps.push('git add -A', `git commit -m ${shellQuote(`v${version}: ${title || '发版'}`)}`);
   if (b.doPush) steps.push('git push');
   // 产物按平台。注意不能把通配符原样交给命令行：PowerShell 不给原生命令展开通配符，
   // gh 自己也不做 glob，于是它会去找一个名字里真带 * 的文件、失败、最后发出一个零资产的 Release——
   // 而零资产的 Release 会让所有用户的更新提示被 hasWinInstallerAsset 静默吞掉。这里在 Node 侧展开。
   const distDir = path.join(resolvePath(b.path || HOME), 'dist');
-  const distRe = PLATFORM === 'win32'
-    ? new RegExp(`${version.replace(/\./g, '\\.')}.*win.*\\.exe$`, 'i')
-    : new RegExp(`${version.replace(/\./g, '\\.')}.*\\.dmg$`, 'i');
+  const distRe = new RegExp(`${version.replace(/\./g, '\\.')}.*\\.dmg$`, 'i');
   let distFiles = [];
   try { distFiles = fs.readdirSync(distDir).filter((f) => distRe.test(f)).map((f) => path.join(distDir, f)); } catch { /* 还没打包 */ }
   const distGlob = distFiles.length ? ' ' + distFiles.map((f) => shellQuote(f)).join(' ') : '';
   if (b.doRelease) steps.push(`gh release create v${version} --title ${shellQuote(`v${version}${title ? ' · ' + title : ''}`)} --notes-file ${shellQuote(notesFile)}${b.doDist ? distGlob : ''}`);
   // 串联符按目标 shell：Windows 默认 PTY 是 PowerShell 5.1，它不认 &&（PS 7 才支持）。
   // 用右折叠嵌 if($?){…} 复刻「前一步失败就不往下走」——发版链里这条语义不能丢
-  const cmd = PLATFORM === 'win32'
-    ? steps.reduceRight((acc, s) => (acc ? `${s}; if($?){ ${acc} }` : s))
-    : steps.join(' && ');
+  const cmd = steps.join(' && ');
   return { ok: true, cmd };
 }
 
@@ -3212,6 +3218,9 @@ const previewServer = http.createServer(async (req, res) => {
   } catch (err) { res.writeHead(500); res.end(String((err && err.message) || err)); }
 });
 previewServer.on('error', (err) => { console.error('  ⚠️  预览服务器启动失败：', err.message); });
+if (process.env.FANBOX_HELPERS_ONLY) {
+  module.exports = { gitExe, winSpawnEnv, releaseInspect, releasePrepare, shellQuote };
+} else {
 previewServer.listen(PREVIEW_PORT, '127.0.0.1', () => { console.log(`  🖼  预览源（隔离）：http://localhost:${PREVIEW_PORT}`); });
 
 server.listen(PORT, '127.0.0.1', () => {
@@ -3227,3 +3236,4 @@ server.listen(PORT, '127.0.0.1', () => {
     else exec(`xdg-open ${link}`, () => {});
   }
 });
+}

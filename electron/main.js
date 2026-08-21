@@ -9,6 +9,7 @@ const { app, BrowserWindow, ipcMain, shell, nativeImage, Menu, clipboard, dialog
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const winHelpers = require('../win-port-helpers');
 const IS_MAC = process.platform === 'darwin';
 const IS_WIN = process.platform === 'win32';
 // Windows 上裸命令名会先在「当前工作目录」里找同名 exe 再查 PATH，所以系统自带程序一律走绝对路径
@@ -235,12 +236,13 @@ function cmpVer(a, b) {
 const REL_REPO = IS_WIN ? 'Emberwhirl/fanbox' : 'alchaincyf/fanbox';
 const REL_PAGE = `https://github.com/${REL_REPO}/releases/latest`;
 function hasWinInstallerAsset(assets) {
-  // 与 updateAssetCandidates 命名对齐：FanBox-<ver>-win-<arch>.exe / -portable.exe
-  return (assets || []).some((n) => /FanBox-.*-win-.*\.exe$/i.test(String(n || '')));
+  // Exact pair only: FanBox-<ver>-win-<arch>.exe + -portable.exe. Fuzzy names fail closed.
+  return Array.isArray(assets) && assets.length > 0;
 }
 async function fetchLatestRelease() {
   // 先走 API（信息全，含 assets）；代理共享出口 IP 很容易吃 GitHub API 的未认证限流（60 次/小时/IP，403），
   // 失败就退回抓 releases/latest 网页重定向——重定向后的 URL 自带 tag，且不占 API 配额（无 assets 列表）
+  const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
   try {
     const res = await net.fetch(`https://api.github.com/repos/${REL_REPO}/releases/latest`, {
       headers: { 'User-Agent': 'fanbox-app', Accept: 'application/vnd.github+json' },
@@ -250,14 +252,28 @@ async function fetchLatestRelease() {
       // Include asset names when the API succeeds; HTML-fallback path returns assets: null (unknown).
       if (rel.tag_name) {
         const assets = Array.isArray(rel.assets) ? rel.assets.map((a) => a && a.name).filter(Boolean) : [];
-        return { tag: rel.tag_name, url: rel.html_url || REL_PAGE, assets };
+        if (!IS_WIN) return { tag: rel.tag_name, url: rel.html_url || REL_PAGE, assets };
+        const verified = await winHelpers.selectWinReleaseAssets({
+          tag: rel.tag_name, arch, apiAssets: assets,
+        });
+        return { tag: rel.tag_name, url: rel.html_url || REL_PAGE, assets: verified };
       }
     }
   } catch { /* 走兜底 */ }
   const res = await net.fetch(REL_PAGE, { headers: { 'User-Agent': 'fanbox-app' } });
   const m = String(res.url || '').match(/\/releases\/tag\/([^/?#]+)/);
-  if (m) return { tag: decodeURIComponent(m[1]), url: res.url, assets: null };
-  return null;
+  if (!m) return null;
+  const tag = decodeURIComponent(m[1]);
+  if (!IS_WIN) return { tag, url: res.url, assets: null };
+  const downloadTag = /^v/i.test(tag) ? tag : ('v' + tag);
+  const verified = await winHelpers.selectWinReleaseAssets({
+    tag, arch, apiAssets: null,
+    probeExact: (name) => winHelpers.probeUrlExists(
+      `https://github.com/${REL_REPO}/releases/download/${downloadTag}/${name}`,
+      net.fetch.bind(net),
+    ),
+  });
+  return { tag, url: res.url, assets: verified };
 }
 let pendingUpdate = null; // 渲染层晚注册监听也能拉到（启动 6 秒的推送 vs init 加载大目录，谁先谁后说不准）
 let latestAssets = null; // 最新 Release 的资产文件名清单；null = 没拿到（走了网页兜底），此时不拦下载
@@ -279,12 +295,12 @@ async function checkUpdate(opts) {
   }
   updRetry = 0;
   const newer = cmpVer(info.tag, app.getVersion()) > 0;
-  // Windows：API 回了 assets 时必须有 win 安装包才提示，避免 docs-only / 仅 mac 资产的 tag 骗下载 404。
-  // HTML 重定向兜底拿不到 assets 列表 → 仍按 tag 提示（发布节奏由本 fork 控制，通常 tag 即带 win 包）。
-  const winAssetOk = !IS_WIN || !Array.isArray(info.assets) || hasWinInstallerAsset(info.assets);
+  // Windows：必须拿到已核验的精确双文件名才提示。API 缺一/模糊名/错架构 → []；HTML 兜底探测失败 → []。
+  // 不再把 assets:null 当成「未知、放行」。macOS 保持原样（HTML 兜底仍可为 null）。
+  const winAssetOk = !IS_WIN || hasWinInstallerAsset(info.assets);
   if (newer && winAssetOk) {
     pendingUpdate = { version: info.tag.replace(/^v/, ''), url: info.url };
-    latestAssets = Array.isArray(info.assets) ? info.assets : null;
+    latestAssets = Array.isArray(info.assets) ? info.assets : (IS_WIN ? [] : null);
     if (win && !win.isDestroyed()) win.webContents.send('update:available', pendingUpdate);
   }
   if (manual) {
@@ -347,10 +363,18 @@ ipcMain.handle('update:download', async (e, { version }) => {
   if (!/^\d+\.\d+\.\d+$/.test(ver)) return { ok: false, error: 'bad version' };
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
   const candidates = updateAssetCandidates(ver, arch);
-  // If we know the asset list and none of our candidates are on the release, open the
+  // Windows: both exact names must already be verified. [] / missing / fuzzy / wrong-arch fail closed.
+  // macOS: if we know the asset list and none of our candidates are on the release, open the
   // release page instead of downloading a guaranteed 404. When assets is null (HTML
   // fallback), proceed with the download attempt as before.
-  if (latestAssets && pendingUpdate && pendingUpdate.version === ver) {
+  if (IS_WIN) {
+    const expectedNames = winHelpers.exactWinAssetNames(ver, arch);
+    if (!Array.isArray(latestAssets) || !expectedNames.length
+        || !expectedNames.every((n) => latestAssets.includes(n))) {
+      shell.openExternal(pendingUpdate && pendingUpdate.url ? pendingUpdate.url : REL_PAGE);
+      return { ok: false, error: 'no-asset', arch };
+    }
+  } else if (latestAssets && pendingUpdate && pendingUpdate.version === ver) {
     const expectedNames = candidates.map((u) => path.basename(u));
     if (!expectedNames.some((n) => latestAssets.includes(n))) {
       shell.openExternal(pendingUpdate.url || REL_PAGE);
@@ -922,10 +946,7 @@ ipcMain.handle('drop:save', (e, { name, buf }) => {
 });
 // 同名不覆盖：foo.png 已存在就退而求其次 foo 2.png（仿访达）
 function uniqueDest(dest) {
-  if (!fs.existsSync(dest)) return dest;
-  const d = path.dirname(dest), ext = path.extname(dest), base = path.basename(dest, ext);
-  for (let i = 2; i < 1000; i++) { const c = path.join(d, `${base} ${i}${ext}`); if (!fs.existsSync(c)) return c; }
-  return path.join(d, `${Date.now()}-${base}${ext}`);
+  return winHelpers.uniqueDest(dest, (p) => fs.existsSync(p), path);
 }
 // 拖进文件区：把没路径的拖入内容（截图浮窗等）写进目标目录
 ipcMain.handle('drop:save-into', (e, { dir, name, buf }) => {
@@ -942,10 +963,35 @@ ipcMain.handle('drop:copy-into', (e, { srcPath, dir }) => {
   try {
     if (!srcPath || !fs.existsSync(srcPath)) return { ok: false, error: '源文件不存在' };
     if (!dir || !fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return { ok: false, error: '目标目录无效' };
+    if (IS_WIN) {
+      const d = winHelpers.winCopyIntoDecision(srcPath, dir, (p) => uniqueDest(p));
+      if (!d.ok) return d;
+      if (d.action === 'keep') return { ok: true, path: srcPath };
+      fs.copyFileSync(srcPath, d.dest);
+      return { ok: true, path: d.dest };
+    }
     const dest = uniqueDest(path.join(dir, path.basename(srcPath)));
     if (path.resolve(srcPath) === path.resolve(dest)) return { ok: true, path: dest }; // 原地拖入，无需复制
     fs.copyFileSync(srcPath, dest);
     return { ok: true, path: dest };
+  } catch (err) { return { ok: false, error: err.message }; }
+});
+// md 编辑器「插入图片」：树内/同文件不复制；树外、跨盘、不同 UNC 份额复制到 md 旁且不覆盖
+ipcMain.handle('drop:contain-image', (e, { srcPath, dir }) => {
+  try {
+    if (!srcPath || !fs.existsSync(srcPath)) return { ok: false, error: '源文件不存在' };
+    if (!dir || !fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return { ok: false, error: '目标目录无效' };
+    if (IS_WIN) {
+      return winHelpers.applyWinContainment(srcPath, dir, {
+        exists: (p) => fs.existsSync(p),
+        copyFile: (s, d) => fs.copyFileSync(s, d),
+        uniqueDest,
+      });
+    }
+    const dest = uniqueDest(path.join(dir, path.basename(srcPath)));
+    if (path.resolve(srcPath) === path.resolve(dest)) return { ok: true, path: dest, copied: false };
+    fs.copyFileSync(srcPath, dest);
+    return { ok: true, path: dest, copied: true };
   } catch (err) { return { ok: false, error: err.message }; }
 });
 // md 编辑器「插入图片」按钮：原生系统选图，默认目录是 md 文件所在目录——网页 <input type=file>
@@ -954,10 +1000,10 @@ ipcMain.handle('drop:pick-images', async (e, { defaultPath } = {}) => {
   try {
     const owner = win && !win.isDestroyed() ? win : undefined;
     const r = await dialog.showOpenDialog(owner, {
-      title: '选择要插入的图片',
+      title: M('选择要插入的图片', 'Choose images to insert'),
       defaultPath: defaultPath && fs.existsSync(defaultPath) ? defaultPath : undefined,
       properties: ['openFile', 'multiSelections'],
-      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] }],
+      filters: [{ name: M('图片', 'Images'), extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] }],
     });
     if (r.canceled) return { ok: true, paths: [] };
     return { ok: true, paths: r.filePaths };

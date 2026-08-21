@@ -49,6 +49,16 @@ contextBridge.exposeInMainWorld('fanboxDrop', {
   copyInto: (srcPath, dir) => ipcRenderer.invoke('drop:copy-into', { srcPath, dir }),
   // md 编辑器「插入图片」按钮：原生选图对话框，defaultPath 控制默认打开的目录
   pickImages: (defaultPath) => ipcRenderer.invoke('drop:pick-images', { defaultPath }),
+  containImage: (srcPath, dir) => ipcRenderer.invoke('drop:contain-image', { srcPath, dir }),
+});
+
+const winHelpers = require('../win-port-helpers');
+contextBridge.exposeInMainWorld('fanboxWinPath', {
+  toMarkdownDest: (p) => winHelpers.toMarkdownDest(p),
+  fromMarkdownDest: (p) => winHelpers.fromMarkdownDest(p),
+  normalizeForMarkdown: (p) => winHelpers.normalizeForMarkdown(p),
+  displaySrc: (p) => winHelpers.winDisplaySrc(p),
+  isForbiddenPersistSrc: (p) => winHelpers.isForbiddenPersistSrc(p),
 });
 
 contextBridge.exposeInMainWorld('fanboxShot', {

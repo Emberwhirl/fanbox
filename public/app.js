@@ -209,6 +209,15 @@ function isMacOS() {
 function isWindows() {
   return state.platform === 'win32' || (window.fanboxEnv && window.fanboxEnv.platform === 'win32');
 }
+function edStr(zh) {
+  if (isWindows() && window.fanboxLang === 'en' && typeof window.t === 'function') return window.t(zh);
+  return zh;
+}
+function winMdDest(p) {
+  if (!isWindows() || !window.fanboxWinPath) return p;
+  const n = window.fanboxWinPath.normalizeForMarkdown(p);
+  return (n && n.ok) ? n.dest : p;
+}
 function modKey() { return isMacOS() ? '⌘' : 'Ctrl+'; }
 // D2/§3a: macOS context menu uses master "Finder" literals; this helper is for residual
 // toasts/labels (export, etc.) and non-darwin arms. Windows = 资源管理器, else 文件管理器/访达.
@@ -744,6 +753,10 @@ function fixLocalImages(root, srcPath) {
     if (state.sep === '\\') {
       // win：盘符/UNC 开头就是绝对路径；相对路径按文档目录逐段折叠（两种斜杠都认）。
       // 不能走下面 POSIX 的 normPath——它会拼出带前导 / 的 /C:\…，/api/raw 解析必 404
+      if (window.fanboxWinPath && window.fanboxWinPath.displaySrc) {
+        im.setAttribute('src', window.fanboxWinPath.displaySrc(raw));
+        return;
+      }
       if (/^[A-Za-z]:[\\/]/.test(rel) || rel.startsWith('\\\\')) abs = rel;
       else {
         const stack = base.split(/[\\/]/).filter(Boolean);
@@ -1447,11 +1460,18 @@ async function mdEditor(e, data, mode = 'rich') {
   const body = $('#preview-body');
   // 拖图进编辑器时，浏览器常把卡片/预览缩略图的内部 URL（localhost/api-thumb、/fs 镜像）写进文档，
   // 而那是低清缩略图（w=160）链接，发出去就裂。这里统一还原成真实文件路径；外链 https/data: 不动。
-  const cleanImgUrls = (md) => String(md)
-    .replace(/(?:https?:\/\/localhost:\d+)?\/api\/(?:thumb|raw)\?path=([^)\s"'&]+)(?:&[^)\s"']*)?/g,
-      (m, p) => { try { return decodeURIComponent(p); } catch { return m; } })
-    .replace(/(?:https?:\/\/localhost:\d+)?\/fs\/([^)\s"']+)/g,
-      (m, s) => { try { return '/' + s.split('?')[0].split('/').filter(Boolean).map(decodeURIComponent).join('/'); } catch { return m; } });
+  const cleanImgUrls = (md) => {
+    const restored = String(md)
+      .replace(/(?:https?:\/\/localhost:\d+)?\/api\/(?:thumb|raw)\?path=([^)\s"'&]+)(?:&[^)\s"']*)?/g,
+        (m, p) => { try { return decodeURIComponent(p); } catch { return m; } })
+      .replace(/(?:https?:\/\/localhost:\d+)?\/fs\/([^)\s"']+)/g,
+        (m, s) => { try { return '/' + s.split('?')[0].split('/').filter(Boolean).map(decodeURIComponent).join('/'); } catch { return m; } });
+    if (!isWindows() || !window.fanboxWinPath) return restored;
+    return restored.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (m, alt, url) => {
+      const n = window.fanboxWinPath.normalizeForMarkdown(url);
+      return (n && n.ok) ? `![${alt}](${n.dest})` : m;
+    });
+  };
   const imgDir = dirOf(e.path); // 粘贴/拖入/浏览插入的图片都存这——花叔已定：和 md 文件同目录
   // 富文本编辑器粘贴/拖入/浏览插入图片的落盘出口：接到文件面板/终端粘贴截图已经在用的
   // fanboxDrop.saveInto 上，别再造一套。返回绝对路径，写进 markdown 就是真文件，不是 blob:
@@ -1465,7 +1485,7 @@ async function mdEditor(e, data, mode = 'rich') {
     const buf = await fileOrBlob.arrayBuffer();
     const r = await window.fanboxDrop.saveInto(imgDir, name, buf);
     if (!r || !r.ok) throw new Error((r && r.error) || '图片写盘失败');
-    return r.path;
+    return winMdDest(r.path);
   }
   let baseMtime = data.mtime;
   let content0 = cleanImgUrls(data.content || ''); // canonical：磁盘原始 markdown（顺手还原历史遗留的内部预览 URL）；唯一事实源，编辑器只从它初始化
@@ -1579,7 +1599,7 @@ async function mdEditor(e, data, mode = 'rich') {
       setTsStatus('生成长图…');
       try {
         const r = await typeset.exportImage(content0, e.path, typeset.current(), (i, n) => setTsStatus(`处理图片 ${i}/${n}…`));
-        const name = r.path.split('/').pop();
+        const name = (isWindows() ? r.path.split(/[/\\]/) : r.path.split('/')).pop();
         setTsStatus('已导出');
         if (r.failed) toast(`长图已导出（${name}），但 ${r.failed} 张图没取到，图里会缺`, true);
         else toast(`长图已导出：${name}，就在文章旁边`);
@@ -1594,7 +1614,7 @@ async function mdEditor(e, data, mode = 'rich') {
       try {
         const r = await typeset.exportSlices(content0, e.path, typeset.current(),
           (i, n, kind) => setTsStatus(kind === 'slice' ? `生成第 ${i}/${n} 张…` : `处理图片 ${i}/${n}…`));
-        const first = r.paths[0].split('/').pop();
+        const first = (isWindows() ? r.paths[0].split(/[/\\]/) : r.paths[0].split('/')).pop();
         setTsStatus('已导出');
         // 18 是小红书一条笔记的图片上限，超了得自己挑——只提醒，不替他删
         if (r.count > 18) toast(`已导出 ${r.count} 张（${first} 起），超过小红书 18 图上限，发之前挑一下`, true);
@@ -1620,14 +1640,14 @@ async function mdEditor(e, data, mode = 'rich') {
     const hostCls = { rich: 'crepe-host', read: 'read-host', code: 'mona-host' }[m];
     const seg = (id, label, on) =>
       `<button class="seg-btn${m === id ? ' active' : ''}" data-m="${id}"${on ? '' : ' disabled title="此文件含富文本无法无损保存的语法，改请用源码"'}>${label}</button>`;
-    const hint = m === 'read' ? (forceCode ? '只读 · 此文件富文本往返有损，要改请点源码' : '只读 · 要改请点富文本或源码')
-      : '自动保存 · ' + (isMacOS() ? '⌘S' : 'Ctrl+S') + ' 立即保存';
+    const hint = m === 'read' ? edStr(forceCode ? '只读 · 此文件富文本往返有损，要改请点源码' : '只读 · 要改请点富文本或源码')
+      : edStr('自动保存 · ' + (isMacOS() ? '⌘S' : 'Ctrl+S') + ' 立即保存');
     // 插入图片：source/rich 都能用，唯独只读（有损文件的兜底阅读态）没意义，不给按钮添乱
-    const insImgBtn = m !== 'read' ? `<button id="ed-insimg-btn" class="ghost-btn" type="button">+ 插入图片</button>` : '';
+    const insImgBtn = m !== 'read' ? `<button id="ed-insimg-btn" class="ghost-btn" type="button">+ ${edStr('插入图片')}</button>` : '';
     body.innerHTML =
-      `<div class="editor-bar"><div class="ed-modes">${seg('rich', '富文本', !forceCode)}${seg('code', '源码', true)}</div>` +
+      `<div class="editor-bar"><div class="ed-modes">${seg('rich', edStr('富文本'), !forceCode)}${seg('code', edStr('源码'), true)}</div>` +
       insImgBtn +
-      `<button id="ed-typeset-btn" class="ghost-btn" type="button">排版…</button>` +
+      `<button id="ed-typeset-btn" class="ghost-btn" type="button">${edStr('排版…')}</button>` +
       `<span id="md-status" class="editor-hint">${hint}</span></div>` +
       `<div id="ed-host" class="${hostCls}"></div>`;
     body.querySelectorAll('.ed-modes .seg-btn').forEach((b) => {
@@ -1658,9 +1678,12 @@ async function mdEditor(e, data, mode = 'rich') {
       const front = fm ? fm[1] : '';
       const featureConfigs = C.imageFeatureConfigs ? C.imageFeatureConfigs(saveEditorImage) : undefined;
       const inst = new C.Crepe({ root: host, defaultValue: front ? content0.slice(front.length) : content0, featureConfigs });
-      if (C.keepImageAlt) C.keepImageAlt(inst.editor); // 图注归 alt，别被 Milkdown 拿去存缩放比例
+      if (C.keepImageAlt) C.keepImageAlt(inst.editor, isWindows() ? (u) => {
+        const r = window.fanboxWinPath && window.fanboxWinPath.normalizeForMarkdown(u);
+        return (r && r.ok) ? r.dest : u;
+      } : undefined); // 图注归 alt，别被 Milkdown 拿去存缩放比例
       if (C.configureImageUpload) C.configureImageUpload(inst.editor, saveEditorImage); // 真截图粘贴 + Finder 拖文件 + 粘贴 HTML 里带 blob:/data: 的 <img> 都存成同目录真文件
-      if (C.addImageMoveControls) C.addImageMoveControls(inst.editor); // 每张图常驻的上移/下移按钮，重排不用等 Crepe 那个够不着的拖拽 handle
+      if (C.addImageMoveControls) C.addImageMoveControls(inst.editor, isWindows() ? { up: edStr('上移'), down: edStr('下移') } : undefined); // 每张图常驻的上移/下移按钮，重排不用等 Crepe 那个够不着的拖拽 handle
       await inst.create();
       // 语义无损校验：Milkdown 序列化回来若渲染结果和磁盘原文不同（<br/> 被吞、HTML 被删等真丢内容）→ 禁掉富文本，绝不让它静默落盘
       if (!semanticEqual(front + inst.getMarkdown(), content0)) {
@@ -1704,16 +1727,18 @@ async function mdEditor(e, data, mode = 'rich') {
     }
     // 插入图片：按当前模式把真实路径插到光标处
     const insertImagePath = (src) => {
+      const dest = winMdDest(src);
+      if (isWindows() && window.fanboxWinPath && window.fanboxWinPath.isForbiddenPersistSrc(dest)) return;
       if (m === 'rich' && crepe.editor && window.FanboxCrepe && window.FanboxCrepe.insertImageAtCursor) {
-        window.FanboxCrepe.insertImageAtCursor(crepe.editor.editor, src);
+        window.FanboxCrepe.insertImageAtCursor(crepe.editor.editor, dest);
       } else if (mona.editor) {
         const ed = mona.editor;
-        ed.executeEdits('insert-image', [{ range: ed.getSelection(), text: `![](${src})`, forceMoveMarkers: true }]);
+        ed.executeEdits('insert-image', [{ range: ed.getSelection(), text: `![](${dest})`, forceMoveMarkers: true }]);
         ed.focus();
       } else {
         const ta = $('.editor-area');
         if (ta) {
-          ta.setRangeText(`![](${src})`, ta.selectionStart, ta.selectionEnd, 'end');
+          ta.setRangeText(`![](${dest})`, ta.selectionStart, ta.selectionEnd, 'end');
           ta.dispatchEvent(new Event('input', { bubbles: true }));
           ta.focus();
         }
@@ -1730,7 +1755,11 @@ async function mdEditor(e, data, mode = 'rich') {
           for (const p of r.paths || []) {
             try {
               let src = p;
-              if (p !== imgDir && !p.startsWith(imgDir + '/')) {
+              if (isWindows() && window.fanboxDrop.containImage) {
+                const r2 = await window.fanboxDrop.containImage(p, imgDir);
+                if (!r2 || !r2.ok) { toast('图片复制失败：' + ((r2 && r2.error) || ''), true); continue; }
+                src = r2.path;
+              } else if (p !== imgDir && !p.startsWith(imgDir + '/')) {
                 const r2 = await window.fanboxDrop.copyInto(p, imgDir);
                 if (!r2 || !r2.ok) { toast('图片复制失败：' + ((r2 && r2.error) || ''), true); continue; }
                 src = r2.path;
@@ -1745,8 +1774,17 @@ async function mdEditor(e, data, mode = 'rich') {
         input.type = 'file'; input.accept = 'image/*'; input.multiple = true;
         input.onchange = async () => {
           for (const f of [...(input.files || [])]) {
-            try { insertImagePath(await saveEditorImage(f, f.name)); }
-            catch (err) { toast('插入图片失败：' + (err.message || err), true); }
+            try {
+              const native = isWindows() && window.fanboxDrop && window.fanboxDrop.pathForFile
+                ? window.fanboxDrop.pathForFile(f) : '';
+              if (native && window.fanboxDrop.containImage) {
+                const r2 = await window.fanboxDrop.containImage(native, imgDir);
+                if (!r2 || !r2.ok) { toast('图片复制失败：' + ((r2 && r2.error) || ''), true); continue; }
+                insertImagePath(r2.path);
+              } else {
+                insertImagePath(await saveEditorImage(f, f.name));
+              }
+            } catch (err) { toast('插入图片失败：' + (err.message || err), true); }
           }
         };
         input.click();
