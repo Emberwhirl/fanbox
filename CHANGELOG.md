@@ -31,6 +31,10 @@
 
 - **排版常驻页签换成弹窗后，Windows 英文界面会露出中文按钮和 Option/iTerm 提示**：`#preview-body` 整区被 i18n 跳过，「插入图片」「排版…」停在中文；终端打开提示仍讲 Option / iTerm。Windows 在跳过区内显式翻译编辑器控件，词典补上图片/移动/弹窗/导出词条；原生选图对话框走 `M(zh, en)`；Option/iTerm 提示只在非 Windows 出现；非 Windows 的 `⌘S` 字面量保持与 master 一致，Windows 用 `Ctrl+S`。PR #60 的 `mdHtml()` 闸、DOMPurify 失败关闭、inert `semanticSig()` 和预览源隔离未改。
 
+- **相对路径配图被当成绝对路径塞进 `/api/raw`**：`fixLocalImages` 的 Windows 分支曾对所有 src 调用 `displaySrc(raw)`，于是 `![](./cover.png)` 变成 `/api/raw?path=./cover.png`，服务端 `resolvePath` 拼到用户主目录而不是文章所在目录。显示出口改成 `winLocalImageSrc`：盘符/UNC/规范编码仍 decode 一次后走 `/api/raw`；相对路径按文档目录折叠。
+
+- **`gitExe()` 找不到系统 git 时退回裸名 `git`**：libuv 会在被浏览的仓库 cwd 里先命中种植的 `git.exe`。找不到绝对路径时改为返回 `null` 并跳过 spawn，而不是再把裸 `git` 交给 `execFile`。
+
 ## [2.12.1] - 2026-07-26
 
 ### Fixed

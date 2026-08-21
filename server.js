@@ -1252,8 +1252,10 @@ async function locatePath(p, name, root, tail, alt, roots) {
 // ---------- Git（只读）：让「看 agent 改了什么」从瞬时高亮升级为可回看的 diff ----------
 function execGit(args, cwd) {
   return new Promise((resolve) => {
+    const git = gitExe();
+    if (!git) return resolve({ ok: false, stdout: '', stderr: 'git not found' });
     // cwd 是用户正在浏览的目录：Windows 上裸命令名会先在 cwd 里找 git.exe，必须关掉（winSpawnEnv）
-    execFile(gitExe(), args, { cwd, timeout: 6000, maxBuffer: 16 * 1024 * 1024, env: winSpawnEnv() }, (err, stdout, stderr) => {
+    execFile(git, args, { cwd, timeout: 6000, maxBuffer: 16 * 1024 * 1024, env: winSpawnEnv() }, (err, stdout, stderr) => {
       resolve({ ok: !err, stdout: stdout || '', stderr: stderr || '' });
     });
   });
@@ -1315,7 +1317,9 @@ function snapGitDir(project) {
 }
 function execSnap(gitDir, project, args, timeout = 10000) {
   return new Promise((resolve) => {
-    execFile(gitExe(), ['--git-dir', gitDir, '--work-tree', project, ...args],
+    const git = gitExe();
+    if (!git) return resolve({ ok: false, killed: false, stdout: '', stderr: 'git not found' });
+    execFile(git, ['--git-dir', gitDir, '--work-tree', project, ...args],
       { cwd: project, timeout, maxBuffer: 16 * 1024 * 1024, env: winSpawnEnv() }, (err, stdout, stderr) => {
         resolve({ ok: !err, killed: !!(err && err.killed), stdout: stdout || '', stderr: stderr || '' });
       });

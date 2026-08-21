@@ -58,6 +58,7 @@ contextBridge.exposeInMainWorld('fanboxWinPath', {
   fromMarkdownDest: (p) => winHelpers.fromMarkdownDest(p),
   normalizeForMarkdown: (p) => winHelpers.normalizeForMarkdown(p),
   displaySrc: (p) => winHelpers.winDisplaySrc(p),
+  localImageSrc: (raw, dir) => winHelpers.winLocalImageSrc(raw, dir),
   isForbiddenPersistSrc: (p) => winHelpers.isForbiddenPersistSrc(p),
 });
 

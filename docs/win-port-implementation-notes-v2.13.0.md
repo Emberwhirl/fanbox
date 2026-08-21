@@ -39,3 +39,4 @@ Tested candidate: the `dev` commit whose subject ends `+ release 2.13.0`. The ex
 - Gate A: fetched, safety refs, `--no-ff --no-commit` merge of `master`, resolved `app.js` to Typeset modal + Insert image, Windows `Ctrl+S`, Option/iTerm suppressed on Windows, sanitizer retained.
 - Phase 2–3: containment IPC, canonical serializer at every native ingress, exact-pair updater, `gitExe()`+`winSpawnEnv()` inspect, notes file only, build-then-pair PowerShell.
 - Phase 4: `experiments/win-v213-images-202608/` contract tests require shipped helpers; parity/XSS/audit/long-image campaigns updated for the modal and release contracts.
+- Gate B skeptic round: `winLocalImageSrc` joins relative Markdown images to the document directory (no `/api/raw?path=./…`); `resolveGitExe`/`gitExe` return `null` and skip spawn when Windows git is missing, instead of falling back to bare `git`.

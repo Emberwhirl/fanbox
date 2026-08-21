@@ -751,10 +751,10 @@ function fixLocalImages(root, srcPath) {
     try { rel = decodeURIComponent(rel); } catch { /* 本来就没编码 */ }
     let abs;
     if (state.sep === '\\') {
-      // win：盘符/UNC 开头就是绝对路径；相对路径按文档目录逐段折叠（两种斜杠都认）。
-      // 不能走下面 POSIX 的 normPath——它会拼出带前导 / 的 /C:\…，/api/raw 解析必 404
-      if (window.fanboxWinPath && window.fanboxWinPath.displaySrc) {
-        im.setAttribute('src', window.fanboxWinPath.displaySrc(raw));
+      // win：盘符/UNC/规范编码走 displaySrc；相对路径按文档目录逐段折叠（两种斜杠都认）。
+      // 不能把 ./cover.png 直接塞进 /api/raw——resolvePath 会拼到 $HOME。
+      if (window.fanboxWinPath && window.fanboxWinPath.localImageSrc) {
+        im.setAttribute('src', window.fanboxWinPath.localImageSrc(raw, base));
         return;
       }
       if (/^[A-Za-z]:[\\/]/.test(rel) || rel.startsWith('\\\\')) abs = rel;

@@ -179,6 +179,25 @@ function winDisplaySrc(markdownSrc) {
   return '/api/raw?path=' + encodeURIComponent(rel);
 }
 
+// Resolve a Markdown image src against the document directory for Windows display.
+// Drive / UNC / already-canonical destinations: decode once, then /api/raw.
+// Relative src (./cover.png): fold onto docDir — never pass "./…" to /api/raw (that
+// would resolve under $HOME).
+function winLocalImageSrc(rawSrc, docDir) {
+  const raw = String(rawSrc || '').split('#')[0].split('?')[0];
+  let rel = raw;
+  try { rel = decodeURIComponent(raw); } catch { /* already native */ }
+  const absLike = isCanonicalMarkdownDest(raw) || isCanonicalMarkdownDest(rel)
+    || isNativeWinAbs(rel) || /^[A-Za-z]:[\\/]/.test(rel) || rel.startsWith('\\\\');
+  if (absLike) return winDisplaySrc(raw);
+  const stack = String(docDir || '').split(/[\\/]/).filter(Boolean);
+  for (const seg of rel.split(/[\\/]/)) {
+    if (seg === '..') stack.pop();
+    else if (seg && seg !== '.') stack.push(seg);
+  }
+  return '/api/raw?path=' + encodeURIComponent(stack.join('/'));
+}
+
 function posixDisplaySrc(abs) {
   return '/api/raw?path=' + encodeURIComponent(abs);
 }
@@ -243,6 +262,7 @@ async function selectWinReleaseAssets({ tag, arch, apiAssets, probeExact }) {
 }
 
 function spawnGit(execFile, gitBin, env, dir, args) {
+  if (!gitBin) return Promise.resolve(null);
   return new Promise((resolve) => {
     execFile(gitBin, args, { cwd: dir, timeout: 8000, env }, (err, stdout) => {
       resolve(err ? null : String(stdout).trim());
@@ -252,7 +272,8 @@ function spawnGit(execFile, gitBin, env, dir, args) {
 
 function resolveGitExe(platform, findExe) {
   if (platform !== 'win32') return 'git';
-  return (findExe && findExe('git')) || 'git';
+  const found = findExe && findExe('git');
+  return found || null;
 }
 
 function buildWinReleaseSteps({ version, notesFile, doDist, doPush, doRelease, dir, shellQuote }) {
@@ -301,6 +322,7 @@ module.exports = {
   fromMarkdownDest,
   normalizeForMarkdown,
   winDisplaySrc,
+  winLocalImageSrc,
   posixDisplaySrc,
   normalizeVersion,
   exactWinAssetNames,

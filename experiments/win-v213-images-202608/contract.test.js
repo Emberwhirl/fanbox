@@ -126,6 +126,30 @@ console.log('# display src (one decode)');
   check(decodeURIComponent(q) === 'C:\\图\\a.png', 'Windows display decodes once', decodeURIComponent(q));
   const posix = H.posixDisplaySrc('/home/u/a.png');
   check(posix.startsWith('/api/raw?path='), 'POSIX display matches upstream v2.13 /api/raw (not /fs)');
+
+  const docDir = 'C:\\Users\\u\\notes';
+  const rel = H.winLocalImageSrc('./cover.png', docDir);
+  check(rel.startsWith('/api/raw?path='), 'relative src still uses /api/raw', rel);
+  const relAbs = decodeURIComponent(rel.slice('/api/raw?path='.length));
+  check(!/^\.\/cover/.test(relAbs) && !relAbs.startsWith('./'), 'relative src is not left as ./cover.png', relAbs);
+  check(/notes[/\\]cover\.png$/i.test(relAbs.replace(/\\/g, '/')) || /notes\/cover\.png$/i.test(relAbs),
+    'relative src is joined against the md directory', relAbs);
+  check(!H.winLocalImageSrc('cover.png', docDir).includes('path=.%2F') &&
+    decodeURIComponent(H.winLocalImageSrc('cover.png', docDir).slice('/api/raw?path='.length)).indexOf('notes') >= 0,
+    'unsuffixed relative name joins to md dir too');
+
+  const driveDisp = H.winLocalImageSrc(enc, 'D:\\other');
+  check(decodeURIComponent(driveDisp.slice('/api/raw?path='.length)) === 'C:\\图\\a.png',
+    'canonical dest still decode-once to /api/raw (docDir ignored)', driveDisp);
+  const slashDrive = H.winLocalImageSrc('C:/Users/u/a.png', docDir);
+  check(/^C:[/\\]Users[/\\]u[/\\]a\.png$/i.test(decodeURIComponent(slashDrive.slice('/api/raw?path='.length)).replace(/\\/g, '/'))
+    || decodeURIComponent(slashDrive.slice('/api/raw?path='.length)).replace(/\\/g, '/').indexOf('C:/Users/u/a.png') >= 0
+    || /^C:/.test(decodeURIComponent(slashDrive.slice('/api/raw?path='.length))),
+    'C:/ drive dest decode-once /api/raw', slashDrive);
+  const uncEnc = H.toMarkdownDest('\\\\server\\share\\a.png').dest;
+  const uncDisp = H.winLocalImageSrc(uncEnc, docDir);
+  check(decodeURIComponent(uncDisp.slice('/api/raw?path='.length)) === '\\\\server\\share\\a.png',
+    'UNC dest decode-once to /api/raw', uncDisp);
 }
 
 console.log('# updater exact-pair / fail-closed');
@@ -194,6 +218,10 @@ console.log('# HTML fallback never bypasses');
     check(calls[0].env && calls[0].env.NoDefaultCurrentDirectoryInExePath === '1', 'winSpawnEnv flag present');
     check(H.resolveGitExe('win32', () => gitBin) === gitBin, 'resolveGitExe returns findExe result');
     check(H.resolveGitExe('linux', () => gitBin) === 'git', 'resolveGitExe POSIX is bare git');
+    check(H.resolveGitExe('win32', () => null) === null, 'Windows miss is null, not bare git');
+    let spawned = false;
+    await H.spawnGit((cmd) => { spawned = true; cmd && null; }, null, env, 'C:\\repo', ['status']);
+    check(!spawned, 'spawnGit skips exec when gitBin is null (no planted cwd git.exe)');
   }
 
   const notes = 'rm -rf C:\\Windows && curl evil.test';
@@ -273,6 +301,11 @@ console.log('# HTML fallback never bypasses');
   check(!/typeset-host/.test(app) && !/seg\('typeset'/.test(app), 'persistent Typeset tab/host gone from app.js');
   check(/isMacOS\(\) \? '⌘S' : 'Ctrl\+S'/.test(app), 'non-Windows ⌘S / Windows Ctrl+S');
   check(/!isWindows\(\) && !localStorage\.getItem\('fb_term_optionhint'\)/.test(app), 'Option/iTerm hint suppressed on Windows');
+  check(/localImageSrc\(raw,\s*base\)/.test(app) && !/displaySrc\(raw\)/.test(app),
+    'fixLocalImages uses localImageSrc(raw, base), not displaySrc(raw) short-circuit');
+  check(/function gitExe\(\)[\s\S]*resolveGitExe\(PLATFORM/.test(inspectSrc)
+    && /if \(!git\)/.test(inspectSrc.slice(inspectSrc.indexOf('function execGit'), inspectSrc.indexOf('function gitRoot'))),
+    'execGit skips spawn when gitExe() is null');
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed ? 1 : 0);
