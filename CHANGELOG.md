@@ -35,6 +35,8 @@
 
 - **`gitExe()` 找不到系统 git 时退回裸名 `git`**：libuv 会在被浏览的仓库 cwd 里先命中种植的 `git.exe`。找不到绝对路径时改为返回 `null` 并跳过 spawn，而不是再把裸 `git` 交给 `execFile`。
 
+- **Electron 20+ 默认 sandbox 让预加载脚本 `require('../win-port-helpers')` 一抛就切掉后半段桥**：`fanboxDrop` 还在，但 `fanboxWinPath` / `fanboxUpdate` / `fanboxWechat` / `fanboxPower` / `fanboxAgentCtl` 全部消失，Windows 规范路径序列化和应用内更新都走不到。预加载不再 require 仓库文件，改走 `sendSync` IPC，由已经加载 helpers 的主进程回答。
+
 ## [2.12.1] - 2026-07-26
 
 ### Fixed

@@ -307,6 +307,16 @@ console.log('# HTML fallback never bypasses');
     && /if \(!git\)/.test(inspectSrc.slice(inspectSrc.indexOf('function execGit'), inspectSrc.indexOf('function gitRoot'))),
     'execGit skips spawn when gitExe() is null');
 
+  const preloadSrc = fs.readFileSync(path.join(ROOT, 'electron/preload.js'), 'utf8');
+  check(!/require\(['"]\.\.\/win-port-helpers['"]\)/.test(preloadSrc),
+    'preload does not require win-port-helpers (Electron 20+ sandbox)');
+  check(/sendSync\('winpath:toMarkdownDest'/.test(preloadSrc)
+    && /sendSync\('winpath:localImageSrc'/.test(preloadSrc),
+    'fanboxWinPath uses sendSync IPC into main');
+  const mainSrc = fs.readFileSync(path.join(ROOT, 'electron/main.js'), 'utf8');
+  check(/ipcMain\.on\('winpath:' \+ name/.test(mainSrc) && /winHelpers\.toMarkdownDest/.test(mainSrc),
+    'main answers winpath:* from shipped helpers');
+
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed ? 1 : 0);
 })().catch((e) => { console.error('FAIL: exception', e); process.exit(2); });

@@ -996,6 +996,19 @@ ipcMain.handle('drop:contain-image', (e, { srcPath, dir }) => {
 });
 // md 编辑器「插入图片」按钮：原生系统选图，默认目录是 md 文件所在目录——网页 <input type=file>
 // 没有办法指定起始目录，这是唯一能做到的地方，只能走 Electron 自己的 dialog
+// Sync path helpers for the sandboxed preload (fanboxWinPath). Must not require() from preload.
+function winpathSync(name, fn) {
+  ipcMain.on('winpath:' + name, (e, ...args) => {
+    try { e.returnValue = fn(...args); } catch (err) { e.returnValue = { ok: false, error: err && err.message }; }
+  });
+}
+winpathSync('toMarkdownDest', (p) => winHelpers.toMarkdownDest(p));
+winpathSync('fromMarkdownDest', (p) => winHelpers.fromMarkdownDest(p));
+winpathSync('normalizeForMarkdown', (p) => winHelpers.normalizeForMarkdown(p));
+winpathSync('displaySrc', (p) => winHelpers.winDisplaySrc(p));
+winpathSync('localImageSrc', (raw, dir) => winHelpers.winLocalImageSrc(raw, dir));
+winpathSync('isForbiddenPersistSrc', (p) => winHelpers.isForbiddenPersistSrc(p));
+
 ipcMain.handle('drop:pick-images', async (e, { defaultPath } = {}) => {
   try {
     const owner = win && !win.isDestroyed() ? win : undefined;

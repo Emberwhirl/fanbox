@@ -52,14 +52,15 @@ contextBridge.exposeInMainWorld('fanboxDrop', {
   containImage: (srcPath, dir) => ipcRenderer.invoke('drop:contain-image', { srcPath, dir }),
 });
 
-const winHelpers = require('../win-port-helpers');
+// Sandboxed preload cannot require() repo files (Electron 20+ defaults sandbox:true).
+// Path helpers live in main (`win-port-helpers.js`) and answer over sendSync IPC.
 contextBridge.exposeInMainWorld('fanboxWinPath', {
-  toMarkdownDest: (p) => winHelpers.toMarkdownDest(p),
-  fromMarkdownDest: (p) => winHelpers.fromMarkdownDest(p),
-  normalizeForMarkdown: (p) => winHelpers.normalizeForMarkdown(p),
-  displaySrc: (p) => winHelpers.winDisplaySrc(p),
-  localImageSrc: (raw, dir) => winHelpers.winLocalImageSrc(raw, dir),
-  isForbiddenPersistSrc: (p) => winHelpers.isForbiddenPersistSrc(p),
+  toMarkdownDest: (p) => ipcRenderer.sendSync('winpath:toMarkdownDest', p),
+  fromMarkdownDest: (p) => ipcRenderer.sendSync('winpath:fromMarkdownDest', p),
+  normalizeForMarkdown: (p) => ipcRenderer.sendSync('winpath:normalizeForMarkdown', p),
+  displaySrc: (p) => ipcRenderer.sendSync('winpath:displaySrc', p),
+  localImageSrc: (raw, dir) => ipcRenderer.sendSync('winpath:localImageSrc', raw, dir),
+  isForbiddenPersistSrc: (p) => ipcRenderer.sendSync('winpath:isForbiddenPersistSrc', p),
 });
 
 contextBridge.exposeInMainWorld('fanboxShot', {
