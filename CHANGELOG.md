@@ -29,7 +29,7 @@
 
 - **发版检查仍 spawn 裸 `git`，HTML 更新兜底把 `assets: null` 当成「不要设闸」**：浏览目录里放一个 `git.exe` 就会在点发版向导时以用户身份执行（libuv 先搜 cwd）。向导拼出的 PowerShell 还曾把用户 notes 写进 commit 标题，并用模糊 `*win*.exe` glob 附资产——缺一个便发出零资产 Release，应用内更新再被模糊匹配误报。`releaseInspect` 的 git 调用改为 `gitExe()` + `winSpawnEnv()`；notes 只进 notes 文件；Windows 命令序列先 `npm run dist:win`，再要求两个精确非空文件 `FanBox-2.13.0-win-x64.exe` 与 `-portable.exe` 才调用 `gh`，且始终附上这两个名字。更新器按规范化版本和架构计算精确名；API 模式必须两个都在；HTML 兜底对这两个 URL 先 HEAD、不行再带 Range 的可中止 GET，返回核验列表或 `[]`，不再返回 null。
 
-- **排版常驻页签换成弹窗后，Windows 英文界面会露出中文按钮和 Option/iTerm 提示**：`#preview-body` 整区被 i18n 跳过，「插入图片」「排版…」停在中文；终端打开提示仍讲 Option / iTerm。Windows 在跳过区内显式翻译编辑器控件，词典补上图片/移动/弹窗/导出词条；原生选图对话框走 `M(zh, en)`；Option/iTerm 提示只在非 Windows 出现；非 Windows 的 `⌘S` 字面量保持与 master 一致，Windows 用 `Ctrl+S`。PR #60 的 `mdHtml()` 闸、DOMPurify 失败关闭、inert `semanticSig()` 和预览源隔离未改。
+- **排版常驻页签换成弹窗后，Windows 英文界面会露出中文按钮和 Option/iTerm 提示**：`#preview-body` 整区被 i18n 跳过，「插入图片」「排版…」停在中文；终端打开提示仍讲 Option / iTerm。Windows 在跳过区内显式翻译编辑器控件，词典补上图片/移动/弹窗/导出词条；原生选图对话框走 `M(zh, en)`；Option/iTerm 提示只在非 Windows 出现；非 Windows 的 `⌘S` 字面量保持与 master 一致，Windows 用 `Ctrl+S`。本叉 2.12.1 已落地的 Markdown XSS 修复（对应尚未合入上游的 [PR #60](https://github.com/alchaincyf/fanbox/pull/60)）仍在：`mdHtml()` 闸、DOMPurify 失败关闭、inert `semanticSig()` 和预览源隔离都还在。
 
 - **相对路径配图被当成绝对路径塞进 `/api/raw`**：`fixLocalImages` 的 Windows 分支曾对所有 src 调用 `displaySrc(raw)`，于是 `![](./cover.png)` 变成 `/api/raw?path=./cover.png`，服务端 `resolvePath` 拼到用户主目录而不是文章所在目录。显示出口改成 `winLocalImageSrc`：盘符/UNC/规范编码仍 decode 一次后走 `/api/raw`；相对路径按文档目录折叠。
 
