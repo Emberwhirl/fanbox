@@ -27,7 +27,14 @@ FanBox officially ships for macOS only. This repository maintains a full-feature
 
 ### Install
 
-Download the NSIS installer `FanBox-<version>-win-x64.exe` or the portable build `FanBox-<version>-win-x64-portable.exe` from [**Releases**](https://github.com/Emberwhirl/fanbox/releases).
+Download **v2.13.0** from [**Releases**](https://github.com/Emberwhirl/fanbox/releases/tag/v2.13.0):
+
+| File | Use |
+|---|---|
+| `FanBox-2.13.0-win-x64.exe` | NSIS installer — pick install dir, creates shortcuts |
+| `FanBox-2.13.0-win-x64-portable.exe` | Portable — run without installing |
+
+> **Not code-signed.** First launch may show SmartScreen “unknown publisher” — **More info → Run anyway**. Check SHA-256 against `SHA256SUMS.txt` on the release. Windows 10/11 x64 only.
 
 ### Run from source
 
