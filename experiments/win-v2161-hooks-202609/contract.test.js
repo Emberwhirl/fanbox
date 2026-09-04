@@ -48,9 +48,84 @@ console.log('# launch-flag builders (D2/D3)');
   const nf = H.codexNotifyFlag('C:\\nodejs\\node.exe', 'C:\\Users\\a\\.fanbox\\hooks\\codex-notify.js');
   check(nf === ' -c "notify=[\\"C:/nodejs/node.exe\\",\\"C:/Users/a/.fanbox/hooks/codex-notify.js\\"]"',
     'reserved Codex notify argv is the CRT-quoted form with forward slashes', JSON.stringify(nf));
+  const na = H.codexNotifyArgv('C:\\Program Files\\nodejs\\node.exe', 'C:\\Users\\a\\.fanbox\\hooks\\codex-notify.js');
+  check(Array.isArray(na) && na.length === 2 && na[0] === '-c', 'codexNotifyArgv is a two-slot pair', JSON.stringify(na));
+  check(na[1] === 'notify=["C:/Program Files/nodejs/node.exe","C:/Users/a/.fanbox/hooks/codex-notify.js"]',
+    'notify JSON is one argv slot (spaces in node.exe stay inside the quotes)', na[1]);
   const js = H.buildCodexNotifyJs();
   check(js.indexOf('http.request') >= 0 && js.indexOf('x-fanbox-token') >= 0, 'generated notify script POSTs with headers');
   check(!/"[0-9a-f]{24}"/.test(js), 'notify script contains no token literal');
+}
+
+console.log('# buildCodexSpawnSpec argv spawn (Approach 1)');
+{
+  const os = require('os');
+  const { spawnSync } = require('child_process');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fanbox-codex-argv-'));
+  const bin = path.join(tmp, 'bin');
+  const entry = path.join(bin, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+  const hooks = path.join(tmp, 'hooks');
+  const dump = path.join(tmp, 'argv.json');
+  fs.mkdirSync(path.dirname(entry), { recursive: true });
+  fs.mkdirSync(hooks, { recursive: true });
+  const nodeExe = process.execPath;
+  const nodeDir = path.dirname(nodeExe);
+  const nodeName = path.basename(nodeExe);
+  fs.writeFileSync(path.join(bin, 'codex.cmd'),
+    '@ECHO off\r\n"' + nodeName + '" "%~dp0\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n');
+  fs.writeFileSync(entry, [
+    "'use strict';",
+    "const fs = require('fs');",
+    "fs.writeFileSync(process.env.FANBOX_ARGV_DUMP, JSON.stringify(process.argv.slice(2)), 'utf8');",
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(hooks, 'codex-notify.js'), H.buildCodexNotifyJs());
+  const env = {
+    Path: bin + path.delimiter + nodeDir + path.delimiter + (process.env.Path || process.env.PATH || ''),
+    PATH: bin + path.delimiter + nodeDir + path.delimiter + (process.env.PATH || ''),
+    PATHEXT: '.COM;.EXE;.BAT;.CMD',
+  };
+  const prompt = "backup logs & prune 'old' ones";
+  const spec = H.buildCodexSpawnSpec({
+    env,
+    execPath: nodeExe,
+    notifyScript: path.join(hooks, 'codex-notify.js'),
+    extraArgs: ['--full-auto', prompt],
+  });
+  check(!!spec && spec.file, 'spawn spec resolves a file', JSON.stringify(spec && { file: spec.file, n: spec.args && spec.args.length }));
+  check(spec && spec.args && spec.args.indexOf('-c') >= 0, 'spawn spec includes -c', spec && spec.args && spec.args.join(' | '));
+  const cIdx = spec ? spec.args.indexOf('-c') : -1;
+  const notifyVal = cIdx >= 0 ? spec.args[cIdx + 1] : '';
+  check(/^notify=\["[^"]+","[^"]+"\]$/.test(notifyVal) && notifyVal.indexOf('codex-notify.js') >= 0,
+    'notify value is one JSON-array slot pointing at the script', notifyVal);
+  check(spec && spec.args[spec.args.length - 1] === prompt,
+    'cron prompt with & and quotes is its own argv slot (not joined into a shell string)',
+    spec && spec.args[spec.args.length - 1]);
+  check(spec && spec.args[spec.args.length - 2] === '--full-auto', '--full-auto stays a separate slot');
+  const ran = spawnSync(spec.file, spec.args, {
+    env: Object.assign({}, process.env, env, spec.extraEnv || {}, { FANBOX_ARGV_DUMP: dump }),
+    encoding: 'utf8',
+    timeout: 8000,
+    windowsHide: true,
+  });
+  check(!ran.error && ran.status === 0, 'spawnSync of the spec runs the shim', (ran.error && ran.error.message) || ran.stderr || ('status=' + ran.status));
+  let dumped = [];
+  try { dumped = JSON.parse(fs.readFileSync(dump, 'utf8')); } catch (e) { dumped = ['parse-fail:' + e.message]; }
+  check(Array.isArray(dumped) && dumped.indexOf('-c') >= 0, 'shim received -c in argv', JSON.stringify(dumped));
+  const di = dumped.indexOf('-c');
+  check(di >= 0 && dumped[di + 1] === notifyVal, 'shim received the notify JSON as one argument (quotes intact)', JSON.stringify(dumped[di + 1]));
+  check(dumped[dumped.length - 1] === prompt, 'shim received the prompt byte-exact as the last argument', JSON.stringify(dumped[dumped.length - 1]));
+  const noNodeEnv = { Path: bin, PATH: bin, PATHEXT: '.COM;.EXE;.BAT;.CMD' };
+  const specNoNode = H.buildCodexSpawnSpec({
+    env: noNodeEnv,
+    execPath: nodeExe,
+    notifyScript: path.join(hooks, 'codex-notify.js'),
+    extraArgs: ['hi'],
+  });
+  check(!!specNoNode && specNoNode.args.indexOf('-c') >= 0,
+    'without node.exe on PATH, notify still uses execPath (Electron-as-node)', specNoNode && specNoNode.args.join(' | '));
+  check(H.buildCodexSpawnSpec({ env: { Path: '', PATH: '', PATHEXT: '.COM;.EXE;.BAT;.CMD' }, extraArgs: [] }) === null,
+    'missing Codex CLI returns null (no PowerShell fallback)');
 }
 
 console.log('# 本回合 path join/split on sep');
@@ -210,14 +285,17 @@ console.log('# shipped source assertions');
   check(/claudeHttpHookSettings\(PORT\)/.test(main), 'Windows writeHookFiles uses HTTP settings');
   check(/appendNoProxy/.test(main), 'PTY env appends NO_PROXY');
 
-  // D3(b): Codex notify stays off on Windows this release (argument not byte-exact through PowerShell 5.1)
-  check(/function codexHooksFlag\(\) \{[^]*?if \(PLATFORM === 'win32'\) return '';/.test(server), 'server codexHooksFlag returns empty on win32');
-  check(/function winCodexHooksFlag\(\) \{\s*return '';\s*\}/.test(app), 'renderer winCodexHooksFlag returns empty');
-  check(!/codex-notify\.js/.test(main.slice(main.indexOf('function writeHookFiles'), main.indexOf('function codexUserNotify'))), 'Windows writeHookFiles no longer writes codex-notify.js');
+  // D3 argv: typed `-c notify=[…]` still empty on win32; launch is pty.spawn with a real argv
+  check(/function codexHooksFlag\(\) \{[^]*?if \(PLATFORM === 'win32'\) return '';/.test(server), 'server codexHooksFlag returns empty on win32 (never typed into a shell)');
+  check(/function winCodexHooksFlag\(\) \{[^]*?return '';/.test(app), 'renderer winCodexHooksFlag returns empty (never typed into a shell)');
+  const wh = main.slice(main.indexOf('function writeHookFiles'), main.indexOf('function codexUserNotify'));
+  check(/codex-notify\.js/.test(wh) && /buildCodexNotifyJs\(\)/.test(wh), 'Windows writeHookFiles writes codex-notify.js');
+  check(/buildCodexSpawnSpec\(/.test(main) && /agent === 'codex'/.test(main), 'main argv-spawns Codex via buildCodexSpawnSpec');
+  check(/termAgentKind/.test(main) && /spawnCodexInDir/.test(app), 'agent PTY kind is tracked; renderer has spawnCodexInDir');
+  check(/createOpts\.agent = 'codex'/.test(server) && /extraArgs/.test(server), 'cron Codex on win32 uses extraArgs, not a typed notify flag');
   // hooks flag only when the file exists (claude exits on a missing --settings)
   const preload = fs.readFileSync(path.join(ROOT, 'electron/preload.js'), 'utf8');
   check(/hooksReady: process\.platform === 'win32' \? !!ipcRenderer\.sendSync\('env:hooksReady'\)/.test(preload), 'preload exposes fanboxEnv.hooksReady');
-  check(!/nodeExe/.test(preload) && !/env:nodeExe/.test(main), 'node.exe lookup removed with the Codex flag');
   check(/ipcMain\.on\('env:hooksReady'/.test(main) && /claude-settings\.json/.test(main.slice(main.indexOf("ipcMain.on('env:hooksReady'"), main.indexOf("ipcMain.on('env:hooksReady'") + 400)), 'main answers env:hooksReady from the hooks dir');
   check(/function winClaudeHooksFlag\(\) \{\s*if \(!\(window\.fanboxEnv && window\.fanboxEnv\.hooksReady\)\) return '';/.test(app), 'renderer gates --settings on hooksReady');
   // Windows quit/sleep: idle shells are not active agents; unknown probe still counts as busy

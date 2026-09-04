@@ -26,6 +26,7 @@ setTimeout(() => { console.error('FAIL: watchdog'); process.exit(2); }, 420000);
 const PORT = '4720';
 const SHIM = path.join(FAKE_HOME, 'fake-claude-bin');
 const DUMP = path.join(SHIM, 'hooks-argdump.json');
+const DUMP_CODEX = path.join(SHIM, 'codex-argdump.json');
 const HOOK_FILE = path.join(FAKE_HOME, '.fanbox', 'hooks', 'claude-settings.json');
 const PROJ = path.join(FAKE_HOME, 'Documents', 'hooks-proj-' + Date.now());
 
@@ -108,11 +109,23 @@ async function waitFor(fn, ms, step = 250) { const t0 = Date.now(); while (Date.
   fs.writeFileSync(path.join(SHIM, 'claude-shim.js'), SHIM_JS);
   fs.writeFileSync(path.join(SHIM, 'claude.cmd'), '@echo off\r\nnode "%~dp0claude-shim.js" %*\r\n');
   try { fs.unlinkSync(path.join(SHIM, 'claude.ps1')); } catch { /* phase3f's argv-dump shim would shadow claude.cmd: PowerShell resolves .ps1 first */ }
+  const codexEntry = path.join(SHIM, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+  fs.mkdirSync(path.dirname(codexEntry), { recursive: true });
+  fs.writeFileSync(path.join(SHIM, 'codex.cmd'),
+    '@ECHO off\r\nnode "%~dp0node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n');
+  fs.writeFileSync(codexEntry, [
+    "'use strict';",
+    "const fs = require('fs');",
+    "try { fs.writeFileSync(process.env.FANBOX_CODEX_DUMP, JSON.stringify(process.argv.slice(2))); } catch {}",
+    "process.exit(0);",
+    '',
+  ].join('\n'));
+  try { fs.unlinkSync(DUMP_CODEX); } catch { /* */ }
 
   // C10: a user proxy that would swallow loopback if NO_PROXY were missing (the shim records env; real
   // claude honours NO_PROXY). Node on PATH is required by the shim, so put its dir after the shim dir.
   const nodeDir = path.dirname(process.execPath);
-  const { app, win } = await launch({ FANBOX_SHIM_DUMP: DUMP, HTTP_PROXY: 'http://127.0.0.1:9', HTTPS_PROXY: 'http://127.0.0.1:9' }, { port: PORT, toolsPath: SHIM + ';' + nodeDir + ';' });
+  const { app, win } = await launch({ FANBOX_SHIM_DUMP: DUMP, FANBOX_CODEX_DUMP: DUMP_CODEX, HTTP_PROXY: 'http://127.0.0.1:9', HTTPS_PROXY: 'http://127.0.0.1:9' }, { port: PORT, toolsPath: SHIM + ';' + nodeDir + ';' });
   // Main-process spies: dialog (never block on a modal), taskbar badge + flash (D6)
   await app.evaluate(({ dialog, BrowserWindow }) => {
     global.__dlg = []; global.__badge = []; global.__flash = [];
@@ -127,7 +140,7 @@ async function waitFor(fn, ms, step = 250) { const t0 = Date.now(); while (Date.
   const env = await win.evaluate(() => ({ home: window.fanboxEnv.home, hooksReady: window.fanboxEnv.hooksReady, sep: state.sep }));
   check(env.hooksReady === true, 'fanboxEnv.hooksReady true (hook file written at startup)', JSON.stringify(env));
   check(fs.existsSync(HOOK_FILE), 'claude-settings.json exists in the sandboxed profile', HOOK_FILE);
-  check(!fs.existsSync(path.join(FAKE_HOME, '.fanbox', 'hooks', 'codex-notify.js')), 'D3(b): no codex-notify.js written on Windows');
+  check(fs.existsSync(path.join(FAKE_HOME, '.fanbox', 'hooks', 'codex-notify.js')), 'D3 argv: codex-notify.js written on Windows');
   const hookRaw = fs.readFileSync(HOOK_FILE, 'utf8');
   const hookJson = JSON.parse(hookRaw);
   const h0 = hookJson.hooks.SessionStart[0].hooks[0];
@@ -137,7 +150,19 @@ async function waitFor(fn, ms, step = 250) { const t0 = Date.now(); while (Date.
   const expectFlag = ' --settings "' + HOOK_FILE + '"';
   check(cmd === 'claude --dangerously-skip-permissions' + expectFlag, 'C1: launch command = claude --dangerously-skip-permissions --settings "<abs>"', cmd);
   const codexCmd = await win.evaluate(() => agentLaunchCmd(AGENT_REGISTRY.find((a) => a.id === 'codex')));
-  check(codexCmd === 'codex', 'C9/D3(b): Codex launches bare on Windows (no notify flag)', codexCmd);
+  check(codexCmd === 'codex', 'typed Codex command has no -c notify (argv spawn, not a shell string)', codexCmd);
+  const hasSpawn = await win.evaluate(() => typeof term.spawnCodexInDir === 'function');
+  check(hasSpawn, 'C9: renderer spawnCodexInDir is the Windows Codex launch path');
+  const cPrompt = "backup logs & prune 'old'";
+  try { fs.unlinkSync(DUMP_CODEX); } catch { /* */ }
+  await win.evaluate(async (p, extra) => { await term.spawnCodexInDir(p, extra, 't'); }, PROJ, [cPrompt]);
+  const dumpC = await waitFor(() => { try { return JSON.parse(fs.readFileSync(DUMP_CODEX, 'utf8')); } catch { return null; } }, 15000);
+  check(Array.isArray(dumpC) && dumpC.indexOf('-c') >= 0, 'C9: argv-spawned fake Codex received -c', dumpC ? JSON.stringify(dumpC) : 'no dump');
+  const cAt = dumpC && dumpC.indexOf('-c');
+  const notifyVal = (cAt >= 0 && dumpC) ? dumpC[cAt + 1] : '';
+  check(/^notify=\["[^"]+","[^"]+"\]$/.test(notifyVal) && /codex-notify\.js/.test(notifyVal),
+    'C9: notify JSON is one argv slot with intact quotes', notifyVal);
+  check(dumpC && dumpC[dumpC.length - 1] === cPrompt, 'C9: extraArgs prompt with &/quotes is its own slot', dumpC && dumpC[dumpC.length - 1]);
   const resumeTpl = await win.evaluate(() => 'claude --dangerously-skip-permissions' + winClaudeHooksFlag() + ' --resume {id}');
   check(resumeTpl.indexOf(expectFlag) > 0 && /--resume \{id\}$/.test(resumeTpl), 'C7: resume template keeps the hooks flag', resumeTpl);
 

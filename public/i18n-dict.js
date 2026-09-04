@@ -444,6 +444,8 @@ window.FANBOX_DICT = {
   '提示：把左侧文件 / 文件夹拖进终端，即插入路径喂给 agent': 'Tip: drag files / folders into the terminal to insert their paths as agent context',
   '终端启动失败': 'Terminal failed to start',
   '已在终端启动': 'Started in terminal',
+  '已在终端启动 Codex': 'Started Codex in terminal',
+  '找不到 Codex CLI（npm i -g @openai/codex）': 'Codex CLI not found (npm i -g @openai/codex)',
   '内嵌终端不可用（网页版没有终端）': 'Embedded terminal unavailable (no terminal in the web version)',
   '（选中的片段）': '(selected snippet)',
   '已跳到该目录': 'Jumped to that folder',

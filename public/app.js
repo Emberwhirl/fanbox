@@ -2173,7 +2173,14 @@ async function memoryPanel(dirPath) {
       let tpl = sessCfg(s.agent).resumeCmd || 'claude --dangerously-skip-permissions --resume {id}';
       if (isWindows() && window.fanboxEnv) {
         if (s.agent === 'claude') tpl = 'claude --dangerously-skip-permissions' + winClaudeHooksFlag() + ' --resume {id}';
-        else if (s.agent === 'codex') tpl = 'codex' + winCodexHooksFlag() + ' resume {id}';
+        else if (s.agent === 'codex') {
+          if (isWindows() && window.fanboxEnv) {
+            close();
+            term.spawnCodexInDir(dirPath, ['resume', s.id], '已在终端续上会话');
+            return;
+          }
+          tpl = 'codex' + winCodexHooksFlag() + ' resume {id}';
+        }
       }
       const cmd = tpl.replace('{id}', s.id);
       close();
@@ -2267,6 +2274,10 @@ async function snapshotPanel(dirPath) {
 async function organizeLaunch(dirPath) {
   const r = await apiPost('/api/organize/launch', { path: dirPath });
   if (!r.ok) { toast(r.error || 'AI 整理启动失败', true); return; }
+  if (isWindows() && window.fanboxEnv && r.engine === 'codex' && r.agent === 'codex') {
+    term.spawnCodexInDir(dirPath, r.extraArgs || [], `${r.engine === 'codex' ? 'Codex' : 'Claude'} 已开聊——先摊方案，你点头它才动手`);
+    return;
+  }
   term.runInDir(dirPath, r.cmd, `${r.engine === 'codex' ? 'Codex' : 'Claude'} 已开聊——先摊方案，你点头它才动手`);
 }
 
@@ -3059,6 +3070,8 @@ function winClaudeHooksFlag() {
 // D3(b)：Windows 这版不给 Codex 带 notify——`-c notify=[…]` 经 PowerShell 5.1 会被吞掉内层引号，
 // 不能保证字节精确送达；Codex 裸启动，沿用子进程探测的忙闲判定
 function winCodexHooksFlag() {
+  // Never type `-c notify=[…]` into a Windows shell (PS 5.1 strips inner quotes).
+  // FanBox-launched Codex uses term.spawnCodexInDir → pty.spawn argv instead.
   return '';
 }
 function agentLaunchCmd(a) {
@@ -3146,6 +3159,10 @@ async function renderAgentButtons() {
     b.onclick = () => {
       wechatView.close();
       if (a.app && isWindows()) { launchDesktopAgentWin(a); return; } // 桌面应用直接拉起 exe，不进终端
+      if (isWindows() && window.fanboxEnv && a.id === 'codex') {
+        term.launchCodexWin([]);
+        return;
+      }
       term.launchAgent(agentLaunchCmd(a));
     };
     anchor.parentElement.insertBefore(b, anchor);
@@ -4047,6 +4064,17 @@ const term = {
     if (sess && !sess.dead) { this.input(sess.id, cmd + '\r'); sess.xterm.focus(); toast(msg || '已在终端启动'); }
     else toast('终端启动失败', true);
   },
+  // Windows Codex: open a tab whose PTY program is Codex (real argv, no shell string)
+  async spawnCodexInDir(dir, extraArgs, msg) {
+    if (!this.available()) { openWith(dir, 'terminal'); return; }
+    if ($('#terminal-panel').classList.contains('hidden')) this.open();
+    const sess = await this.newTab(dir, undefined, { agent: 'codex', extraArgs: extraArgs || [] });
+    if (sess && !sess.dead) { sess.xterm.focus(); toast(msg || '已在终端启动'); }
+    else toast('终端启动失败', true);
+  },
+  async launchCodexWin(extraArgs) {
+    return this.spawnCodexInDir(state.cwd, extraArgs, '已在终端启动 Codex');
+  },
   // 该会话前台是不是裸 shell？判断不了一律按「不是」处理——宁可新开标签，也不往运行中的程序里打字
   async isPlainShell(s) {
     try {
@@ -4195,7 +4223,7 @@ const term = {
       }
     } catch { /* 取不到就保持原标题 */ }
   },
-  async newTab(cwdOverride, shellOverride) {
+  async newTab(cwdOverride, shellOverride, spawnSpec) {
     const startDir = cwdOverride || state.cwd;
     const id = 't' + (++this.seq);
     const host = document.createElement('div');
@@ -4243,7 +4271,7 @@ const term = {
     this.sessions.push(sess);
     this.activate(id);
     updateWatches(); // 新终端的项目目录也纳入监听
-    const r = await window.fanboxPty.spawn({ id, cwd: startDir, cols: xterm.cols, rows: xterm.rows, theme: state.theme, shell: shellOverride || undefined });
+    const r = await window.fanboxPty.spawn({ id, cwd: startDir, cols: xterm.cols, rows: xterm.rows, theme: state.theme, shell: shellOverride || undefined, agent: isWindows() && spawnSpec && spawnSpec.agent || undefined, extraArgs: isWindows() && spawnSpec && spawnSpec.extraArgs || undefined });
     if (!r.ok) { sess.dead = true; xterm.write('\r\n  \x1b[31m终端启动失败：' + (r.error || '') + '\x1b[0m\r\n'); }
     else sess.cwd = r.cwd || startDir; // 末尾 renderTabs 统一带上 cwd 重画
     xterm.onData((d) => {
@@ -6455,10 +6483,11 @@ window.fbWebgl = (on) => { term.setWebgl(!!on); console.log('[fanbox] WebGL ' + 
 
 // Agent 控制接口（/api/agent/*）的渲染侧配合：应 main 之邀开新终端 tab + 给被控 tab 闪 ⚡
 if (window.fanboxAgentCtl) {
-  window.fanboxAgentCtl.onCreate(async ({ reqId, cwd, shell }) => {
+  window.fanboxAgentCtl.onCreate(async ({ reqId, cwd, shell, agent, extraArgs }) => {
     try {
       if ($('#terminal-panel').classList.contains('hidden')) term.open();
-      const sess = await term.newTab(cwd || undefined, shell || undefined);
+      const spec = agent ? { agent, extraArgs: extraArgs || [] } : undefined;
+      const sess = await term.newTab(cwd || undefined, shell || undefined, spec);
       window.fanboxAgentCtl.created({ reqId, ok: !!(sess && sess.id), id: sess && sess.id });
     } catch (e) { window.fanboxAgentCtl.created({ reqId, ok: false, error: String(e && e.message || e) }); }
   });

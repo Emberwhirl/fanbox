@@ -687,6 +687,21 @@ ${history || '（还没有历史记录）'}
   const cmd = engine === 'codex'
     ? `codex${await codexOrganizeFlags(bin)}${codexHooksFlag()} "${kickoff}"`
     : `claude --dangerously-skip-permissions${claudeHooksFlag()} "${kickoff}"`;
+  // Windows Codex: renderer argv-spawns the PTY (prompt is one extraArgs slot, not in a shell string)
+  if (PLATFORM === 'win32' && engine === 'codex') {
+    const extra = [];
+    const help = await new Promise((resolve) => {
+      execFile(bin, ['--help'], { timeout: 8000 }, (err, stdout) => resolve(err ? '' : String(stdout)));
+    });
+    if (help.includes('--full-auto')) extra.push('--full-auto');
+    else {
+      if (help.includes('--sandbox')) extra.push('--sandbox', 'workspace-write');
+      if (help.includes('--ask-for-approval')) extra.push('-a', 'on-request');
+      if (help.includes('--add-dir')) extra.push('--add-dir', CONFIG_DIR);
+    }
+    extra.push(kickoff);
+    return { ok: true, engine, cmd, agent: 'codex', extraArgs: extra };
+  }
   return { ok: true, engine, cmd };
 }
 
@@ -698,8 +713,9 @@ function claudeHooksFlag() {
   return fs.existsSync(f) ? winPortHelpers.claudeSettingsFlag(f) : '';
 }
 function codexHooksFlag() {
-  // D3(b): no Codex notify on Windows this release — the argument is not byte-exact through
-  // PowerShell 5.1 (inner quotes stripped) and cmd/PowerShell need different forms; bare launch
+  // Windows: do not type `-c notify=[…]` into a shell (PowerShell 5.1 strips inner quotes).
+  // FanBox-launched Codex on win32 is pty.spawn'd with a real argv (see cronFire / organizeLaunch
+  // agentArgs + electron/main.js buildCodexSpawnSpec). POSIX keeps the shell flag.
   if (PLATFORM === 'win32') return '';
   const f = path.join(HOOKS_DIR, 'codex-notify.sh');
   return fs.existsSync(f) ? ` -c 'notify=["${f}"]'` : '';
@@ -3046,9 +3062,15 @@ async function cronFire(t, manual) {
   if (!A) { rec.ok = false; rec.error = '需要桌面版（浏览器版没有内嵌终端）'; }
   else {
     // D4: agent-type cron tabs always PowerShell on Windows (shell tasks exempt)
-    const createOpts = { cwd: t.cwd || HOME, autorun: cronCommand(t) };
-    // 绝对路径：便携版常常从 ~\Downloads 跑起来，裸名会先命中那里的同名 exe
-    if (PLATFORM === 'win32' && t.agent !== 'shell') createOpts.shell = WIN_PS;
+    // Windows Codex: argv-spawn the PTY (prompt is extraArgs, never cronShq'd into PowerShell)
+    const createOpts = { cwd: t.cwd || HOME };
+    if (PLATFORM === 'win32' && t.agent === 'codex') {
+      createOpts.agent = 'codex';
+      createOpts.extraArgs = t.full ? ['--full-auto', t.prompt || ''] : [t.prompt || ''];
+    } else {
+      createOpts.autorun = cronCommand(t);
+      if (PLATFORM === 'win32' && t.agent !== 'shell') createOpts.shell = WIN_PS;
+    }
     const r = await A.create(createOpts).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
     rec.ok = !!(r && r.ok); if (r && r.error) rec.error = r.error; if (r && r.id) rec.term = r.id;
   }

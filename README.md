@@ -54,7 +54,7 @@ npm run dist:win     # NSIS installer + portable exe → dist/
 | Feature | Behavior on Windows |
 |---|---|
 | Embedded terminal | node-pty with ConPTY; PowerShell by default; registry PATH merged at startup |
-| Agent hooks | One-click Claude Code uses `--settings` with a quoted absolute HTTP hook file (only when the file exists); Codex launches without a notify hook this release (the `-c notify=[…]` argument is not byte-exact through PowerShell 5.1) and keeps the child-process busy heuristic |
+| Agent hooks | One-click Claude Code uses `--settings` with a quoted absolute HTTP hook file (only when the file exists); FanBox-launched Codex is `pty.spawn`'d with a real argv (`-c notify=["node","script"]` as one slot) so PowerShell never sees the JSON; typed `codex` stays un-hooked |
 | Agent cross-control | Hooked tabs use official events; un-hooked busy/idle via child-process probe; default `wait` idleMs is 3500 ms; `terminals` reports last-known directory (spawn/locate), not live cwd |
 | Updates | Exact pair `FanBox-<ver>-win-x64.exe` + `-portable.exe` required; capsule is 下载更新; electron-updater probe returns false before any network |
 | Screenshot express | Watches `Pictures\Screenshots` and the Desktop |

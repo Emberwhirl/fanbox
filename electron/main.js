@@ -29,6 +29,7 @@ catch (e) { console.error('[fanbox] node-pty 未就绪（跑 npm run rebuild）�
 
 const terminals = new Map();
 const termTails = new Map(); // id -> 最近输出尾巴（去 ANSI），给微信 agent 感知别的终端在跑啥/卡哪
+const termAgentKind = new Map(); // id -> 'codex' when the PTY program itself is the agent (win32 argv spawn)
 let win = null;
 
 // ---------- Agent 控制接口状态（/api/agent/*，见 docs/12）----------
@@ -56,10 +57,10 @@ function writeHookFiles() {
     fs.mkdirSync(dir, { recursive: true });
     if (IS_WIN) {
       // D2: HTTP hook — no shell, token only via env/header interpolation.
-      // D3(b): no Codex notify file this release — the `-c notify=[…]` argument cannot be made
-      // byte-exact through PowerShell 5.1 without `--%` (see notes v2.16.1 Deviations); Codex
-      // launches bare and keeps the child-process busy heuristic.
+      // D3 argv: write codex-notify.js; FanBox-launched Codex is pty.spawn'd with a real
+      // argv (buildCodexSpawnSpec) so PowerShell never sees `-c notify=[…]`.
       fs.writeFileSync(path.join(dir, 'claude-settings.json'), JSON.stringify(winHelpers.claudeHttpHookSettings(PORT), null, 2) + '\n');
+      fs.writeFileSync(path.join(dir, 'codex-notify.js'), winHelpers.buildCodexNotifyJs());
       return;
     }
     // async：hook 在后台跑、不等返回，绝不拖慢 agent；timeout 5s 兜底
@@ -683,6 +684,12 @@ function activeAgentTerms() {
       if (f.state === 'working' || f.state === 'needs_permission') out.push({ id, label: f.agent || proc || id });
       continue;
     }
+    // Windows argv-spawned Codex: the PTY program *is* the agent (no child to probe). Until
+    // notify events arrive, treat the tab as active so quit/stay-awake don't barge in.
+    if (IS_WIN && termAgentKind.get(id)) {
+      out.push({ id, label: termAgentKind.get(id) || proc || id });
+      continue;
+    }
     // Windows: p.process is static (always the shell), so ask the cached child-process probe
     // (winProbeKids). A shell known to have no children is a bare prompt and not active; a shell
     // with children, or an unknown/stale probe, counts as active so quit/sleep never barge into
@@ -1110,7 +1117,7 @@ function resolveShell() {
   return process.env.SHELL || '/bin/zsh';
 }
 
-ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme, shell }) => {
+ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme, shell, agent, extraArgs }) => {
   if (!pty) return { ok: false, error: 'node-pty 未编译，跑：npm run rebuild' };
   // D4: optional shell override (agent cron forces PowerShell on Windows)
   let shellPath = resolveShell();
@@ -1125,6 +1132,26 @@ ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme, shell }) => {
   let shellArgs = [];
   if (!IS_WIN) shellArgs = ['-l'];
   else if (/powershell|pwsh/i.test(shellPath)) shellArgs = ['-NoLogo'];
+  let spawnFile = shellPath;
+  let spawnArgs = shellArgs;
+  let spawnExtraEnv = {};
+  let agentKind = '';
+  // Windows Codex: the PTY *is* Codex, spawned with a real argv so `-c notify=[…]`
+  // never goes through PowerShell/cmd. POSIX ignores `agent` (typed launch unchanged).
+  if (IS_WIN && agent === 'codex') {
+    const notifyScript = path.join(HOOKS_DIR(), 'codex-notify.js');
+    const spec = winHelpers.buildCodexSpawnSpec({
+      env: process.env,
+      execPath: process.execPath,
+      notifyScript,
+      extraArgs: Array.isArray(extraArgs) ? extraArgs : [],
+    });
+    if (!spec) return { ok: false, error: '找不到 Codex CLI（npm i -g @openai/codex）' };
+    spawnFile = spec.file;
+    spawnArgs = spec.args;
+    spawnExtraEnv = spec.extraEnv || {};
+    agentKind = 'codex';
+  }
   // GUI 启动的 app 不继承 shell 的 locale，zsh 会把中文路径按字节转义成 \M-^@ 乱码 → 兜底 UTF-8
   const env = {
     ...process.env, TERM: 'xterm-256color', FANBOX: '1',
@@ -1143,9 +1170,10 @@ ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme, shell }) => {
     delete env.NoDefaultCurrentDirectoryInExePath;
     Object.assign(env, winHelpers.appendNoProxy(env));
   }
+  if (spawnExtraEnv && Object.keys(spawnExtraEnv).length) Object.assign(env, spawnExtraEnv);
   let p;
   try {
-    p = pty.spawn(shellPath, shellArgs, {
+    p = pty.spawn(spawnFile, spawnArgs, {
       name: 'xterm-256color',
       cols: cols || 80,
       rows: rows || 24,
@@ -1155,6 +1183,8 @@ ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme, shell }) => {
     });
   } catch (err) { return { ok: false, error: err.message }; }
   terminals.set(id, p);
+  if (agentKind) termAgentKind.set(id, agentKind);
+  else termAgentKind.delete(id);
   termCwds.set(id, startCwd);
   refreshLidGuard(); // 开关开着时，第一个终端起来即生效
   recStart(id, { cols, rows, cwd: startCwd, theme });
@@ -1180,6 +1210,7 @@ ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme, shell }) => {
     termLastOut.delete(id);
     termFacts.delete(id);
     termCwds.delete(id);
+    termAgentKind.delete(id);
     refreshLidGuard(); // 最后一个终端退出即恢复休眠
     recStop(id);
     if (win && !win.isDestroyed()) win.webContents.send('pty:exit', { id, exitCode });
@@ -1353,7 +1384,7 @@ ipcMain.handle('drop:pick-images', async (e, { defaultPath } = {}) => {
 
 ipcMain.on('pty:input', (e, { id, data }) => { const p = terminals.get(id); if (p) { p.write(data); recEvent(id, 'i', data); } });
 ipcMain.on('pty:resize', (e, { id, cols, rows }) => { const p = terminals.get(id); if (p) { try { p.resize(cols, rows); } catch { /* */ } recEvent(id, 'r', `${cols}x${rows}`); } });
-ipcMain.on('pty:kill', (e, { id }) => { const p = terminals.get(id); if (p) { try { p.kill(); } catch { /* */ } terminals.delete(id); refreshLidGuard(); recStop(id); } });
+ipcMain.on('pty:kill', (e, { id }) => { const p = terminals.get(id); if (p) { try { p.kill(); } catch { /* */ } terminals.delete(id); termAgentKind.delete(id); refreshLidGuard(); recStop(id); } });
 
 // ---------- Agent 控制接口：把跨终端感知/控制能力开成本机 HTTP（server.js 的 /api/agent/* 调这里）----------
 // 让跑在翻箱终端里的 agent 指挥兄弟窗口：列表/读屏/输入/开窗/等待/关闭。安全模型与接口规范见 docs/12。
@@ -1376,6 +1407,7 @@ async function agentList() {
     const f = termFacts.get(id); // hooked 终端的忙闲/状态来自 agent 自己的事件，比看前台进程准
     let busy;
     if (f) busy = f.state === 'working';
+    else if (IS_WIN && termAgentKind.get(id)) busy = true;
     else if (IS_WIN) busy = (await winPtyBusy(p && p.pid)) !== false;
     else busy = !!proc && !BARE_SHELL_RE.test(proc);
     arr.push({
@@ -1458,11 +1490,19 @@ function agentCreate(opts = {}) {
     if (!win || win.isDestroyed()) return resolve({ ok: false, error: 'no window' });
     const reqId = 'ac' + (++agentReqSeq);
     agentCreateWaiters.set(reqId, resolve);
-    win.webContents.send('agent:term-create', { reqId, cwd: typeof opts.cwd === 'string' ? opts.cwd : '', shell: typeof opts.shell === 'string' ? opts.shell : '' });
+    win.webContents.send('agent:term-create', {
+      reqId,
+      cwd: typeof opts.cwd === 'string' ? opts.cwd : '',
+      shell: typeof opts.shell === 'string' ? opts.shell : '',
+      agent: typeof opts.agent === 'string' ? opts.agent : '',
+      extraArgs: Array.isArray(opts.extraArgs) ? opts.extraArgs : [],
+    });
     setTimeout(() => { if (agentCreateWaiters.delete(reqId)) resolve({ ok: false, error: 'renderer timeout' }); }, 10000);
   }).then(async (r) => {
     if (!r.ok) return r;
     agentTouch(r.id, 'create');
+    // argv-spawned agent PTY is already the program; do not type autorun into it
+    if (opts.agent) return r;
     if (!opts.autorun) return r;
     // 等 shell 就绪（有过输出且静默 ≥400ms）再敲命令，login shell 初始化慢也不怕
     const t0 = Date.now();
@@ -1513,6 +1553,13 @@ function agentWait(id, opts = {}) {
       if (Date.now() - (termLastOut.get(id) || started) < idleMs) return;
       if (quietMode) return finish({ ok: true, idle: true });
       if (IS_WIN) {
+        // argv-spawned Codex: the PTY is the agent. Without hook facts it is busy until exit.
+        // With facts, working/needs_permission stay busy; done/needs_input may idle after silence.
+        const kind = termAgentKind.get(id);
+        const f = termFacts.get(id);
+        if (kind && !f) return;
+        if (kind && f && (f.state === 'working' || f.state === 'needs_permission')) return;
+        if (kind) return finish({ ok: true, idle: true });
         // win32 的 p.process 是静态值，判不了「回到裸 shell」→ 子进程探测（缓存 2s，见 winPtyBusy）。
         // busy===false 才算闲；null（探测失败）按忙继续等，宁可 timeout 也不误报完成
         if (probing) return;
@@ -1807,6 +1854,7 @@ ipcMain.handle('pty:cwd', async (e, { id }) => {
 ipcMain.handle('pty:proc', async (e, { id }) => {
   const p = terminals.get(id);
   if (!p) return { ok: false };
+  if (IS_WIN && termAgentKind.get(id)) return { ok: true, proc: termAgentKind.get(id), busy: true };
   const busy = IS_WIN ? await winPtyBusy(p.pid) : null;
   return { ok: true, proc: p.process || '', busy };
 });
@@ -1835,6 +1883,7 @@ function ensureWechat() {
         const f = termFacts.get(id);
         let busy;
         if (f) busy = f.state === 'working';
+        else if (IS_WIN && termAgentKind.get(id)) busy = true;
         else if (IS_WIN) busy = (await winPtyBusy(p && p.pid)) !== false;
         else busy = !!proc && !BARE_SHELL_RE.test(proc); // 前台不是裸 shell = 正跑着东西
         arr.push({ id, cwd, name: cwd ? path.basename(cwd) : '', proc, busy, state: f ? f.state : null, hooked: !!f, tail: termTails.get(id) || '' });

@@ -4,6 +4,7 @@
  * Pure path/asset logic: no Electron, no listen, path.win32 so Linux tests match Windows.
  */
 const path = require('path');
+const fs = require('fs');
 const win32 = path.win32;
 
 function uniqueDest(dest, existsFn, pathMod) {
@@ -395,15 +396,114 @@ function claudeSettingsFlag(settingsPath) {
   return ' --settings "' + String(settingsPath) + '"';
 }
 
-// Reserved (not emitted in v2.16.1, plan D3 option b): the CRT-quoted form that reaches codex
-// byte-exact as notify=["node","script"] from cmd.exe, and from PowerShell only after a `--%`
-// stop-parsing token. PowerShell 5.1 strips the inner quotes of the single-quoted form
-// ('notify=["a","b"]' arrives as notify=[a,b]), which is why the flag stays off on Windows.
+// Shell-string form of the Codex notify override. Not used to launch Codex on Windows
+// (PowerShell 5.1 strips the inner quotes). Launch uses codexNotifyArgv() as a real
+// argv slot via pty.spawn — see buildCodexSpawnSpec. Kept so cmd.exe-typed experiments
+// and older tests still have the CRT-quoted building block.
 function codexNotifyFlag(nodeExe, scriptPath) {
-  if (!nodeExe || !scriptPath) return '';
+  const argv = codexNotifyArgv(nodeExe, scriptPath);
+  if (!argv.length) return '';
+  // argv is ['-c', 'notify=["n","s"]']; wrap the value for a cmd.exe command line
+  const v = argv[1].replace(/"/g, '\\"');
+  return ' -c "' + v + '"';
+}
+
+// One argv pair for Codex: ['-c', 'notify=["node","script"]']. Forward slashes so the
+// JSON string needs no backslash escapes; Windows paths cannot contain `"`.
+function codexNotifyArgv(nodeExe, scriptPath) {
+  if (!nodeExe || !scriptPath) return [];
   const n = String(nodeExe).replace(/\\/g, '/');
   const s = String(scriptPath).replace(/\\/g, '/');
-  return ' -c "notify=[\\"' + n + '\\",\\"' + s + '\\"]"';
+  return ['-c', 'notify=["' + n + '","' + s + '"]'];
+}
+
+// Pure-Node PATH walk (PATHEXT). Same rules as electron/wechat/driver.js winFindOnPath:
+// no where.exe / Get-Command (OEM codepage mangles CJK user names).
+function winFindOnPath(name, env) {
+  const e = env || process.env;
+  const dirs = String(e.Path || e.PATH || '').split(';').map((s) => {
+    let t = s.trim();
+    if (t.length >= 2 && ((t[0] === '"' && t[t.length - 1] === '"') || (t[0] === "'" && t[t.length - 1] === "'"))) {
+      t = t.slice(1, -1);
+    }
+    return t;
+  }).filter(Boolean);
+  const exts = String(e.PATHEXT || process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
+  const hasExt = /\.[^\\/.]+$/.test(name);
+  for (const d of dirs) {
+    if (hasExt) {
+      const f = path.join(d, name);
+      try { if (fs.existsSync(f)) return f; } catch { /* */ }
+      continue;
+    }
+    for (const ext of exts) {
+      const f = path.join(d, name + ext);
+      try { if (fs.existsSync(f)) return f; } catch { /* */ }
+    }
+  }
+  return null;
+}
+
+// Resolve claude/codex to a spawnable {file, preArgs, extraEnv?} without a shell.
+// Native .exe is used as-is; npm .cmd/.ps1 shims are rewritten to node.exe + the
+// node_modules JS entry (or Electron with ELECTRON_RUN_AS_NODE=1). Same rules as
+// electron/wechat/driver.js resolveWinCli — this copy is the one the desktop PTY
+// launch path calls, so contract tests can drive it without requiring electron/.
+function resolveWinCli(name, env, execPath) {
+  const hit = winFindOnPath(name, env);
+  if (!hit) return null;
+  const ext = path.extname(hit).toLowerCase();
+  if (ext === '.exe' || ext === '.com') return { file: hit, preArgs: [] };
+  const dir = path.dirname(hit);
+  let entry = null;
+  const texts = [hit, hit.replace(/\.(cmd|ps1)$/i, ''), hit.replace(/\.(cmd|ps1)$/i, '') + '.ps1'];
+  for (const f of texts) {
+    let txt; try { txt = fs.readFileSync(f, 'utf8'); } catch { continue; }
+    const m = txt.match(/node_modules[\\/][^"'\r\n]+?\.[cm]?js/i);
+    if (m) {
+      const cand = path.resolve(dir, m[0].replace(/\//g, path.sep));
+      if (fs.existsSync(cand)) { entry = cand; break; }
+    }
+  }
+  if (!entry) {
+    const guess = { claude: '@anthropic-ai/claude-code/cli.js', codex: '@openai/codex/bin/codex.js' }[name];
+    if (guess) {
+      const cand = path.join(dir, 'node_modules', ...guess.split('/'));
+      if (fs.existsSync(cand)) entry = cand;
+    }
+  }
+  if (!entry) return null;
+  const node = winFindOnPath('node', env);
+  if (node) return { file: node, preArgs: [entry] };
+  return { file: execPath || process.execPath, preArgs: [entry], extraEnv: { ELECTRON_RUN_AS_NODE: '1' } };
+}
+
+// Windows Codex PTY launch spec: real argv, never a PowerShell/cmd string.
+// extraArgs stay separate slots (cron/整理 prompts with &, quotes, spaces are not joined).
+// notify is omitted when neither node.exe nor execPath can run the script.
+function buildCodexSpawnSpec(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const execPath = o.execPath || process.execPath;
+  const extraArgs = Array.isArray(o.extraArgs) ? o.extraArgs.map((x) => String(x)).filter((s) => s.length > 0) : [];
+  const cli = resolveWinCli('codex', env, execPath);
+  if (!cli) return null;
+  let notifyArgv = [];
+  const script = o.notifyScript && fs.existsSync(o.notifyScript) ? o.notifyScript : '';
+  if (script) {
+    const nodeExe = winFindOnPath('node', env);
+    const notifyProg = nodeExe || execPath;
+    if (notifyProg) notifyArgv = codexNotifyArgv(notifyProg, script);
+  }
+  const extraEnv = Object.assign({}, cli.extraEnv || {});
+  if (notifyArgv.length && !winFindOnPath('node', env) && execPath) {
+    extraEnv.ELECTRON_RUN_AS_NODE = '1';
+  }
+  return {
+    file: cli.file,
+    args: cli.preArgs.concat(notifyArgv, extraArgs),
+    extraEnv: Object.keys(extraEnv).length ? extraEnv : undefined,
+  };
 }
 
 function shouldSkipAutoUpdateProbe(platform) {
@@ -514,6 +614,10 @@ module.exports = {
   claudeHttpHookSettings,
   claudeSettingsFlag,
   codexNotifyFlag,
+  codexNotifyArgv,
+  winFindOnPath,
+  resolveWinCli,
+  buildCodexSpawnSpec,
   shouldSkipAutoUpdateProbe,
   appendNoProxy,
   buildCodexNotifyJs,
