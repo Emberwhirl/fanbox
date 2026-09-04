@@ -445,7 +445,7 @@ function renderBreadcrumb() {
   if (typeof term !== 'undefined' && term.sessions.length) {
     const ts = term.sessions
       // 排掉 / 和家目录这类浅根：它们 startsWith 任何路径都成立，色点会常亮、配对语义失效
-      .filter((s) => s.cwd && s.cwd !== '/' && s.cwd !== state.home && (state.cwd === s.cwd || (state.cwd || '').startsWith(s.cwd.replace(/\/$/, '') + '/')))
+      .filter((s) => s.cwd && s.cwd !== '/' && s.cwd !== state.home && pathInDir(state.cwd || '', s.cwd))
       .sort((a, b) => b.cwd.length - a.cwd.length)[0];
     if (ts) {
       const d = document.createElement('span');
@@ -885,7 +885,7 @@ function fixLocalImages(root, srcPath, dispW) {
         ? window.fanboxWinPath.localImageAbs(rel, base)
         : rel;
     } else {
-      abs = rel.startsWith('/') ? rel : normPath(base + '/' + rel);
+      abs = rel.startsWith('/') ? rel : normPath(joinPath(base, rel));
     }
     im.setAttribute('src', dispW && canThumb(abs) ? thumbUrl(abs, dispW) : '/api/raw?path=' + encodeURIComponent(abs));
   });
@@ -1954,7 +1954,7 @@ async function mdEditor(e, data, mode = 'rich') {
                 const r2 = await window.fanboxDrop.containImage(p, imgDir);
                 if (!r2 || !r2.ok) { toast('图片复制失败：' + ((r2 && r2.error) || ''), true); continue; }
                 src = r2.path;
-              } else if (p !== imgDir && !p.startsWith(imgDir + '/')) {
+              } else if (!pathInDir(p, imgDir)) {
                 const r2 = await window.fanboxDrop.copyInto(p, imgDir);
                 if (!r2 || !r2.ok) { toast('图片复制失败：' + ((r2 && r2.error) || ''), true); continue; }
                 src = r2.path;
@@ -2158,7 +2158,7 @@ async function memoryPanel(dirPath) {
         <button class="ghost-btn mem-resume" data-i="${i}" title="在内嵌终端里接上这段会话的上下文继续">▶ 续上</button>
       </div>
       <div class="mem-meta">${fmtTime(s.lastT)}${s.userMsgs != null ? ` · ${s.userMsgs} 条消息` : ''}${s.files.length ? ` · 改了 ${s.files.length} 个文件` : ''}${s.skills.length ? ' · ' + s.skills.map((k) => `<i class="mem-skill">${escapeHtml(k)}</i>`).join(' ') : ''}</div>
-      ${s.files.length ? `<div class="mem-files hidden">${s.files.map((f) => `<div class="mem-file" data-p="${escapeHtml(f)}" title="${escapeHtml(f)}">${escapeHtml(f.startsWith(dirPath + '/') ? f.slice(dirPath.length + 1) : f.replace(state.home, '~'))}</div>`).join('')}</div>` : ''}
+      ${s.files.length ? `<div class="mem-files hidden">${s.files.map((f) => `<div class="mem-file" data-p="${escapeHtml(f)}" title="${escapeHtml(f)}">${escapeHtml(pathInDir(f, dirPath) ? splitRel(f, dirPath) : f.replace(state.home, '~'))}</div>`).join('')}</div>` : ''}
     </div>`).join('');
   body.querySelectorAll('.mem-head').forEach((h) => {
     h.onclick = (ev) => {
@@ -2209,14 +2209,7 @@ async function snapshotPanel(dirPath) {
   const body = ov.querySelector('.snap-body');
   const projName = d.project ? baseOf(d.project) : '';
   // agent 正在这个项目里干活时不给回滚/清理：一边写一边动它的仓库只会两败俱伤
-  const busyHere = () => {
-    let busy = false;
-    term.sessions.forEach((t) => {
-      const c = t.cwd || t.startDir || '';
-      if (!t.dead && t.status === 'busy' && (c === d.project || c.startsWith(d.project + '/') || d.project.startsWith(c + '/'))) busy = true;
-    });
-    return busy;
-  };
+  const busyHere = () => !!(d.project && agentBusyIn(d.project));
   // 占用一栏：影子仓库堆在 ~/.fanbox 里从前界面上完全看不见（实测 22GB），这里给个数字和两个清理口
   const mine = u && u.ok && d.project ? u.repos.find((r) => r.project === d.project) : null;
   const usageHtml = !u || !u.ok ? '' : `<div class="snap-usage"><span>存档共占用 ${fmtSize(u.total) || '0 B'}${d.project ? ` · 此项目 ${fmtSize(mine ? mine.bytes : 0) || '0 B'}` : ''}</span>` +
@@ -4124,9 +4117,7 @@ const term = {
       : !p.startsWith('/') && !p.startsWith('~');
     if (isRel) {
       try { const r = await window.fanboxPty.cwd(id); if (r && r.ok && r.cwd) cwd = r.cwd; } catch { /* */ }
-      candidate = isWindows()
-        ? (cwd || '').replace(/[\\/]+$/, '') + '/' + p.replace(/^\.[\\/]/, '')
-        : (cwd || '').replace(/\/$/, '') + '/' + p.replace(/^\.\//, '');
+      candidate = joinPath(cwd || '', isWindows() ? p.replace(/^\.[\\/]/, '') : p.replace(/^\.\//, ''));
     }
     // 去掉目录结尾分隔符再取 basename，否则名为空 basename 搜索失效（win 两种斜杠都算）
     const name = isWindows() ? p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() : p.replace(/\/+$/, '').split('/').pop();
@@ -5602,13 +5593,15 @@ function followScopeRoot() {
   if (!follow.sid || typeof term === 'undefined') return null;
   const s = term.sessions.find((x) => x.id === follow.sid);
   if (!s) return null;
-  return (s.cwd || s.startDir || '').replace(/\/$/, '') || null;
+  const raw = s.cwd || s.startDir || '';
+  if (!raw) return null;
+  return state.sep === '\\' ? raw.replace(/[\\/]+$/, '') : raw.replace(/\/$/, '');
 }
 function inFollowScope(full) {
   if (!follow.sid) return typeof term === 'undefined' || !term.available(); // 只有无终端(浏览器)才全跟；桌面没绑=不跟
   const root = followScopeRoot();
   if (!root) return false;
-  return full === root || full.startsWith(root + '/');
+  return pathInDir(full, root);
 }
 // 归属硬化：文件事件本身不带「谁写的」，靠「绑定 tab 此刻在不在干活」消歧。
 // 别的 tab 在重叠目录里写东西时，绑定 tab 多半是空闲的，于是这笔不会被误当成它的产出。
@@ -5628,7 +5621,7 @@ function followChange(dir, sub) {
     setFileFollow(false, '绑定的终端已关闭，文件跟随已停');
     return;
   }
-  const full = dir.replace(/\/$/, '') + '/' + sub;
+  const full = joinPath(dir, sub);
   if (!inFollowScope(full)) return; // 别的项目/别的 App 写的文件，不归这次跟随管
   if (!boundAgentActive()) return;  // 绑定的 agent 此刻没在干活——这笔多半是别的 tab 写的，不抢屏
   if (full === follow.path) { scheduleFollowRender(); return; }

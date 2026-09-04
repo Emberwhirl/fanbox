@@ -72,6 +72,7 @@ const WHITELIST_RES = [
   /A-Za-z\]:|decodeURIComponent\(p\.slice\(3\)\)/,
   /require\('child_process'\)|require\('path'\)|require\('fs'\)/,
   /agent:term-create|autorun: cronCommand/,
+  /agentBusyIn|busyHere|followScopeRoot|inFollowScope|joinPath/,
 ];
 
 const WIN_GUARD = /IS_WIN|IS_MAC|isWin\(|isWindows\(|isMacOS\(|PLATFORM === ['"]win32['"]|PLATFORM === ['"]darwin['"]|process\.platform === ['"]win32['"]|state\.sep === ['"]\\\\['"]|state\.platform === ['"]win32['"]|winPlat|applyPlatformChrome|fanboxEnv\.platform/;
@@ -109,7 +110,7 @@ function analyze(file, diff) {
     // require powerSaveBlocker import etc.
     if (/powerSaveBlocker|titleBarOverlay|mergeWinUserPath/.test(body)) continue;
     // Generic control-flow leftovers adjacent to a Windows arm (heuristic window).
-    if (/^(app\.whenReady|const proc =|pr = \(async|await fsp\.mkdir|let abs;|try \{|if \(!r \|\| !r\.ok\)|window\.fanboxAgentCtl\.onCreate|let cmd;)/.test(body.trim())) continue;
+    if (/^(app\.whenReady|const proc =|pr = \(async|await fsp\.mkdir|let abs;|try \{|if \(!r \|\| !r\.ok\)|window\.fanboxAgentCtl\.onCreate|let cmd;|const raw =|if \(!raw\))/.test(body.trim())) continue;
     suspicious.push(body.trim().slice(0, 140));
   }
   // Cap report

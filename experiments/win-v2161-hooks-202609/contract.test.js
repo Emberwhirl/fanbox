@@ -6,6 +6,7 @@
  */
 const path = require('path');
 const fs = require('fs');
+const vm = require('vm');
 const assert = require('assert');
 
 const ROOT = path.resolve(__dirname, '../..');
@@ -62,6 +63,79 @@ console.log('# 本回合 path join/split on sep');
   check(H.joinPath('/home/p', 'a.ts', '/') === '/home/p/a.ts', 'posix join matches master expression');
   check(H.splitRel('/home/p/a.ts', '/home/p', '/') === 'a.ts', 'posix splitRel');
   check(H.pathInDir('/home/p/a.ts', '/home/p', '/') === true, 'posix pathInDir');
+}
+
+console.log('# shipped app.js joinPath / pathInDir / agentBusyIn');
+{
+  const app = fs.readFileSync(path.join(ROOT, 'public/app.js'), 'utf8');
+  function sliceFn(src, startNeedle, endNeedle) {
+    const a = src.indexOf(startNeedle);
+    const b = src.indexOf(endNeedle, a + startNeedle.length);
+    return (a >= 0 && b > a) ? src.slice(a, b) : '';
+  }
+  const helpersSrc = sliceFn(app, 'function joinPath(dir, filename)', 'function applyPlatformChrome');
+  const busySrc = sliceFn(app, 'function agentBusyIn(project)', 'async function openRoundPanel');
+  check(helpersSrc.indexOf('function pathInDir') >= 0 && busySrc.indexOf('pathInDir') >= 0,
+    'extracted shipped joinPath/pathInDir/agentBusyIn from app.js');
+
+  function loadSep(sep, cwdBusy) {
+    const box = {
+      state: { sep: sep },
+      term: { sessions: [
+        { dead: false, status: 'busy', cwd: cwdBusy, startDir: '' },
+        { dead: false, status: 'idle', cwd: cwdBusy, startDir: '' },
+      ] },
+    };
+    vm.runInNewContext(
+      helpersSrc + '\n' + busySrc
+      + '\nthis.joinPath=joinPath; this.splitRel=splitRel; this.pathInDir=pathInDir; this.agentBusyIn=agentBusyIn;',
+      box,
+    );
+    return box;
+  }
+  const win = loadSep('\\', 'C:\\proj\\src');
+  check(win.joinPath('C:\\proj', 'sub\\a.ts') === 'C:\\proj\\sub\\a.ts', 'app.js joinPath win nested');
+  check(win.joinPath('C:\\proj\\', 'a.ts') === 'C:\\proj\\a.ts', 'app.js joinPath win trailing sep');
+  check(win.splitRel('C:\\proj\\sub\\a.ts', 'C:\\proj') === 'sub\\a.ts', 'app.js splitRel win');
+  check(win.pathInDir('C:\\proj\\src\\a.ts', 'C:\\proj') === true, 'app.js pathInDir win descendant');
+  check(win.pathInDir('C:\\proj-extra\\a.ts', 'C:\\proj') === false, 'app.js pathInDir win sibling-prefix');
+  check(win.agentBusyIn('C:\\proj') === true,
+    'app.js agentBusyIn: busy cwd C:\\proj\\src counts as in project C:\\proj');
+  check(win.agentBusyIn('C:\\other') === false, 'app.js agentBusyIn: other project not busy');
+
+  const posix = loadSep('/', '/home/p/src');
+  check(posix.joinPath('/home/p', 'a.ts') === '/home/p/a.ts', 'app.js joinPath posix');
+  check(posix.pathInDir('/home/p/src/a.ts', '/home/p') === true, 'app.js pathInDir posix');
+  check(posix.agentBusyIn('/home/p') === true, 'app.js agentBusyIn posix descendant cwd');
+
+  const fcStart = app.indexOf('function followChange(dir, sub)');
+  const fcEnd = app.indexOf('\nfunction ', fcStart + 10);
+  const fc = fcStart >= 0 ? app.slice(fcStart, fcEnd > fcStart ? fcEnd : fcStart + 800) : '';
+  check(/joinPath\(dir,\s*sub\)/.test(fc), 'followChange joins with joinPath', fc.slice(0, 200));
+  const ifs = sliceFn(app, 'function inFollowScope(full)', 'function boundAgentActive');
+  check(/pathInDir\(full,\s*root\)/.test(ifs), 'inFollowScope uses pathInDir', ifs.slice(0, 250));
+  const spStart = app.indexOf('async function snapshotPanel');
+  const spEnd = app.indexOf('\nasync function ', spStart + 10);
+  const snap = spStart >= 0 ? app.slice(spStart, spEnd > spStart ? spEnd : spStart + 4000) : '';
+  check(/agentBusyIn\(d\.project\)/.test(snap), 'snapshotPanel.busyHere delegates to agentBusyIn',
+    snap.indexOf('busyHere') >= 0 ? snap.slice(snap.indexOf('busyHere'), snap.indexOf('busyHere') + 80) : 'no busyHere');
+  check(!/d\.project\s*\+\s*'\/'/.test(snap) && !/startsWith\(d\.project/.test(snap),
+    'snapshotPanel has no startsWith(d.project + "/")');
+
+  const jpStart = app.indexOf('function joinPath(dir, filename)');
+  const jpEnd = app.indexOf('function applyPlatformChrome');
+  const rest = app.slice(0, jpStart) + app.slice(jpEnd);
+  const leftover = [];
+  const reStarts = /\.startsWith\([^;]*\+\s*'\/'\s*\)/g;
+  const reJoin = /\+\s*'\/'\s*\+/g;
+  const reTrail = /replace\(\/\\\/\$\/,\s*''\)\s*\+\s*'\/'/g;
+  let m;
+  while ((m = reStarts.exec(rest))) leftover.push(m[0]);
+  while ((m = reJoin.exec(rest))) leftover.push(m[0]);
+  while ((m = reTrail.exec(rest))) leftover.push(m[0]);
+  check(leftover.length === 0,
+    'app.js has no unguarded startsWith(x + "/") or dir + "/" + filename outside joinPath/pathInDir',
+    leftover.join(' | '));
 }
 
 console.log('# snap-clean trailing-sep normalize');
