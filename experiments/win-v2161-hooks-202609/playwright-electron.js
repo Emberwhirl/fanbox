@@ -155,7 +155,7 @@ async function waitFor(fn, ms, step = 250) { const t0 = Date.now(); while (Date.
   check(hasSpawn, 'C9: renderer spawnCodexInDir is the Windows Codex launch path');
   const cPrompt = "backup logs & prune 'old'";
   try { fs.unlinkSync(DUMP_CODEX); } catch { /* */ }
-  await win.evaluate(async (p, extra) => { await term.spawnCodexInDir(p, extra, 't'); }, PROJ, [cPrompt]);
+  await win.evaluate(async (a) => { await term.spawnCodexInDir(a.p, a.extra, 't'); }, { p: PROJ, extra: [cPrompt] });
   const dumpC = await waitFor(() => { try { return JSON.parse(fs.readFileSync(DUMP_CODEX, 'utf8')); } catch { return null; } }, 15000);
   check(Array.isArray(dumpC) && dumpC.indexOf('-c') >= 0, 'C9: argv-spawned fake Codex received -c', dumpC ? JSON.stringify(dumpC) : 'no dump');
   const cAt = dumpC && dumpC.indexOf('-c');
