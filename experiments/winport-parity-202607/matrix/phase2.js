@@ -1,5 +1,5 @@
 // Phase 2 — app-launch fundamentals: ConPTY round-trip, busy tri-state, LANG, shell order.
-const { launch, check, done, BUF_FN } = require('./launch');
+const { launch, check, done, BUF_FN, FAKE_HOME } = require('./launch');
 
 setTimeout(() => { console.error('FAIL: watchdog timeout'); process.exit(2); }, 300000);
 
@@ -14,7 +14,7 @@ setTimeout(() => { console.error('FAIL: watchdog timeout'); process.exit(2); }, 
   }));
   check(boot.sep === '\\', 'state.sep is backslash', JSON.stringify(boot));
   check(boot.tabs >= 1 && boot.dead.every((d) => !d), 'terminal tab spawned alive (ConPTY)', JSON.stringify(boot));
-  check(/fb-matrix-home/i.test(boot.home), 'sandboxed home in effect', boot.home);
+  check(String(boot.home).toLowerCase() === FAKE_HOME.toLowerCase(), 'sandboxed home in effect', boot.home);
 
   // ConPTY round-trip: type a command, expect its output in the buffer
   await win.waitForTimeout(2500);
@@ -33,7 +33,7 @@ setTimeout(() => { console.error('FAIL: watchdog timeout'); process.exit(2); }, 
 
   // git speaks OS language (English), not forced Chinese
   await win.evaluate(() => term.input(term.active, 'git -C D:\\fanbox status | Select-Object -First 2\r'));
-  await win.waitForTimeout(3500);
+  await win.waitForTimeout(9000); // cold git status on a large tree can take several seconds
   buf = await win.evaluate(`(${BUF_FN})(null)`);
   check(/On branch dev/.test(buf), 'git output follows OS language (English)', (buf.match(/On branch.*|位于分支.*/) || ['no match'])[0]);
 

@@ -46,8 +46,8 @@ console.log('# launch-flag builders (D2/D3)');
   check(H.codexNotifyFlag(null, 'C:\\x\\codex-notify.js') === '', 'Codex flag omitted when node is null');
   check(H.codexNotifyFlag('C:\\nodejs\\node.exe', '') === '', 'Codex flag omitted without script');
   const nf = H.codexNotifyFlag('C:\\nodejs\\node.exe', 'C:\\Users\\a\\.fanbox\\hooks\\codex-notify.js');
-  check(nf === ' -c \'notify=["C:/nodejs/node.exe","C:/Users/a/.fanbox/hooks/codex-notify.js"]\'',
-    'Codex notify argv uses forward slashes', JSON.stringify(nf));
+  check(nf === ' -c "notify=[\\"C:/nodejs/node.exe\\",\\"C:/Users/a/.fanbox/hooks/codex-notify.js\\"]"',
+    'reserved Codex notify argv is the CRT-quoted form with forward slashes', JSON.stringify(nf));
   const js = H.buildCodexNotifyJs();
   check(js.indexOf('http.request') >= 0 && js.indexOf('x-fanbox-token') >= 0, 'generated notify script POSTs with headers');
   check(!/"[0-9a-f]{24}"/.test(js), 'notify script contains no token literal');
@@ -209,6 +209,24 @@ console.log('# shipped source assertions');
   check(/autoUpdater\.on\('error'/.test(main), 'autoUpdater error listener registered');
   check(/claudeHttpHookSettings\(PORT\)/.test(main), 'Windows writeHookFiles uses HTTP settings');
   check(/appendNoProxy/.test(main), 'PTY env appends NO_PROXY');
+
+  // D3(b): Codex notify stays off on Windows this release (argument not byte-exact through PowerShell 5.1)
+  check(/function codexHooksFlag\(\) \{[^]*?if \(PLATFORM === 'win32'\) return '';/.test(server), 'server codexHooksFlag returns empty on win32');
+  check(/function winCodexHooksFlag\(\) \{\s*return '';\s*\}/.test(app), 'renderer winCodexHooksFlag returns empty');
+  check(!/codex-notify\.js/.test(main.slice(main.indexOf('function writeHookFiles'), main.indexOf('function codexUserNotify'))), 'Windows writeHookFiles no longer writes codex-notify.js');
+  // hooks flag only when the file exists (claude exits on a missing --settings)
+  const preload = fs.readFileSync(path.join(ROOT, 'electron/preload.js'), 'utf8');
+  check(/hooksReady: process\.platform === 'win32' \? !!ipcRenderer\.sendSync\('env:hooksReady'\)/.test(preload), 'preload exposes fanboxEnv.hooksReady');
+  check(!/nodeExe/.test(preload) && !/env:nodeExe/.test(main), 'node.exe lookup removed with the Codex flag');
+  check(/ipcMain\.on\('env:hooksReady'/.test(main) && /claude-settings\.json/.test(main.slice(main.indexOf("ipcMain.on('env:hooksReady'"), main.indexOf("ipcMain.on('env:hooksReady'") + 400)), 'main answers env:hooksReady from the hooks dir');
+  check(/function winClaudeHooksFlag\(\) \{\s*if \(!\(window\.fanboxEnv && window\.fanboxEnv\.hooksReady\)\) return '';/.test(app), 'renderer gates --settings on hooksReady');
+  // Windows quit/sleep: idle shells are not active agents; unknown probe still counts as busy
+  const aat = main.slice(main.indexOf('function activeAgentTerms'), main.indexOf('function termBusyAny'));
+  check(/winProbeKids\(p && p\.pid\)/.test(aat) && /kids\.length === 0\) continue;/.test(aat), 'activeAgentTerms consults the cached child-process probe on win32');
+  check(/function winProbeKids\(pid\) \{\s*if \(winProbeStale\(\)\) \{ winPtyChildMap\(\)/.test(main), 'stale probe returns unknown and refreshes');
+  const bq = main.slice(main.indexOf("app.on('before-quit'"), main.indexOf("app.on('window-all-closed'"));
+  check(/IS_WIN && !quitConfirmed && terminals\.size && winProbeStale\(\)/.test(bq) && /winPtyChildMap\(\)\.catch\(\(\) => null\)\.then\(\(\) => app\.quit\(\)\)/.test(bq), 'before-quit refreshes a stale probe before deciding on win32');
+  check(/IS_WIN && !isQuitting && !quitConfirmed && terminals\.size\) \{ e\.preventDefault\(\); app\.quit\(\); \}/.test(main), 'window close on win32 routes through before-quit');
 
   const filesOcc = (pkgRaw.match(/"files"\s*:/g) || []).length;
   check(filesOcc === 1, 'package.json has a single files key', 'count=' + filesOcc);

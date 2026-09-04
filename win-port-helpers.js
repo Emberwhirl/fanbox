@@ -395,11 +395,15 @@ function claudeSettingsFlag(settingsPath) {
   return ' --settings "' + String(settingsPath) + '"';
 }
 
+// Reserved (not emitted in v2.16.1, plan D3 option b): the CRT-quoted form that reaches codex
+// byte-exact as notify=["node","script"] from cmd.exe, and from PowerShell only after a `--%`
+// stop-parsing token. PowerShell 5.1 strips the inner quotes of the single-quoted form
+// ('notify=["a","b"]' arrives as notify=[a,b]), which is why the flag stays off on Windows.
 function codexNotifyFlag(nodeExe, scriptPath) {
   if (!nodeExe || !scriptPath) return '';
   const n = String(nodeExe).replace(/\\/g, '/');
   const s = String(scriptPath).replace(/\\/g, '/');
-  return ' -c \'notify=["' + n + '","' + s + '"]\'';
+  return ' -c "notify=[\\"' + n + '\\",\\"' + s + '\\"]"';
 }
 
 function shouldSkipAutoUpdateProbe(platform) {

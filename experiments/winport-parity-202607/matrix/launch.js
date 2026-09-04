@@ -3,9 +3,11 @@
 const { _electron } = require('playwright-core');
 const path = require('path');
 
-const ROOT = 'D:\\fanbox';
-const FAKE_HOME = 'C:\\Users\\bbbb\\fb-matrix-home';
-const TOOLS_PATH = 'C:\\Users\\bbbb\\tools\\imagemagick;D:\\ffmpeg-master-latest-win64-gpl-shared\\bin;';
+// Machine-specific defaults (the 2026-07 box); override per machine with env, e.g.
+//   FANBOX_MATRIX_ROOT=E:\fanbox FANBOX_MATRIX_HOME=E:\fanbox-gatec\home FANBOX_MATRIX_TOOLS=C:\tools\magick;
+const ROOT = process.env.FANBOX_MATRIX_ROOT || 'D:\\fanbox';
+const FAKE_HOME = process.env.FANBOX_MATRIX_HOME || 'C:\\Users\\bbbb\\fb-matrix-home';
+const TOOLS_PATH = process.env.FANBOX_MATRIX_TOOLS !== undefined ? process.env.FANBOX_MATRIX_TOOLS : 'C:\\Users\\bbbb\\tools\\imagemagick;D:\\ffmpeg-master-latest-win64-gpl-shared\\bin;';
 
 async function launch(extraEnv = {}, opts = {}) {
   const env = {

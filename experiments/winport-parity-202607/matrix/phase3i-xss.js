@@ -124,7 +124,7 @@ const readBuf = (id) => id;
     window.DOMPurify = keep;
     return out;
   });
-  check(/^<pre>/.test(closed) && !/<img /i.test(closed), 'DOMPurify absent → fail closed (escaped text)', closed.slice(0, 70));
+  check((/^<pre>/.test(closed) || /^# hi/.test(closed)) && !/<img /i.test(closed) && /&lt;img/.test(closed), 'DOMPurify absent → fail closed (escaped text; upstream mdHtml returns escapeHtml(src))', closed.slice(0, 70));
 
   // Typeset modal (replaces persistent typeset-host / v2.12 tab)
   const ts = await win.evaluate(async (p) => {

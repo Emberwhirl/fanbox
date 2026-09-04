@@ -20,7 +20,8 @@ const FIX = FAKE_HOME + '\\fanbox-test-fixtures';
   await win.evaluate(async (e) => { state.selected = e.path; await openPreview(e); }, entry);
   await win.waitForTimeout(2500);
   const iframeSrc = await win.evaluate(() => { const f = document.querySelector('#preview-body iframe.iframe-preview'); return f ? f.src : null; });
-  check(!!iframeSrc && /:4661\/fs\/C(:|%3A)\/Users\/bbbb\/fb-matrix-home\/fanbox-test-fixtures\/preview\/page\.html/.test(iframeSrc), 'preview iframe points at /fs drive-letter URL', iframeSrc);
+  const expectFs = '/fs/' + FAKE_HOME.split(String.fromCharCode(92)).join('/').replace(/^([A-Za-z]):/, (m, d) => d + '(:|%3A)').replace(/[.]/g, '[.]') + '/fanbox-test-fixtures/preview/page[.]html';
+  check(!!iframeSrc && new RegExp(':4661' + expectFs).test(iframeSrc), 'preview iframe points at /fs drive-letter URL', iframeSrc);
 
   let frame = win.frames().find((f) => /\/fs\/.*page\.html/.test(f.url()));
   check(!!frame, 'preview frame attached');
@@ -44,11 +45,11 @@ const FIX = FAKE_HOME + '\\fanbox-test-fixtures';
   await win.evaluate(async (e) => { state.selected = e.path; await openPreview(e); }, mdEntry);
   await win.waitForTimeout(4000);
   const crepeImgs = await win.evaluate(() => {
-    const imgs = Array.from(document.querySelectorAll('#preview-body img'));
+    const imgs = Array.from(document.querySelectorAll('#preview-body img')).filter((im) => im.getAttribute('src')); // ignore editor chrome <img> without src
     return imgs.map((im) => ({ src: (im.currentSrc || im.src || '').slice(-90), ok: im.complete && im.naturalWidth > 0 }));
   });
   check(crepeImgs.length >= 4, 'crepe: all 4 md images present', JSON.stringify(crepeImgs.map((x) => x.ok)));
-  check(crepeImgs.length >= 4 && crepeImgs.every((x) => x.ok), 'crepe: relative + absolute md images all load', JSON.stringify(crepeImgs, null, 0).slice(0, 400));
+  check(crepeImgs.length >= 4 && crepeImgs.every((x) => x.ok), 'crepe: relative + absolute md images all load', JSON.stringify(crepeImgs.filter((x) => !x.ok), null, 0).slice(0, 400));
 
   // ---- Markdown read body (follow-mode renderer) ----
   const readImgs = await win.evaluate(async (p) => {

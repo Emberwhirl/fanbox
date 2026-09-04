@@ -41,7 +41,11 @@ setTimeout(() => { console.error('FAIL: watchdog timeout'); process.exit(2); }, 
   await win.waitForTimeout(1500);
   let dumped = '';
   try { dumped = fs.readFileSync(DUMP, 'utf8').replace(/^﻿/, '').trim(); } catch {}
-  const args = dumped.split(String.fromCharCode(1));
+  const argsRaw = dumped.split(String.fromCharCode(1));
+  // v2.16.1: FanBox appends --settings <abs hooks file> (D2); keep the structural check on the rest
+  const si = argsRaw.indexOf('--settings');
+  check(si > 0 && /claude-settings\.json$/.test(argsRaw[si + 1] || ''), 'hooks flag present with the absolute settings path', argsRaw[si + 1]);
+  const args = argsRaw.filter((x, i) => i !== si && i !== si + 1);
   check(args.length === 3 && args[0] === '--permission-mode' && args[1] === 'acceptEdits', 'argv structure intact (3 args)', JSON.stringify(args));
   check(args[2] === PROMPT, 'prompt argv byte-exact incl. & quotes em-dash %', JSON.stringify(args[2]));
 

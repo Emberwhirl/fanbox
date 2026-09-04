@@ -55,9 +55,11 @@ function writeHookFiles() {
     const dir = HOOKS_DIR();
     fs.mkdirSync(dir, { recursive: true });
     if (IS_WIN) {
-      // D2: HTTP hook — no shell, token only via env/header interpolation
+      // D2: HTTP hook — no shell, token only via env/header interpolation.
+      // D3(b): no Codex notify file this release — the `-c notify=[…]` argument cannot be made
+      // byte-exact through PowerShell 5.1 without `--%` (see notes v2.16.1 Deviations); Codex
+      // launches bare and keeps the child-process busy heuristic.
       fs.writeFileSync(path.join(dir, 'claude-settings.json'), JSON.stringify(winHelpers.claudeHttpHookSettings(PORT), null, 2) + '\n');
-      fs.writeFileSync(path.join(dir, 'codex-notify.js'), winHelpers.buildCodexNotifyJs());
       return;
     }
     // async：hook 在后台跑、不等返回，绝不拖慢 agent；timeout 5s 兜底
@@ -185,6 +187,9 @@ function createWindow() {
   win.on('close', (e) => {
     saveBounds();
     if (IS_MAC && !isQuitting) { e.preventDefault(); win.hide(); }
+    // Windows: ✕ / Alt+F4 would kill every terminal without a word; route through before-quit
+    // so a working agent gets the same confirmation as menu Quit (idle shells still close at once)
+    if (IS_WIN && !isQuitting && !quitConfirmed && terminals.size) { e.preventDefault(); app.quit(); }
   });
 
   // 等后端起来再加载（首次 listen 有几十毫秒延迟）
@@ -254,7 +259,12 @@ app.whenReady().then(async () => {
   // Clear leftover sleep inhibition. master: darwin only; win keeps powerSaveBlocker clear (D8/D10).
   if (IS_MAC || IS_WIN) trySetDisableSleep(false);
   // While "keep working" is on, re-evaluate every 30s (idle grace expiry relies on this).
-  setInterval(() => { if (lidIntent && terminals.size) refreshLidGuard(); }, 30000);
+  // Windows: refresh the child-process probe first, otherwise a 10s-stale cache reads as busy forever.
+  setInterval(() => {
+    if (!(lidIntent && terminals.size)) return;
+    if (IS_WIN) winPtyChildMap().catch(() => null).then(refreshLidGuard);
+    else refreshLidGuard();
+  }, 30000);
   buildMenu();
   try {
     const m = Menu.getApplicationMenu();
@@ -673,10 +683,14 @@ function activeAgentTerms() {
       if (f.state === 'working' || f.state === 'needs_permission') out.push({ id, label: f.agent || proc || id });
       continue;
     }
-    // Windows: p.process is static (always the shell). Un-hooked tabs count as active
-    // (unknown = busy) so quit/sleep never barge into a running program.
+    // Windows: p.process is static (always the shell), so ask the cached child-process probe
+    // (winProbeKids). A shell known to have no children is a bare prompt and not active; a shell
+    // with children, or an unknown/stale probe, counts as active so quit/sleep never barge into
+    // a running program. A stale cache also kicks a refresh for the next evaluation.
     if (IS_WIN) {
-      out.push({ id, label: proc || id });
+      const kids = winProbeKids(p && p.pid);
+      if (kids && kids.length === 0) continue;
+      out.push({ id, label: (kids && kids[0] && kids[0].replace(/\.exe$/i, '')) || proc || id });
       continue;
     }
     if (proc && !BARE_SHELL.test(proc)) out.push({ id, label: proc });
@@ -979,6 +993,13 @@ let isQuitting = false; // 真正退出（⌘Q / 菜单退出）才置真；点�
 app.on('before-quit', (e) => {
   // 只拦「agent 正在干活」的情况：开着的裸 shell、停在提示符等输入的 claude 都不算——
   // 从前按「有没有终端开着」拦，每次退出都要多点一下，久了确认框就成了噪音
+  // Windows: the child-process probe is async; when its cache is stale, refresh it and re-enter
+  // quit so an idle PowerShell tab is not mistaken for a working agent (A3/C6).
+  if (IS_WIN && !quitConfirmed && terminals.size && winProbeStale()) {
+    e.preventDefault();
+    winPtyChildMap().catch(() => null).then(() => app.quit());
+    return;
+  }
   const active = quitConfirmed ? [] : activeAgentTerms();
   if (active.length === 0) { isQuitting = true; return; }
   e.preventDefault();
@@ -1309,17 +1330,11 @@ winpathSync('displaySrc', (p) => winHelpers.winDisplaySrc(p));
 winpathSync('localImageSrc', (raw, dir) => winHelpers.winLocalImageSrc(raw, dir));
 winpathSync('localImageAbs', (raw, dir) => winHelpers.localImageAbs(raw, dir));
 winpathSync('isForbiddenPersistSrc', (p) => winHelpers.isForbiddenPersistSrc(p));
-ipcMain.on('env:nodeExe', (e) => {
-  try {
-    if (!IS_WIN) { e.returnValue = ''; return; }
-    const dirs = String(process.env.Path || process.env.PATH || '').split(';').map((s) => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
-    let found = '';
-    for (const d of dirs) {
-      const f = path.join(d, 'node.exe');
-      try { if (fs.existsSync(f)) { found = f; break; } } catch { /* */ }
-    }
-    e.returnValue = found;
-  } catch { e.returnValue = ''; }
+// Windows: the renderer appends `--settings <file>` only when the hook file really exists —
+// claude exits on a missing settings file, so a failed writeHookFiles must not break one-click launch
+ipcMain.on('env:hooksReady', (e) => {
+  try { e.returnValue = IS_WIN && fs.existsSync(path.join(HOOKS_DIR(), 'claude-settings.json')); }
+  catch { e.returnValue = false; }
 });
 
 ipcMain.handle('drop:pick-images', async (e, { defaultPath } = {}) => {
@@ -1710,6 +1725,16 @@ function decodeLsofPath(s) {
 // 局限：纯 PowerShell/cmdlet 在进程内算（无子进程）时可能误判 idle——agentWait 默认 idleMs 在
 // win32 加长，并仍要求输出静默；等外部 CLI agent（claude/codex）时子进程探测是可靠的。
 let winProcProbe = { at: 0, val: null, inflight: null };
+const WIN_PROBE_FRESH_MS = 10000;
+// Sync view of the last probe for callers that cannot await (activeAgentTerms → quit dialog, lid guard):
+// child names when the cache is fresh and knows this pid, else null (= unknown, callers treat as busy).
+// A stale cache triggers a background refresh so the next evaluation is current.
+function winProbeStale() { return Date.now() - winProcProbe.at >= WIN_PROBE_FRESH_MS; }
+function winProbeKids(pid) {
+  if (winProbeStale()) { winPtyChildMap().catch(() => {}); return null; }
+  const m = winProcProbe.val;
+  return pid && m && m.has(pid) ? m.get(pid) : null;
+}
 function winPtyChildMap() {
   const now = Date.now();
   if (winProcProbe.inflight) return winProcProbe.inflight;

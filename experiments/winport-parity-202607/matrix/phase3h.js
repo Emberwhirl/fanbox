@@ -25,7 +25,7 @@ const PKG = 'D:\\fanbox\\package.json';
   check(panel.rows.length > 0, 'disk panel lists home children with sizes', JSON.stringify(panel).slice(0, 300));
   check(panel.hasUp === true, 'up-row present below drive root');
   const fixRow = panel.rows.find((r) => /fanbox-test-fixtures/.test(r.name));
-  check(!!fixRow && /fb-matrix-home\\fanbox-test-fixtures$/.test(fixRow.dir), 'descend target joined with backslash sep', fixRow && fixRow.dir);
+  check(!!fixRow && fixRow.dir === require('path').win32.join(FAKE_HOME, 'fanbox-test-fixtures'), 'descend target joined with backslash sep', fixRow && fixRow.dir);
 
   // descend → title changes, still correct joins
   await win.evaluate(() => { const r = Array.from(document.querySelectorAll('.disk-row[data-dir]')).find((x) => /fanbox-test-fixtures$/.test(x.dataset.dir)); r.click(); });

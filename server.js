@@ -698,11 +698,9 @@ function claudeHooksFlag() {
   return fs.existsSync(f) ? winPortHelpers.claudeSettingsFlag(f) : '';
 }
 function codexHooksFlag() {
-  if (PLATFORM === 'win32') {
-    const f = path.join(HOOKS_DIR, 'codex-notify.js');
-    const node = winFindExe('node');
-    return winPortHelpers.codexNotifyFlag(node, fs.existsSync(f) ? f : '');
-  }
+  // D3(b): no Codex notify on Windows this release — the argument is not byte-exact through
+  // PowerShell 5.1 (inner quotes stripped) and cmd/PowerShell need different forms; bare launch
+  if (PLATFORM === 'win32') return '';
   const f = path.join(HOOKS_DIR, 'codex-notify.sh');
   return fs.existsSync(f) ? ` -c 'notify=["${f}"]'` : '';
 }

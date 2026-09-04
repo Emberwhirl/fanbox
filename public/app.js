@@ -3049,17 +3049,17 @@ const AGENT_REGISTRY = [
   { id: 'qoder', label: 'Qoder CLI', cmd: 'qodercli', bin: 'qodercli', install: 'curl -fsSL https://qoder.com/install | bash' },
 ];
 // 按平台解析 agent 启动命令（终端里可敲的那种）
+// 绝对路径 + 双引号，cmd.exe 和 PowerShell 都能吃；文件不存在就不带（claude 遇到不存在的 --settings 会退出）
 function winClaudeHooksFlag() {
+  if (!(window.fanboxEnv && window.fanboxEnv.hooksReady)) return '';
   const home = ((window.fanboxEnv && window.fanboxEnv.home) || state.home || '').replace(/[\\/]+$/, '');
   if (!home) return '';
   return ' --settings "' + home + '\\.fanbox\\hooks\\claude-settings.json"';
 }
+// D3(b)：Windows 这版不给 Codex 带 notify——`-c notify=[…]` 经 PowerShell 5.1 会被吞掉内层引号，
+// 不能保证字节精确送达；Codex 裸启动，沿用子进程探测的忙闲判定
 function winCodexHooksFlag() {
-  const home = ((window.fanboxEnv && window.fanboxEnv.home) || state.home || '').replace(/[\\/]+$/, '');
-  const node = window.fanboxEnv && window.fanboxEnv.nodeExe;
-  const js = home ? (home + '\\.fanbox\\hooks\\codex-notify.js') : '';
-  if (!node || !js) return '';
-  return " -c 'notify=[\"" + String(node).replace(/\\/g, '/') + '","' + js.replace(/\\/g, '/') + "\"]'";
+  return '';
 }
 function agentLaunchCmd(a) {
   if (!a) return '';
