@@ -121,8 +121,8 @@ window.typeset = (() => {
   // 生成排好版的容器元素。预览直接挂它，复制走它的克隆——两边同一份产物。
   function build(md, srcPath, styleId) {
     const cfg = all()[has(styleId) ? styleId : DEFAULT_ID];
-    const doc = new DOMParser().parseFromString(
-      typeof mdHtml === 'function' ? mdHtml(stripFrontMatter(md)) : '', 'text/html');
+    // 走 app.js 的 mdHtml（marked + DOMPurify）：DOMParser 本身不执行脚本，但产物随后 innerHTML 进页面 / 进剪贴板
+    const doc = new DOMParser().parseFromString(typeof mdHtml === 'function' ? mdHtml(stripFrontMatter(md)) : '', 'text/html');
     simplifyCode(doc);
     if (typeof fixLocalImages === 'function') fixLocalImages(doc.body, srcPath); // 本地配图接到 /api/raw，不然一律裂图
     gridImages(doc);
@@ -264,8 +264,8 @@ window.typeset = (() => {
   const X_ALLOWED = new Set(['h2', 'h3', 'p', 'strong', 'em', 'del', 'a', 'ul', 'ol', 'li', 'blockquote', 'br', 'b', 'i', 's']);
 
   async function copyX(md, srcPath) {
-    const doc = new DOMParser().parseFromString(
-      typeof mdHtml === 'function' ? mdHtml(stripFrontMatter(md)) : '', 'text/html');
+    // 走 app.js 的 mdHtml（marked + DOMPurify）：DOMParser 本身不执行脚本，但产物随后 innerHTML 进页面 / 进剪贴板
+    const doc = new DOMParser().parseFromString(typeof mdHtml === 'function' ? mdHtml(stripFrontMatter(md)) : '', 'text/html');
     const body = doc.body;
     // h1 让给文章标题，h4 以下 X 不认，统一降到 h3
     body.querySelectorAll('h1').forEach((h) => swapTag(doc, h, 'h2'));
@@ -342,7 +342,7 @@ window.typeset = (() => {
     for (let i = 1; i <= 99; i++) {
       const name = `${base}-长图${i > 1 ? '-' + i : ''}.png`;
       const r = await fetch('/api/image-save', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-fanbox-token': (window.fanboxEnv && window.fanboxEnv.ctlToken) || '' },
         body: JSON.stringify({ path: srcPath, dataUrl, newName: name }),
       }).then((x) => x.json());
       if (r.ok) return r.path;
@@ -440,7 +440,7 @@ window.typeset = (() => {
       const paths = [];
       for (let i = 0; i < names.length; i++) {
         const r = await fetch('/api/image-save', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-fanbox-token': (window.fanboxEnv && window.fanboxEnv.ctlToken) || '' },
           body: JSON.stringify({ path: srcPath, dataUrl: dataUrls[i], newName: names[i] }),
         }).then((x) => x.json());
         if (!r.ok && /已存在/.test(r.error || '') && !i) break; // 第一张就撞名：这组不干净，整组换个号

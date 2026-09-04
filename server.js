@@ -59,7 +59,7 @@ const IGNORE_DIRS = new Set([
 ]);
 
 const TEXT_EXT = new Set([
-  'txt', 'md', 'markdown', 'js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'json', 'json5',
+  'txt', 'md', 'markdown', 'js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'json', 'jsonl', 'json5',
   'html', 'htm', 'css', 'scss', 'less', 'py', 'rb', 'go', 'rs', 'java', 'kt', 'swift',
   'c', 'h', 'cpp', 'hpp', 'cc', 'm', 'mm', 'sh', 'bash', 'zsh', 'fish', 'sql', 'yml',
   'yaml', 'toml', 'ini', 'env', 'conf', 'xml', 'svg', 'vue', 'astro', 'php', 'lua',
@@ -75,7 +75,7 @@ const ARCHIVE_EXT = new Set(['zip', 'jar', 'tar', 'tgz', 'gz', 'bz2', 'xz', '7z'
 const MIME = {
   html: 'text/html; charset=utf-8', htm: 'text/html; charset=utf-8',
   js: 'application/javascript; charset=utf-8', css: 'text/css; charset=utf-8',
-  json: 'application/json; charset=utf-8', svg: 'image/svg+xml',
+  json: 'application/json; charset=utf-8', jsonl: 'application/x-ndjson; charset=utf-8', svg: 'image/svg+xml',
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
   webp: 'image/webp', bmp: 'image/bmp', ico: 'image/x-icon', avif: 'image/avif',
   mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', m4v: 'video/mp4',
@@ -115,10 +115,17 @@ function kindOf(name, isDir) {
   return 'other';
 }
 
-// 把任意请求路径规整成绝对真实路径；非绝对路径回退到 HOME。本机个人工具，不做越权拦截，
-// 但拒绝空字节这种明显异常输入。
+// 带 HTTP 状态码的错误：路由层的兜底 catch 按它回 4xx，不再把参数问题当 500
+function httpErr(code, msg) { return Object.assign(new Error(msg), { status: code }); }
+// 写类端点的路径类参数：缺失/非字符串在路由层就 400，不进业务函数——实测一条畸形 JSON 打到 /api/trash，
+// 从前 readBody 回 {}、resolvePath(undefined) 兜到 HOME，整个主目录被送进了废纸篓
+function pathArg(v, name) { if (typeof v !== 'string' || !v) throw httpErr(400, `参数 ${name} 必须是非空字符串`); return v; }
+
+// 把任意请求路径规整成绝对真实路径；相对路径按 HOME 解析。本机个人工具，不做越权拦截，
+// 但拒绝空字节这种明显异常输入。参数漏传/非字符串直接 400——从前兜底成 HOME，
+// 一个 { path: undefined } 的 /api/snapshot 或 /api/trash 就会对整个主目录动手。
 function resolvePath(p) {
-  if (!p || typeof p !== 'string') return HOME;
+  if (!p || typeof p !== 'string') throw httpErr(400, '路径参数必须是非空字符串');
   if (p.includes('\0')) throw new Error('非法路径');
   let abs = p.startsWith('~') ? path.join(HOME, p.slice(1)) : p;
   if (!path.isAbsolute(abs)) abs = path.join(HOME, abs);
@@ -164,10 +171,11 @@ function sendJSON(res, code, obj) {
 
 async function listDir(dirPath) {
   const dir = resolvePath(dirPath);
-  const dirents = await fsp.readdir(dir, { withFileTypes: true });
+  const dirents = (await fsp.readdir(dir, { withFileTypes: true })).filter((d) => d.name !== '.DS_Store');
   const entries = [];
-  for (const d of dirents) {
-    if (d.name === '.DS_Store') continue;
+  // lstat 从前逐个 await，5000 个文件就是 5000 次串行往返；改成 64 个一批并行——
+  // 批量封顶是为了别在超大目录里一口气开几千个 fd
+  const statOne = async (d) => {
     const full = path.join(dir, d.name);
     let isDir = d.isDirectory();
     let size = 0, mtime = 0;
@@ -176,7 +184,7 @@ async function listDir(dirPath) {
       try {
         const st = await fsp.stat(full);
         isDir = st.isDirectory();
-      } catch { continue; }
+      } catch { return null; }
     }
     let btime = 0;
     try {
@@ -185,7 +193,7 @@ async function listDir(dirPath) {
       mtime = st.mtimeMs;
       btime = st.birthtimeMs || 0;
     } catch { /* ignore */ }
-    entries.push({
+    return {
       name: d.name,
       path: full,
       isDir,
@@ -194,7 +202,11 @@ async function listDir(dirPath) {
       size,
       mtime,
       btime,
-    });
+    };
+  };
+  for (let i = 0; i < dirents.length; i += 64) {
+    const part = await Promise.all(dirents.slice(i, i + 64).map(statOne));
+    for (const e of part) if (e) entries.push(e);
   }
   // 文件夹在前，按名称排序
   entries.sort((a, b) => {
@@ -466,33 +478,21 @@ function trashPath(p) {
     try { target = resolvePath(p); } catch { return resolve({ ok: false, error: '非法路径' }); }
     let isDir = false;
     try { isDir = fs.lstatSync(target).isDirectory(); } catch { return resolve({ ok: false, error: '文件不存在' }); }
-    let cmd;
+    let bin, args;
     if (PLATFORM === 'darwin') {
       // 路径走 argv，不拼进单引号 AppleScript 字面量——避免含 ' 的文件名删除失败/注入
       // POSIX file 必须 as alias 强转，否则 Finder 解析不了报 -1728
-      cmd = `osascript -e 'on run argv' -e 'tell application "Finder" to delete (POSIX file (item 1 of argv) as alias)' -e 'end run' ${shellQuote(target)}`;
+      bin = 'osascript';
+      args = ['-e', 'on run argv', '-e', 'tell application "Finder" to delete (POSIX file (item 1 of argv) as alias)', '-e', 'end run', target];
     } else if (PLATFORM === 'win32') {
-      // §5: argv-style PowerShell — path via env (never interpolates user path into -Command).
-      // Keep VB FileSystem::Delete* SendToRecycleBin (Remove-Item is permanent delete).
-      // 目录联接/符号链接的 lstat 报的是 link 不是 dir，会被派到 DeleteFile，而 VB 那边
-      // File.Exists 对目录为 false → 必然抛错。win 上用 stat（跟随链接）重判一次
-      let winIsDir = isDir;
-      try { winIsDir = fs.statSync(target).isDirectory(); } catch { /* 断链就沿用 lstat 的判断 */ }
-      const method = winIsDir ? 'DeleteDirectory' : 'DeleteFile';
-      const script = `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::${method}($env:FANBOX_TRASH_PATH,'OnlyErrorDialogs','SendToRecycleBin')`;
-      execFile(WIN_PS, ['-NoProfile', '-NonInteractive', '-Command', script], {
-        env: { ...process.env, FANBOX_TRASH_PATH: target },
-        windowsHide: true,
-        timeout: 30000,
-      }, (err) => {
-        if (!err) return resolve({ ok: true });
-        resolve({ ok: false, error: err.message });
-      });
-      return;
+      const method = isDir ? 'DeleteDirectory' : 'DeleteFile';
+      bin = 'powershell';
+      args = ['-NoProfile', '-Command', `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::${method}('${target.replace(/'/g, "''")}','OnlyErrorDialogs','SendToRecycleBin')`];
     } else {
-      cmd = `gio trash ${shellQuote(target)} || trash-put ${shellQuote(target)} || trash ${shellQuote(target)}`;
+      bin = 'sh';
+      args = ['-c', 'gio trash "$1" || trash-put "$1" || trash "$1"', '--', target];
     }
-    exec(cmd, (err) => {
+    execFile(bin, args, (err) => {
       if (!err) return resolve({ ok: true });
       let msg = err.message;
       // Finder 自动化未授权（-1743/-600）给人话
@@ -671,10 +671,16 @@ ${history || '（还没有历史记录）'}
   const kickoff = `先完整读 ${ORGANIZE_BRIEF_FILE}，然后按里面的约定，和我对话式整理当前文件夹`;
   // claude 跳权限确认（动手前方案已过人）；codex 旗标按当前版本实测拼出
   const cmd = engine === 'codex'
-    ? `codex${await codexOrganizeFlags(bin)} "${kickoff}"`
-    : `claude --dangerously-skip-permissions "${kickoff}"`;
+    ? `codex${await codexOrganizeFlags(bin)}${codexHooksFlag()} "${kickoff}"`
+    : `claude --dangerously-skip-permissions${claudeHooksFlag()} "${kickoff}"`;
   return { ok: true, engine, cmd };
 }
+
+// FanBox 自己拉起的 claude / codex 一律带上官方 hooks，agent 自己汇报状态（见 docs/12「事件端点」）。
+// 两份文件由桌面主进程启动时写到 ~/.fanbox/hooks/；网页版没有它们就裸跑（claude 遇到不存在的 --settings 会报错退出）
+const HOOKS_DIR = path.join(HOME, '.fanbox', 'hooks');
+function claudeHooksFlag() { const f = path.join(HOOKS_DIR, 'claude-settings.json'); return fs.existsSync(f) ? ` --settings "${f}"` : ''; }
+function codexHooksFlag() { const f = path.join(HOOKS_DIR, 'codex-notify.sh'); return fs.existsSync(f) ? ` -c 'notify=["${f}"]'` : ''; }
 
 // ---------- 发版向导：检查项目状态 → 改版本号/CHANGELOG → 命令序列交给内嵌终端跑（每步可见可拦）----------
 async function releaseInspect(p) {
@@ -745,19 +751,8 @@ async function releasePrepare(b) {
   if (b.doDist) steps.push('npm run dist');
   steps.push('git add -A', `git commit -m ${shellQuote(`v${version}: ${title || '发版'}`)}`);
   if (b.doPush) steps.push('git push');
-  // 产物按平台。注意不能把通配符原样交给命令行：PowerShell 不给原生命令展开通配符，
-  // gh 自己也不做 glob，于是它会去找一个名字里真带 * 的文件、失败、最后发出一个零资产的 Release——
-  // 而零资产的 Release 会让所有用户的更新提示被 hasWinInstallerAsset 静默吞掉。这里在 Node 侧展开。
-  const distDir = path.join(resolvePath(b.path || HOME), 'dist');
-  const distRe = new RegExp(`${version.replace(/\./g, '\\.')}.*\\.dmg$`, 'i');
-  let distFiles = [];
-  try { distFiles = fs.readdirSync(distDir).filter((f) => distRe.test(f)).map((f) => path.join(distDir, f)); } catch { /* 还没打包 */ }
-  const distGlob = distFiles.length ? ' ' + distFiles.map((f) => shellQuote(f)).join(' ') : '';
-  if (b.doRelease) steps.push(`gh release create v${version} --title ${shellQuote(`v${version}${title ? ' · ' + title : ''}`)} --notes-file ${shellQuote(notesFile)}${b.doDist ? distGlob : ''}`);
-  // 串联符按目标 shell：Windows 默认 PTY 是 PowerShell 5.1，它不认 &&（PS 7 才支持）。
-  // 用右折叠嵌 if($?){…} 复刻「前一步失败就不往下走」——发版链里这条语义不能丢
-  const cmd = steps.join(' && ');
-  return { ok: true, cmd };
+  if (b.doRelease) steps.push(`gh release create v${version} --title ${shellQuote(`v${version}${title ? ' · ' + title : ''}`)} --notes-file ${shellQuote(notesFile)}${b.doDist ? ` dist/*${version}*.dmg dist/*${version}*.zip* dist/latest-mac.yml` : ''}`); // zip + blockmap + yml 是应用内自动更新（electron-updater）读的，缺一个老版本就只能手动下 dmg
+  return { ok: true, cmd: steps.join(' && ') };
 }
 
 // ---------- 项目记忆：这个文件夹里 AI 干过什么 ----------
@@ -1307,6 +1302,7 @@ const SNAP_EXCLUDE = [
 ].join('\n') + '\n';
 const snapThrottle = new Map(); // project → 上次尝试 ms（15s 内不重复扫）
 const snapDead = new Set();     // 本次运行内放弃的目录（太大/超时），别每轮都撞一次
+let snapUsageCache = null;      // { at, data }：du 一遍二十几 GB 要好几秒，60 秒内复用
 // 符号链接归一化：/tmp → /private/tmp 这类别名会让 cwd 和 HOME 字符串对不上、绕过资格守卫
 // win：realpathSync.native 会把大小写归一成磁盘真实形态（c:\users → C:\Users），
 // 否则同一项目两种写法会算出两把 throttle 键/两个影子仓库；POSIX 保持 master 的 realpathSync
@@ -1315,13 +1311,12 @@ const snapReal = (p) => { try { return PLATFORM === 'win32' ? fs.realpathSync.na
 function snapGitDir(project) {
   return path.join(SNAP_ROOT, crypto.createHash('sha1').update(project).digest('hex').slice(0, 16));
 }
+// project 传 null = 只碰裸仓库不挂工作区（项目目录可能已经不在了，cwd 落到快照根目录）
 function execSnap(gitDir, project, args, timeout = 10000) {
   return new Promise((resolve) => {
-    const git = gitExe();
-    if (!git) return resolve({ ok: false, killed: false, stdout: '', stderr: 'git not found' });
-    execFile(git, ['--git-dir', gitDir, '--work-tree', project, ...args],
-      { cwd: project, timeout, maxBuffer: 16 * 1024 * 1024, env: winSpawnEnv() }, (err, stdout, stderr) => {
-        resolve({ ok: !err, killed: !!(err && err.killed), stdout: stdout || '', stderr: stderr || '' });
+    execFile('git', ['--git-dir', gitDir, ...(project ? ['--work-tree', project] : []), ...args],
+      { cwd: project || SNAP_ROOT, timeout, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+        resolve({ ok: !err, killed: !!(err && err.killed), code: err ? err.code : 0, stdout: stdout || '', stderr: stderr || '' });
       });
   });
 }
@@ -1383,8 +1378,28 @@ function snapEligible(project) {
   } else if (p.split(path.sep).filter(Boolean).length < 2) return false; // / 下一层（/tmp 等）不收
   try { return fs.statSync(p).isDirectory(); } catch { return false; }
 }
+// 零 tag 且零 commit 的影子仓库里没有任何可恢复内容，只剩失败的 commit 留下的孤立 blob
+// （2026-08-29 实测 10 个这种仓库堆了 8.3GB）。整目录删掉——这是翻箱自己的缓存，不是用户文件。
+// 判死活看 tag 不看 rev-list：快照全挂在 refs/tags/s* 下，健康仓库的 rev-list --all 也可能是 0
+async function snapReapIfEmpty(gitDir) {
+  if (!fs.existsSync(path.join(gitDir, 'HEAD'))) return false;
+  const tags = await execSnap(gitDir, null, ['tag', '-l', 's*']);
+  if (!tags.ok || tags.stdout.trim()) return false;
+  const head = await execSnap(gitDir, null, ['rev-parse', '--verify', '-q', 'HEAD']);
+  if (head.ok) return false;
+  await fsp.rm(gitDir, { recursive: true, force: true });
+  snapUsageCache = null;
+  console.log('  🧹  清掉没有任何快照的影子仓库：' + path.basename(gitDir));
+  return true;
+}
+async function snapReapAll() {
+  let names = [];
+  try { names = await fsp.readdir(SNAP_ROOT); } catch { return; }
+  for (const n of names) if (/^[0-9a-f]{16}$/.test(n)) await snapReapIfEmpty(path.join(SNAP_ROOT, n));
+}
 async function snapEnsureRepo(project) {
   const gitDir = snapGitDir(project);
+  await snapReapIfEmpty(gitDir); // 上次 commit 失败留下的空壳先清掉，重新 init 一个干净的
   if (!fs.existsSync(path.join(gitDir, 'HEAD'))) {
     await fsp.mkdir(gitDir, { recursive: true }).catch(() => {}); // git init 不建父目录
     const r = await execSnap(gitDir, project, ['init', '-q']);
@@ -1415,20 +1430,90 @@ async function snapshot(project, label) {
     if (add.killed) snapDead.add(project); // 超时 = 太大，别再试
     return { ok: false, skipped: add.killed ? 'too-big' : 'add-failed' };
   }
+  // 「无变化」看索引与 HEAD 的差异（退出码 0 = 无变化，1 = 有变化，其余 = 出错；HEAD 未诞生时也成立），
+  // 不再拿 commit 失败当依据：从前 commit 超时被当成「无变化」返回 ok，已 add 的 blob 永久留在仓库里
+  // 每轮开工再堆一批，回滚还把这个假 ok 当「已备份」直接 reset --hard——那一轮丢的是真工作区
+  const diff = await execSnap(gitDir, project, ['diff', '--cached', '--quiet'], 25000);
+  if (diff.ok) return { ok: true, skipped: 'no-change' };
+  if (diff.code !== 1) {
+    if (diff.killed) snapDead.add(project);
+    return { ok: false, skipped: 'diff-failed' };
+  }
   const msg = String(label || '回合存档').slice(0, 120);
   const ci = await execSnap(gitDir, project, [
     '-c', 'user.name=FanBox', '-c', 'user.email=snapshot@fanbox.local', '-c', 'commit.gpgsign=false',
     'commit', '-q', '--no-verify', '-m', msg,
   ], 20000);
-  if (!ci.ok) return { ok: true, skipped: 'no-change' }; // 与上个快照无差异
-  await execSnap(gitDir, project, ['tag', `s${Date.now()}`]);
+  if (!ci.ok) {
+    // 真失败：索引退回上个快照，再把这轮刚写进 objects/ 的孤立对象清掉（reset 只动索引，对象还在）
+    await execSnap(gitDir, project, ['reset', '-q'], 25000);
+    await execSnap(gitDir, project, ['prune', '--expire=now'], 60000);
+    if (ci.killed) snapDead.add(project);
+    return { ok: false, skipped: 'commit-failed' };
+  }
+  const tag = `s${Date.now()}`;
+  const tg = await execSnap(gitDir, project, ['tag', tag]);
+  if (!tg.ok) return { ok: false, skipped: 'tag-failed' }; // 列表只认 tag，没打上等于没存
   // tag 滚动裁剪：超出 SNAP_KEEP 删最旧，gc 交给 git 自己看着办
   const tags = (await execSnap(gitDir, project, ['tag', '-l', 's*'])).stdout.split('\n').filter(Boolean).sort();
   if (tags.length > SNAP_KEEP) {
     await execSnap(gitDir, project, ['tag', '-d', ...tags.slice(0, tags.length - SNAP_KEEP)]);
     execSnap(gitDir, project, ['gc', '--auto', '-q'], 60000); // 不 await，后台随缘
   }
-  return { ok: true, created: true };
+  snapUsageCache = null;
+  return { ok: true, created: true, tag };
+}
+// 占用透视：每个影子仓库多大、几个快照、是否已失效（零 tag = 没有任何可恢复内容）
+async function snapUsage() {
+  if (snapUsageCache && Date.now() - snapUsageCache.at < 60000) return snapUsageCache.data;
+  let idx = {};
+  try { idx = JSON.parse(await fsp.readFile(SNAP_INDEX, 'utf8')); } catch { /* 没索引也能算大小 */ }
+  let names = [];
+  try { names = (await fsp.readdir(SNAP_ROOT)).filter((n) => /^[0-9a-f]{16}$/.test(n)); } catch { /* 还没存过档 */ }
+  const sizes = {};
+  if (names.length) {
+    const out = await new Promise((resolve) => {
+      execFile('du', ['-sk', ...names.map((n) => path.join(SNAP_ROOT, n))], { timeout: 120000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => resolve(stdout || ''));
+    });
+    for (const line of out.split('\n')) {
+      const m = line.match(/^(\d+)\s+(.+)$/);
+      if (m) sizes[path.basename(m[2])] = Number(m[1]) * 1024;
+    }
+  }
+  const repos = [];
+  for (const dir of names) {
+    const tags = (await execSnap(path.join(SNAP_ROOT, dir), null, ['tag', '-l', 's*'])).stdout.split('\n').filter(Boolean);
+    const lastAt = tags.reduce((a, t) => Math.max(a, Number(t.slice(1)) || 0), 0) || null; // tag 名就是打快照的毫秒时间戳
+    repos.push({ project: idx[dir] || null, dir, bytes: sizes[dir] || 0, tags: tags.length, dead: tags.length === 0, lastAt });
+  }
+  repos.sort((a, b) => b.bytes - a.bytes);
+  const data = { ok: true, total: repos.reduce((a, r) => a + r.bytes, 0), repos };
+  snapUsageCache = { at: Date.now(), data };
+  return data;
+}
+// 清理：删某个项目的整个影子仓库，或删全部失效仓库。返回释放的字节数
+async function snapClean({ project, dead }) {
+  snapUsageCache = null; // 释放多少要按此刻的真实大小算
+  const usage = await snapUsage();
+  let targets;
+  if (dead) targets = usage.repos.filter((r) => r.dead);
+  else if (project) {
+    const norm = snapReal(path.normalize(resolvePath(project)).replace(/\/+$/, ''));
+    targets = usage.repos.filter((r) => r.project === norm);
+    if (!targets.length) return { ok: false, error: '这个目录还没有存档' };
+  } else return { ok: false, error: '缺少参数' };
+  let freed = 0;
+  let idx = {};
+  try { idx = JSON.parse(await fsp.readFile(SNAP_INDEX, 'utf8')); } catch { /* */ }
+  for (const r of targets) {
+    await fsp.rm(path.join(SNAP_ROOT, r.dir), { recursive: true, force: true });
+    freed += r.bytes;
+    delete idx[r.dir];
+    if (r.project) { snapDead.delete(r.project); snapThrottle.delete(r.project); }
+  }
+  if (targets.length) await fsp.writeFile(SNAP_INDEX, JSON.stringify(idx, null, 2)).catch(() => {});
+  snapUsageCache = null;
+  return { ok: true, removed: targets.length, freed };
 }
 // 列出某目录的快照：精确命中或该目录在某个已存档项目内（取最长前缀）
 async function snapResolveProject(p) {
@@ -1467,8 +1552,13 @@ async function snapRestore(p, hash) {
   const has = await execSnap(gitDir, project, ['cat-file', '-e', `${hash}^{commit}`]);
   if (!has.ok) return { ok: false, error: '找不到这个快照' };
   snapThrottle.delete(project); // 安全存档绝不能被节流吞掉：没备份就 reset 等于毁数据
-  const backup = await snapshot(project, '回滚前自动存档'); // 无变化时静默跳过，正合适
-  if (!backup.ok) return { ok: false, error: '当前状态存档失败，为安全起见不执行恢复' };
+  const backup = await snapshot(project, '回滚前自动存档');
+  // 硬门：只有「这次真的存下了」或「工作区与最新快照完全一致」才允许 reset --hard。
+  // 别信 ok 字段——从前 commit 超时也返回 ok，回滚拿它当「已备份」，抹掉的是用户没存过的活
+  if (!backup.created) {
+    const st = await execSnap(gitDir, project, ['status', '--porcelain'], 25000);
+    if (!st.ok || st.stdout.trim()) return { ok: false, error: '存档失败，未回滚' };
+  }
   const r = await execSnap(gitDir, project, ['reset', '--hard', hash, '-q'], 60000);
   snapThrottle.delete(project); // 回滚后下一轮 agent 开工要能立刻存档
   if (!r.ok) return { ok: false, error: '恢复失败：' + (r.stderr || '').slice(0, 200) };
@@ -1491,6 +1581,65 @@ async function snapFileDiff(file) {
     baseTs: Number(head.stdout.trim()) * 1000,
     original: show.ok ? show.stdout : '', modified, isNew: !show.ok,
   };
+}
+// 「基准版本」定位：和「查看改动」用同一把尺——git 仓库以 HEAD 为基准（影子 tag 不是用户仓库里的 ref，
+// 在这里没意义），非 git 项目落到影子仓库，tag 缺省取最新一次快照（HEAD）。两边都没有返回 null。
+async function baseLocate(file, tag) {
+  file = snapReal(resolvePath(file));
+  const root = await gitRoot(path.dirname(file));
+  let b = null;
+  if (root) b = { kind: 'git', root, rel: path.relative(root, file), ref: 'HEAD' };
+  else {
+    const project = await snapResolveProject(path.dirname(file));
+    if (!project) return null;
+    const ref = /^(s\d{10,16}|[0-9a-f]{7,40})$/i.test(String(tag || '')) ? String(tag) : 'HEAD'; // 快照 tag 名或 commit hash 都行
+    b = { kind: 'shadow', root: project, gitDir: snapGitDir(project), rel: path.relative(project, file), ref };
+  }
+  if (!b.rel || b.rel.startsWith('..')) return null;
+  b.rel = b.rel.split(path.sep).join('/');
+  b.file = file;
+  return b;
+}
+function baseExec(b, args, timeout) {
+  return b.kind === 'git' ? execGit(['-C', b.root, ...args], b.root) : execSnap(b.gitDir, b.root, args, timeout);
+}
+// 基准版本的原始字节（图片前后对比要旧图）。execFile 默认按 utf8 转字符串会把二进制打烂，这里必须 buffer
+function baseBlob(b) {
+  const args = b.kind === 'git' ? ['-C', b.root, 'show', `${b.ref}:${b.rel}`] : ['--git-dir', b.gitDir, '--work-tree', b.root, 'show', `${b.ref}:${b.rel}`];
+  return new Promise((resolve) => {
+    execFile('git', args, { cwd: b.root, timeout: 10000, maxBuffer: 64 * 1024 * 1024, encoding: 'buffer' }, (err, stdout) => resolve(err ? null : stdout));
+  });
+}
+// 本回合面板按需算的 +/- 行数：不能一开面板就全算，所以单文件一个端点，悬停到哪行算哪行
+async function changeStat(p, tag) {
+  const b = await baseLocate(p, tag);
+  if (!b) return { ok: false, error: '没有基准版本' };
+  const has = await baseExec(b, ['cat-file', '-e', `${b.ref}:${b.rel}`]);
+  if (!has.ok) { // 基准里没有 = 本回合新建：全是新增行
+    let n = 0;
+    try { const t = await fsp.readFile(b.file, 'utf8'); n = t ? t.split('\n').length : 0; } catch { /* 已被删掉 */ }
+    return { ok: true, isNew: true, add: n, del: 0 };
+  }
+  const r = await baseExec(b, ['diff', '--numstat', b.ref, '--', b.rel], 15000);
+  const m = /^(\S+)\t(\S+)\t/.exec(r.stdout || '');
+  if (!m) return { ok: true, add: 0, del: 0, same: true };
+  if (m[1] === '-') return { ok: true, binary: true };
+  return { ok: true, add: Number(m[1]), del: Number(m[2]) };
+}
+// 单文件还原：把这一个文件退回基准版本，项目其他文件不动（整项目回滚是另一条路 snapRestore）。
+// 基准里没有这个文件（本回合新建的）时，「还原」的含义就是它不该存在——移入废纸篓，可从废纸篓找回
+async function snapRestoreFile(file, tag) {
+  const b = await baseLocate(file, tag);
+  if (!b) return { ok: false, error: '这个文件既不在 git 仓库里，也没有回合存档' };
+  const has = await baseExec(b, ['cat-file', '-e', `${b.ref}:${b.rel}`]);
+  if (!has.ok) {
+    const t = await trashPath(b.file);
+    return t.ok ? { ok: true, trashed: true } : { ok: false, error: '基准里没有这个文件，移入废纸篓也失败了：' + (t.error || '') };
+  }
+  const r = await baseExec(b, ['checkout', b.ref, '--', b.rel], 20000);
+  if (!r.ok) return { ok: false, error: '还原失败：' + (r.stderr || '').slice(0, 200) };
+  if (b.kind === 'shadow') snapThrottle.delete(b.root); // 还原后下一轮开工要能立刻存档
+  return { ok: true, restored: true, base: b.kind === 'git' ? 'HEAD' : b.ref };
 }
 
 // 图片编辑保存：前端 canvas 导出 dataURL（已含格式/尺寸/质量/标注），这里原子写回
@@ -1563,33 +1712,11 @@ function openInOS(target, withApp) {
     if (withApp === 'terminal') {
       // 在该目录（文件则取其所在目录）打开系统终端，找回项目后一键去跑
       const dir = (() => { try { return fs.statSync(target).isDirectory() ? target : path.dirname(target); } catch { return path.dirname(target); } })();
-      if (PLATFORM === 'darwin') {
-        cmd = `open -a Terminal ${shellQuote(dir)}`;
-        exec(cmd, (err) => resolve(err ? { ok: false, error: err.message } : { ok: true, with: 'terminal' }));
-      } else if (PLATFORM === 'win32') {
-        // 路径只走 argv / spawn cwd，不进任何 shell 命令行：spawn 的 argv 会被 libuv 按 \" 转义，
-        // cmd.exe 不认这种转义（原来 `cd /d "dir"` 对所有路径都失败），而且路径上 shell 命令行等于注入面。
-        // Windows Terminal（wt -d <dir>）优先；没装则 start 新开 PowerShell 控制台，目录靠 cwd 继承。
-        const wt = winFindExe('wt', [
-          process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Microsoft', 'WindowsApps'),
-        ].filter(Boolean));
-        let child;
-        if (wt) {
-          child = spawn(wt, ['-d', dir], { stdio: 'ignore', detached: true, windowsHide: false });
-        } else {
-          // 命令行上没有任何用户数据；detached 的 cmd 自己没有控制台，start 会给 powershell 新开一个窗口。
-          // powershell 必须写绝对路径：cmd 的 cwd 就是被浏览的目录，裸名会先在那里找同名 exe——
-          // 仓库里放一个 powershell.exe，点「在终端中打开」就以用户身份把它跑起来了
-          child = spawn(WIN_CMD, ['/c', 'start', '', WIN_PS, '-NoExit'], {
-            cwd: dir, stdio: 'ignore', detached: true, windowsHide: false, env: winSpawnEnv(),
-          });
-        }
-        child.on('error', (err) => resolve({ ok: false, error: err.message }));
-        child.on('spawn', () => { child.unref(); resolve({ ok: true, with: 'terminal' }); });
-      } else {
-        cmd = `x-terminal-emulator --working-directory=${shellQuote(dir)} || gnome-terminal --working-directory=${shellQuote(dir)} || xterm`;
-        exec(cmd, (err) => resolve(err ? { ok: false, error: err.message } : { ok: true, with: 'terminal' }));
-      }
+      let tBin, tArgs;
+      if (PLATFORM === 'darwin') { tBin = 'open'; tArgs = ['-a', 'Terminal', dir]; }
+      else if (PLATFORM === 'win32') { tBin = 'cmd.exe'; tArgs = ['/c', 'start', '', 'cmd', '/K', 'cd', '/d', dir]; }
+      else { tBin = 'sh'; tArgs = ['-c', 'x-terminal-emulator --working-directory="$1" || gnome-terminal --working-directory="$1" || xterm', '--', dir]; }
+      execFile(tBin, tArgs, (err) => resolve(err ? { ok: false, error: err.message } : { ok: true, with: 'terminal' }));
       return;
     }
     if (withApp === 'editor') {
@@ -1620,34 +1747,21 @@ function openInOS(target, withApp) {
 
 function openDefault(target, withApp) {
   return new Promise((resolve) => {
+    let bin, args;
     if (PLATFORM === 'darwin') {
-      const cmd = withApp === 'reveal' ? `open -R ${shellQuote(target)}` : `open ${shellQuote(target)}`;
-      exec(cmd, (err) => resolve(err ? { ok: false, error: err.message } : { ok: true, with: withApp || 'default' }));
-      return;
+      if (withApp === 'reveal') { bin = 'open'; args = ['-R', target]; }
+      else { bin = 'open'; args = [target]; }
+    } else if (PLATFORM === 'win32') {
+      if (withApp === 'reveal') { bin = 'explorer.exe'; args = ['/select,' + target]; }
+      else { bin = 'cmd.exe'; args = ['/c', 'start', '', target]; }
+    } else {
+      if (withApp === 'reveal') { bin = 'xdg-open'; args = [path.dirname(target)]; }
+      else { bin = 'xdg-open'; args = [target]; }
     }
-    if (PLATFORM === 'win32') {
-      if (withApp === 'reveal') {
-        // explorer /select,path — 逗号后路径不要多余引号嵌套
-        let settled = false;
-        const done = (r) => { if (settled) return; settled = true; resolve(r); };
-        const child = spawn(WIN_EXPLORER, [`/select,${target}`], { stdio: 'ignore', detached: true });
-        child.on('error', (err) => done({ ok: false, error: err.message }));
-        child.on('spawn', () => { child.unref(); done({ ok: true, with: 'reveal' }); });
-        // explorer 有时非 0 退出但已打开，超时也算成功
-        setTimeout(() => done({ ok: true, with: 'reveal' }), 1500);
-        return;
-      }
-      // explorer.exe 打开默认关联：路径走 argv，不经 cmd 的 start——start 只保护含空格的参数，
-      // 像 a&whoami.txt 这种带元字符不带空格的文件名会裸着进 cmd 被当命令执行
-      const child = spawn(WIN_EXPLORER, [target], { stdio: 'ignore', detached: true, windowsHide: true });
-      child.on('error', (err) => resolve({ ok: false, error: err.message }));
-      child.on('spawn', () => { child.unref(); resolve({ ok: true, with: withApp || 'default' }); });
-      return;
-    }
-    const cmd = withApp === 'reveal'
-      ? `xdg-open ${shellQuote(path.dirname(target))}`
-      : `xdg-open ${shellQuote(target)}`;
-    exec(cmd, (err) => resolve(err ? { ok: false, error: err.message } : { ok: true, with: withApp || 'default' }));
+    execFile(bin, args, (err) => {
+      if (err) resolve({ ok: false, error: err.message });
+      else resolve({ ok: true, with: withApp || 'default' });
+    });
   });
 }
 
@@ -1694,8 +1808,23 @@ async function serveStatic(req, res, urlPath) {
 const THUMB_IMG_EXT = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tiff', 'tif', 'heic', 'heif', 'avif']);
 const ALPHA_IMG_EXT = new Set(['png', 'gif', 'webp', 'avif']); // 可能带透明通道：缩略图必须出 png，jpeg 会把透明拍成白底
 const thumbInflight = new Map(); // cacheFile -> Promise，去重并发生成
+// 外部转码器并发闸：从前每个缩略图 miss 都直接 fork 一个 sips，打开上百项的目录
+// = 上百个进程同时起，CPU 被打满、别的活全排队。闸设在 run() 上，
+// sips / qlmanage / HEIC 转码走的是同一条队。
+let runActive = 0;
+const runQueue = [];
+const RUN_MAX = 4;
 function run(cmd, args) {
-  return new Promise((resolve, reject) => execFile(cmd, args, { timeout: 15000 }, (e) => (e ? reject(e) : resolve())));
+  return new Promise((resolve, reject) => {
+    const job = () => execFile(cmd, args, { timeout: 15000 }, (e) => {
+      runActive--;
+      const next = runQueue.shift();
+      if (next) { runActive++; next(); }
+      e ? reject(e) : resolve();
+    });
+    if (runActive < RUN_MAX) { runActive++; job(); }
+    else runQueue.push(job);
+  });
 }
 // 缩略图：macOS 走 sips / qlmanage；其它平台优先 magick/convert（ImageMagick），视频走 ffmpeg
 async function generateThumb(src, e, size, cacheFile, isImg) {
@@ -1744,13 +1873,21 @@ async function pruneThumbs(maxBytes = 400 * 1024 * 1024) {
     const stats = (await Promise.all(files.map(async (f) => {
       if (f.startsWith('_ql_')) return null;
       const fp = path.join(THUMB_DIR, f);
-      try { const s = await fsp.stat(fp); return s.isFile() ? { fp, size: s.size, t: s.mtimeMs } : null; } catch { return null; }
+      // 按实际占用的块算而不是文件长度：几千个小 png 每个都有半块的零头，du 看到的比 size 之和多十几 MB
+      try { const s = await fsp.stat(fp); return s.isFile() ? { fp, size: s.blocks ? s.blocks * 512 : s.size, t: s.mtimeMs } : null; } catch { return null; }
     }))).filter(Boolean);
     let total = stats.reduce((a, b) => a + b.size, 0);
     if (total <= maxBytes) return;
     stats.sort((a, b) => a.t - b.t); // 最旧的先删
     for (const f of stats) { if (total <= maxBytes) break; await fsp.unlink(f.fp).catch(() => {}); total -= f.size; }
   } catch { /* 目录不存在等，忽略 */ }
+}
+// 生成过新缩略图就排一次裁剪：从前只在启动时裁，一个会话里翻几千张图缓存就越过上限几十 MB
+// （实测 461MB > 400MB）。合批成 5 秒一次，别让上百个并发 miss 各自 readdir 一遍几千个文件
+let pruneTimer = null;
+function pruneThumbsSoon() {
+  if (pruneTimer) return;
+  pruneTimer = setTimeout(() => { pruneTimer = null; pruneThumbs().catch(() => {}); }, 5000);
 }
 
 // 排版档把图片转 base64 时用：渲染进程受同源策略限制，抓不到图床里的外链图，
@@ -1837,7 +1974,9 @@ async function proxyImage(res, url) {
   }
 }
 
-async function serveThumb(req, res, p, size) {
+// ver：调用方带的内容版本号（文件 mtime）。带了 = 这个 URL 的内容永不再变，发长缓存；
+// 没带 = 发协商缓存，靠 ETag 走 304，改过的图立刻能看见新的（md 里引用的图拿不到 mtime，走这条）
+async function serveThumb(req, res, p, size, ver) {
   let src;
   try { src = resolvePath(p); } catch { res.writeHead(400); res.end('bad path'); return; }
   let st;
@@ -1849,8 +1988,16 @@ async function serveThumb(req, res, p, size) {
   const jpegOut = isImg && !ALPHA_IMG_EXT.has(e);
   const cacheFile = path.join(THUMB_DIR, key + (jpegOut ? '.jpg' : '.png'));
   const type = jpegOut ? 'image/jpeg' : 'image/png';
+  // key 已经把「源文件路径 + mtime + 目标宽度」全揉进去了，拿它当 ETag 天然精确
+  const etag = '"' + key + '"';
+  const cacheCtl = ver ? 'max-age=604800' : 'no-cache';
+  if (req.headers['if-none-match'] === etag) { // 内容没变，不回体（本机 304 约 1ms）
+    res.writeHead(304, { ETag: etag, 'Cache-Control': cacheCtl });
+    res.end();
+    return;
+  }
   const sendCache = () => {
-    res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'max-age=604800' });
+    res.writeHead(200, { 'Content-Type': type, 'Cache-Control': cacheCtl, ETag: etag });
     const rs = fs.createReadStream(cacheFile);
     rs.on('error', () => { try { res.destroy(); } catch { /* */ } }); // 读缓存中途出错别让未捕获 error 打挂进程
     rs.pipe(res);
@@ -1858,7 +2005,7 @@ async function serveThumb(req, res, p, size) {
   if (fs.existsSync(cacheFile)) return sendCache();
   let pr = thumbInflight.get(cacheFile);
   if (!pr) { pr = generateThumb(src, e, s, cacheFile, isImg).finally(() => thumbInflight.delete(cacheFile)); thumbInflight.set(cacheFile, pr); }
-  try { await pr; sendCache(); }
+  try { await pr; sendCache(); pruneThumbsSoon(); }
   catch { res.writeHead(415); res.end('no thumb'); } // 前端 onerror 回退矢量图标
 }
 
@@ -1896,7 +2043,7 @@ async function serveHeicAsJpeg(req, res, file, st) {
     })().finally(() => thumbInflight.delete(cacheFile));
     thumbInflight.set(cacheFile, pr);
   }
-  try { await pr; pruneThumbs(); send(); }
+  try { await pr; pruneThumbsSoon(); send(); }
   catch { res.writeHead(415); res.end('heic transcode failed'); } // 前端 onerror 回退矢量图标
 }
 
@@ -2006,19 +2153,27 @@ async function serveHtmlPreview(req, res, filePath) {
 }
 
 const MAX_BODY = 64 * 1024 * 1024; // 64MB 上限，防止恶意请求无限累加把内存撑爆
+// 从前解析失败/超限静默回 {}：畸形请求会以「空参数」进到写类端点，结合 resolvePath 的 HOME 兜底就是事故；现在一律 4xx
 function readBody(req) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let data = '';
     let size = 0;
     let aborted = false;
     req.on('data', (c) => {
       if (aborted) return;
       size += c.length;
-      if (size > MAX_BODY) { aborted = true; try { req.destroy(); } catch { /* */ } resolve({}); return; }
+      // 超限：停止累加、让流继续排空但不 destroy 连接——413 才送得到对方手里
+      if (size > MAX_BODY) { aborted = true; reject(httpErr(413, '请求体超过 64MB')); return; }
       data += c;
     });
-    req.on('end', () => { if (!aborted) { try { resolve(JSON.parse(data || '{}')); } catch { resolve({}); } } });
-    req.on('error', () => { if (!aborted) { aborted = true; resolve({}); } });
+    req.on('end', () => {
+      if (aborted) return;
+      let b;
+      try { b = JSON.parse(data || '{}'); } catch { return reject(httpErr(400, '请求体不是合法 JSON')); }
+      if (!b || typeof b !== 'object' || Array.isArray(b)) return reject(httpErr(400, '请求体必须是 JSON 对象'));
+      resolve(b);
+    });
+    req.on('error', () => { if (!aborted) { aborted = true; reject(httpErr(400, '请求体读取失败')); } });
   });
 }
 
@@ -2341,6 +2496,20 @@ function skillFrontmatter(txt) {
   return { desc };
 }
 
+async function scanNestedSkillBundle(fp, source, label, out, disabled) {
+  const nestedRoot = path.join(fp, 'skills');
+  let nestedNames;
+  try { nestedNames = await fsp.readdir(nestedRoot, { withFileTypes: true }); } catch { return false; }
+  let hasSkills = false;
+  for (const x of nestedNames) {
+    if (!x.isDirectory() || x.name.startsWith('.')) continue;
+    try { await fsp.access(path.join(nestedRoot, x.name, 'SKILL.md')); hasSkills = true; break; } catch { /* not a skill */ }
+  }
+  if (!hasSkills) return false;
+  await scanSkillRoot(nestedRoot, source, `${label}/${path.basename(fp)}`, out, disabled);
+  return true;
+}
+
 async function scanSkillRoot(root, source, label, out, disabled = false) {
   let names;
   try { names = await fsp.readdir(root, { withFileTypes: true }); } catch { return; }
@@ -2384,6 +2553,7 @@ async function scanSkillRoot(root, source, label, out, disabled = false) {
         }
       }
     } catch {
+      if (await scanNestedSkillBundle(fp, source, label, out, disabled)) continue;
       item.residue = true;
       item.issues.push('缺 SKILL.md——不是有效 skill');
     }
@@ -2688,6 +2858,16 @@ function originAllowed(req) {
   if (!o) return true;
   try { return ALLOWED_HOSTS.has(new URL(o).hostname); } catch { return false; }
 }
+// Origin 校验只挡浏览器里的跨站页面，挡不住本机其他进程 curl（无 Origin 即放行）——任何本机进程都能
+// POST /api/cron/save 塞一条 shell 任务再 /api/cron/run。桌面 app 模式下再加一道 token（与 /api/agent/*
+// 同一把：主进程随机生成、不落盘，经 preload 只交给渲染层主页面、经环境变量只交给翻箱自开的终端；
+// 预览 iframe 跨源拿不到，本机别的进程无从读取）。浏览器模式（node server.js 直跑，无 token）维持 Origin 校验不变。
+const CTL_TOKEN = process.env.FANBOX_AGENT_TOKEN || '';
+function ctlTokenOk(req, qp) {
+  if (!CTL_TOKEN) return true;
+  const tok = req.headers['x-fanbox-token'] || qp.get('token') || '';
+  return tok === CTL_TOKEN;
+}
 
 // ---------- 定时任务：cron.json 持久化 + 到点开终端窗口跑 agent/命令 ----------
 // 设计：调度器只在 FanBox 跑着时活着（本地工具，不装 launchd 常驻）；app 没开时错过的
@@ -2782,8 +2962,8 @@ function cronShq(s) {
 function cronCommand(t) {
   if (t.agent === 'shell') return String(t.prompt || '');
   const p = cronShq(t.prompt || '');
-  if (t.agent === 'codex') return t.full ? `codex --full-auto ${p}` : `codex ${p}`;
-  return t.full ? `claude --dangerously-skip-permissions ${p}` : `claude --permission-mode acceptEdits ${p}`;
+  if (t.agent === 'codex') return `codex${t.full ? ' --full-auto' : ''}${codexHooksFlag()} ${p}`;
+  return `claude ${t.full ? '--dangerously-skip-permissions' : '--permission-mode acceptEdits'}${claudeHooksFlag()} ${p}`;
 }
 async function cronFire(t, manual) {
   t.nextRun = (t.schedule || {}).type === 'at' ? null : cronNextRun(t); // 先排下一次，防调度重入
@@ -2898,6 +3078,8 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const p = url.pathname;
   const qp = url.searchParams;
+  // 写类/执行类端点全走 POST：一道门统一校验，不逐个端点列（漏一个就是洞）。/api/agent/* 自带同一把 token 的校验
+  if (req.method === 'POST' && !p.startsWith('/api/agent/') && !ctlTokenOk(req, qp)) return sendJSON(res, 403, { ok: false, error: 'bad token' });
 
   try {
     if (p === '/api/roots') {
@@ -2938,7 +3120,7 @@ const server = http.createServer(async (req, res) => {
       return serveRaw(req, res, fsPath);
     }
     if (p === '/api/thumb') {
-      return serveThumb(req, res, qp.get('path'), parseInt(qp.get('w') || '240', 10));
+      return serveThumb(req, res, qp.get('path'), parseInt(qp.get('w') || '240', 10), qp.get('v'));
     }
     if (p === '/api/img-proxy') {
       return proxyImage(res, qp.get('url'));
@@ -2976,18 +3158,40 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/snapshot' && req.method === 'POST') {
       const b = await readBody(req);
-      return sendJSON(res, 200, await snapshot(b.path, b.label));
+      return sendJSON(res, 200, await snapshot(pathArg(b.path, 'path'), b.label));
     }
     if (p === '/api/snapshots') {
       return sendJSON(res, 200, await snapList(qp.get('path')));
     }
+    if (p === '/api/snapshots/usage') {
+      return sendJSON(res, 200, await snapUsage());
+    }
+    if (p === '/api/snapshots/clean' && req.method === 'POST') {
+      return sendJSON(res, 200, await snapClean(await readBody(req)));
+    }
     if (p === '/api/snapshot-restore' && req.method === 'POST') {
       const b = await readBody(req);
-      return sendJSON(res, 200, await snapRestore(b.path, b.hash));
+      return sendJSON(res, 200, await snapRestore(pathArg(b.path, 'path'), b.hash));
+    }
+    // 本回合面板：单文件还原 / 基准版本原始字节 / 按需 +/- 行数（都以 baseLocate 的同一把尺为基准）
+    if (p === '/api/snapshot-restore-file' && req.method === 'POST') {
+      const b = await readBody(req);
+      return sendJSON(res, 200, await snapRestoreFile(pathArg(b.file, 'file'), b.tag));
+    }
+    if (p === '/api/change-stat') {
+      return sendJSON(res, 200, await changeStat(pathArg(qp.get('path'), 'path'), qp.get('tag')));
+    }
+    if (p === '/api/base-file') {
+      const b = await baseLocate(pathArg(qp.get('path'), 'path'), qp.get('tag'));
+      const buf = b ? await baseBlob(b) : null;
+      if (!buf) { res.writeHead(404); res.end('no base version'); return; }
+      res.writeHead(200, { 'Content-Type': MIME[ext(b.file)] || 'application/octet-stream', 'Content-Length': buf.length, 'Cache-Control': 'no-store' });
+      res.end(buf);
+      return;
     }
     if (p === '/api/open' && req.method === 'POST') {
       const body = await readBody(req);
-      const result = await openInOS(resolvePath(body.path), body.with);
+      const result = await openInOS(resolvePath(pathArg(body.path, 'path')), body.with);
       // 记录最近打开（串行 RMW，不丢更新）
       if (result.ok) {
         await updateConfig((cfg) => { cfg.recentOpened = [body.path, ...(cfg.recentOpened || []).filter((x) => x !== body.path)].slice(0, 30); });
@@ -2998,6 +3202,7 @@ const server = http.createServer(async (req, res) => {
       // 内部预览/编辑也记入「最近打开」，去重 + 最近优先（串行 RMW）
       const body = await readBody(req);
       if (body.path) {
+        pathArg(body.path, 'path');
         const cfg = await updateConfig((c) => { c.recentOpened = [body.path, ...(c.recentOpened || []).filter((x) => x !== body.path)].slice(0, 30); });
         return sendJSON(res, 200, { ok: true, recentOpened: cfg.recentOpened });
       }
@@ -3005,6 +3210,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/write' && req.method === 'POST') {
       const b = await readBody(req);
+      pathArg(b.path, 'path');
       try { return sendJSON(res, 200, await writeTextFile(b.path, b.content, b.expectedMtime)); }
       catch (e) { return sendJSON(res, 200, { ok: false, conflict: !!e.conflict, error: e.message }); }
     }
@@ -3024,34 +3230,37 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 200, { ok: true, lang });
     }
     if (p === '/api/organize/launch' && req.method === 'POST') {
-      return sendJSON(res, 200, await organizeLaunch(await readBody(req)));
+      const b = await readBody(req); pathArg(b.path, 'path');
+      return sendJSON(res, 200, await organizeLaunch(b));
     }
     if (p === '/api/release/inspect') {
       return sendJSON(res, 200, await releaseInspect(url.searchParams.get('path')));
     }
     if (p === '/api/release/prepare' && req.method === 'POST') {
-      return sendJSON(res, 200, await releasePrepare(await readBody(req)));
+      const b = await readBody(req); pathArg(b.path, 'path');
+      return sendJSON(res, 200, await releasePrepare(b));
     }
     if (p === '/api/trash' && req.method === 'POST') {
       const b = await readBody(req);
-      return sendJSON(res, 200, await trashPath(b.path));
+      return sendJSON(res, 200, await trashPath(pathArg(b.path, 'path')));
     }
     if (p === '/api/move' && req.method === 'POST') {
       const b = await readBody(req);
-      return sendJSON(res, 200, await movePath(b.src, b.dstDir));
+      return sendJSON(res, 200, await movePath(pathArg(b.src, 'src'), pathArg(b.dstDir, 'dstDir')));
     }
     if (p === '/api/rename' && req.method === 'POST') {
       const b = await readBody(req);
-      return sendJSON(res, 200, await renamePath(b.path, b.newName));
+      return sendJSON(res, 200, await renamePath(pathArg(b.path, 'path'), b.newName));
     }
     if (p === '/api/image-save' && req.method === 'POST') {
       const body = await readBody(req);
+      pathArg(body.path, 'path');
       try { return sendJSON(res, 200, await saveImage(body)); }
       catch (e) { return sendJSON(res, 200, { error: e.message }); }
     }
     if (p === '/api/create' && req.method === 'POST') {
       const b = await readBody(req);
-      return sendJSON(res, 200, await createEntry(b.path, b.name, b.type));
+      return sendJSON(res, 200, await createEntry(pathArg(b.path, 'path'), b.name, b.type));
     }
     if (p === '/api/agents') {
       // coding agent 启动按钮（#38）：GET 回配置，POST 存设置面板勾选的 enabledAgents
@@ -3110,11 +3319,11 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/skills/toggle' && req.method === 'POST') {
       const b = await readBody(req);
-      return sendJSON(res, 200, await skillToggle(b.dir, !!b.enable));
+      return sendJSON(res, 200, await skillToggle(pathArg(b.dir, 'dir'), !!b.enable));
     }
     if (p === '/api/skills/trash' && req.method === 'POST') {
       const b = await readBody(req);
-      return sendJSON(res, 200, await skillTrash(b.dir));
+      return sendJSON(res, 200, await skillTrash(pathArg(b.dir, 'dir')));
     }
     if (p === '/api/agent-usage') {
       return sendJSON(res, 200, await agentUsage());
@@ -3122,6 +3331,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/favorites') {
       if (req.method === 'POST') {
         const body = await readBody(req);
+        pathArg(body.path, 'path');
         const cfg = await updateConfig((c) => {
           const has = (c.favorites || []).some((f) => f.path === body.path);
           c.favorites = has
@@ -3134,7 +3344,9 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 200, { favorites: cfg.favorites || [], recentOpened: cfg.recentOpened || [] });
     }
 
-    // ---------- Agent 控制接口：桌面 app 专属（能力由 electron/main.js 注入 global.__fanboxAgent）----------
+    // ---------- Agent 控制接口：桌面 app 专属 ----------
+    // global.__fanboxAgent 由 electron/server-child.js 注入，是 RPC 代理（真实现在主进程，
+    // pty 都活在那边），所以每个方法都可能回 Promise——一律 await，裸对象 await 是 no-op。
     // token 只注入翻箱自开终端的环境变量、不落盘：只有跑在翻箱终端里的 agent 拿得到门票。见 docs/12。
     if (p.startsWith('/api/agent/')) {
       const A = global.__fanboxAgent;
@@ -3149,18 +3361,20 @@ const server = http.createServer(async (req, res) => {
         return sendJSON(res, 200, await cronAction(p.slice('/api/agent/cron/'.length), b));
       }
       if (p === '/api/agent/terminals') return sendJSON(res, 200, await A.list());
-      if (p === '/api/agent/read') return sendJSON(res, 200, A.read(qp.get('id'), parseInt(qp.get('lines') || '0', 10)));
-      if (p === '/api/agent/send' && req.method === 'POST') { const b = await readBody(req); return sendJSON(res, 200, A.send(b.id, b.text, b)); }
+      if (p === '/api/agent/read') return sendJSON(res, 200, await A.read(qp.get('id'), parseInt(qp.get('lines') || '0', 10)));
+      if (p === '/api/agent/send' && req.method === 'POST') { const b = await readBody(req); return sendJSON(res, 200, await A.send(b.id, b.text, b)); }
       if (p === '/api/agent/create' && req.method === 'POST') { return sendJSON(res, 200, await A.create(await readBody(req))); }
       if (p === '/api/agent/wait' && req.method === 'POST') { const b = await readBody(req); return sendJSON(res, 200, await A.wait(b.id, b)); }
-      if (p === '/api/agent/kill' && req.method === 'POST') { const b = await readBody(req); return sendJSON(res, 200, A.kill(b.id)); }
+      if (p === '/api/agent/kill' && req.method === 'POST') { const b = await readBody(req); return sendJSON(res, 200, await A.kill(b.id)); }
+      // agent 官方 hook 事件：body 是 claude hook / codex notify 的 JSON 原样，终端 id 走 x-fanbox-term 头（hook 命令里 $FANBOX_TERM_ID 展开）
+      if (p === '/api/agent/event' && req.method === 'POST') { const b = await readBody(req); return sendJSON(res, 200, await A.event(String(req.headers['x-fanbox-term'] || ''), b)); }
       return sendJSON(res, 404, { ok: false, error: 'unknown agent endpoint' });
     }
 
     // 静态资源
     return await serveStatic(req, res, p);
   } catch (err) {
-    return sendJSON(res, 500, { error: err.message });
+    return sendJSON(res, err.status || 500, { error: err.message });
   }
 });
 
@@ -3234,6 +3448,7 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log('  🏠  根目录:', HOME);
   console.log('\n  按 Ctrl+C 退出\n');
   pruneThumbs().catch(() => {}); // 启动时裁剪缩略图缓存，防止无限增长
+  snapReapAll().catch(() => {}); // 清掉一个快照都没有的影子仓库（只剩失败 commit 堆下的孤立对象）
   if (!process.env.FANBOX_NO_OPEN) {
     if (PLATFORM === 'darwin') exec(`open ${link}`, () => {});
     else if (PLATFORM === 'win32') spawn(WIN_CMD, ['/c', 'start', '', link], { detached: true, stdio: 'ignore' }).unref();

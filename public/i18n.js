@@ -14,7 +14,7 @@
   // 语言切换：记到 localStorage（渲染层）+ config.json（Electron 菜单读），刷新生效
   window.fanboxSetLang = (l) => {
     localStorage.setItem('fb_lang', l);
-    fetch('/api/lang', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lang: l }) })
+    fetch('/api/lang', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-fanbox-token': (window.fanboxEnv && window.fanboxEnv.ctlToken) || '' }, body: JSON.stringify({ lang: l }) })
       .catch(() => {}).finally(() => location.reload());
   };
   const wireToggle = () => {

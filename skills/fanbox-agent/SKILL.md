@@ -27,6 +27,7 @@ CT=(-s -H "x-fanbox-token: $FANBOX_CTL_TOKEN")
 
 ```bash
 curl "${CT[@]}" "$FANBOX_CTL/terminals"
+# → {"ok":true,"terminals":[{"id":"t2","cwd":"…","proc":"claude","busy":false,"hooked":true,"state":"done","tail":"…"}]}
 ```
 
 **读某窗口最近输出**（去 ANSI 纯文本，默认 200 行，最多 2000）：

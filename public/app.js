@@ -3,7 +3,28 @@
 
 const $ = (s) => document.querySelector(s);
 const api = (p) => fetch(p).then((r) => r.json());
-const apiPost = (p, body) => fetch(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json());
+// 写类接口的门票：Electron 主进程生成、经 preload 只交给主页面（预览 iframe 跨源拿不到）；浏览器模式没有，服务端也就不查
+const CTL_TOKEN = (window.fanboxEnv && window.fanboxEnv.ctlToken) || '';
+const apiPost = (p, body) => fetch(p, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-fanbox-token': CTL_TOKEN }, body: JSON.stringify(body) }).then((r) => r.json());
+
+// index.html 从前靠 <script onerror> 标记缺失的 vendor；CSP 禁了内联事件处理器，改在这里按全局对象判定
+if (!window.marked) window.__noMarked = 1;
+if (!window.hljs) window.__noHljs = 1;
+if (!window.Terminal || !window.FitAddon) window.__noXterm = 1;
+if (!window.WebglAddon) window.__noWebgl = 1;
+if (!window.Unicode11Addon) window.__noUnicode11 = 1;
+if (!window.ClipboardAddon) window.__noClipboard = 1;
+
+// ---------- md → HTML 的唯一入口 ----------
+// md 是 agent 和外部世界写进来的：<img onerror>、<script> 一旦经 innerHTML 落进主页面，就跑在握着 fanboxPty（= 一个 shell）
+// 的上下文里。所以 marked 的输出必须先过 DOMPurify。任务清单的 <input type=checkbox disabled checked>、<details>/<summary>、
+// <img width>、表格、代码块的 language-* class、data-* 都在 DOMPurify 默认白名单里，只补它默认不给的 target（手写 <a target=_blank> 常见）。
+const MD_PURIFY = { ADD_ATTR: ['target'] };
+function mdHtml(md, opts) {
+  const src = String(md || '');
+  if (!window.marked || window.__noMarked || !window.DOMPurify) return escapeHtml(src); // 缺任一环都退回纯文本，绝不裸放 HTML
+  return window.DOMPurify.sanitize(window.marked.parse(src, opts), MD_PURIFY);
+}
 
 // ---------- SVG 图标系统（替代 emoji，统一矢量审美） ----------
 const SVG = {
@@ -34,6 +55,7 @@ const SVG = {
   globe: '<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
   gitbranch: '<line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
   eye: '<path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/>',
+  more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
   maximize: '<polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>',
   minimize: '<polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/>',
   undo: '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
@@ -55,7 +77,7 @@ const EXT_KIND = {
   c: ['code', '#7b9ae8'], cpp: ['code', '#7b9ae8'], h: ['code', '#7b9ae8'], php: ['code', '#9a7be8'],
   vue: ['code', '#5bd6a0'], sh: ['code', '#9aa3b2'], bash: ['code', '#9aa3b2'], lua: ['code', '#5b9ae8'],
   html: ['code', '#e87b5b'], htm: ['code', '#e87b5b'], css: ['code', '#5b9ae8'], scss: ['code', '#e85b9a'],
-  json: ['json', '#e8c95b'], json5: ['json', '#e8c95b'], yml: ['json', '#d65b9a'], yaml: ['json', '#d65b9a'],
+  json: ['json', '#e8c95b'], jsonl: ['json', '#e8c95b'], json5: ['json', '#e8c95b'], yml: ['json', '#d65b9a'], yaml: ['json', '#d65b9a'],
   toml: ['json', '#9a7be8'], ini: ['json', '#9aa3b2'], env: ['json', '#e8c95b'], xml: ['code', '#9aa3b2'],
   md: ['text', '#7bc9e8'], markdown: ['text', '#7bc9e8'], txt: ['text', '#9aa3b2'], log: ['text', '#9aa3b2'],
   csv: ['data', '#5bd6a0'], tsv: ['data', '#5bd6a0'], sql: ['data', '#e8a85b'],
@@ -124,7 +146,7 @@ const DOC_TYPES = {
   md: ['MD', 7, '#3B82F6', '#2E68C8'], markdown: ['MD', 7, '#3B82F6', '#2E68C8'],
   html: ['&lt;&gt;', 7, '#E8662A', '#C4541F'], htm: ['&lt;&gt;', 7, '#E8662A', '#C4541F'],
   css: ['CSS', 5, '#2D6FD6', '#2459AC'], scss: ['SCSS', 4, '#CF649A', '#A94E7C'], less: ['LESS', 4, '#2D5B8A', '#244A70'],
-  json: ['{ }', 7, '#A6824C', '#856A3E'], json5: ['{ }', 7, '#A6824C', '#856A3E'],
+  json: ['{ }', 7, '#A6824C', '#856A3E'], jsonl: ['{ }', 7, '#A6824C', '#856A3E'], json5: ['{ }', 7, '#A6824C', '#856A3E'],
   yml: ['YML', 5, '#9C5BD6', '#7E49AC'], yaml: ['YAML', 4.2, '#9C5BD6', '#7E49AC'], toml: ['TOML', 4.2, '#9C5BD6', '#7E49AC'],
   xml: ['XML', 5, '#5E8A3E', '#4A6E31'], svg: ['SVG', 5, '#E8923A', '#C4761F'],
   csv: ['CSV', 5, '#1FAE5A', '#188F4A'], tsv: ['TSV', 5, '#1FAE5A', '#188F4A'],
@@ -191,6 +213,7 @@ const state = {
   sort: localStorage.getItem('fb_sort') || 'name',
   showHidden: localStorage.getItem('fb_hidden') === '1',
   filter: '', selected: null, cursor: -1, cols: 1, visible: [],
+  showAllFiles: false, // 大目录「显示全部」点过没有；换目录就归零
   favorites: [], recentOpened: [], recentMode: false, skillsMode: false,
   previewW: Number(localStorage.getItem('fb_preview_w')) || 0, // 0 = 用户还没拖过，走 1:2 比例默认
   previewH: Number(localStorage.getItem('fb_preview_h')) || 0,
@@ -253,7 +276,7 @@ function fmtSize(n) {
   while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
   return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${u[i]}`;
 }
-// 秒 → 人话时长（录像列表用）：93→「1分33秒」、5400→「1小时30分」、20→「20秒」
+// 秒 → 人话时长（录像列表、会话回放共用；只有这一个 fmtDur，调用方传秒）：93→「1分33秒」、5400→「1小时30分」、20→「20秒」
 function fmtDur(sec) {
   sec = Math.round(sec || 0);
   if (sec < 60) return sec + '秒';
@@ -356,6 +379,7 @@ async function navigate(p, pushHistory = true) {
     state.recentMode = false;
     state.skillsMode = false;
     state.cursor = -1;
+    state.showAllFiles = false;
     localStorage.setItem('fb_last_cwd', state.cwd); // 下次启动回到这里
     render();
     renderRootsActive();
@@ -437,21 +461,24 @@ function visibleEntries() {
   else list.sort((a, b) => dirFirst(a, b) || a.name.localeCompare(b.name, 'zh', { numeric: true }));
   return list;
 }
-// 底部状态条：当前文件夹的基础信息小字常驻，「占用透视」入口也安在这
+// 底部状态条：当前文件夹的两个 agent 记忆入口（磁盘占用透视在侧栏「更多…」和右键菜单里）
 function renderStatusbar() {
   const sb = $('#statusbar'); if (!sb) return;
   if (state.skillsMode || state.recentMode || !state.cwd) { sb.classList.add('hidden'); return; }
   sb.classList.remove('hidden');
-  sb.innerHTML = `<span class="sb-links"><a id="sb-mem" title="这个文件夹里 AI 干过什么：历史会话、改过的文件、一键续上">项目记忆</a><a id="sb-snap" title="agent 每轮开工前的自动存档，可一键回到任意一轮之前">回合存档</a><a id="sb-du" title="算上子目录的真实磁盘占用">占用透视</a></span>`;
-  $('#sb-du').onclick = () => diskPanel(state.cwd);
+  sb.innerHTML = `<span class="sb-links"><a id="sb-mem" title="这个文件夹里 AI 干过什么：历史会话、改过的文件、一键续上">项目记忆</a><a id="sb-snap" title="agent 每轮开工前的自动存档，可一键回到任意一轮之前">回合存档</a></span>`;
   $('#sb-mem').onclick = () => memoryPanel(state.cwd);
-  $('#sb-snap').onclick = () => snapshotPanel(state.cwd);
+  $('#sb-snap').onclick = () => openRoundPanel(); // 回合存档并进「本回合」面板（存档管理从面板里进）
 }
+// 大目录分页：超过这个数只先铺前一页，底部给「显示全部」——几千张卡一次性建 DOM 要好几秒，
+// 而且多数时候用户只是路过这个目录
+const FILE_PAGE = 1500;
 function renderFiles() {
   if (state.skillsMode) return; // skills 视图自管 #file-area，文件渲染不要清掉它
   const area = $('#file-area');
   const list = visibleEntries();
-  state.visible = list;
+  const shown = (state.showAllFiles || list.length <= FILE_PAGE) ? list : list.slice(0, FILE_PAGE);
+  state.visible = shown;
   renderStatusbar();
   if (!list.length) {
     const emptyMsg = state.recentMode ? '没找到最近修改的文件' : '这个文件夹是空的';
@@ -460,29 +487,78 @@ function renderFiles() {
     return;
   }
   // 最近修改是跨目录平铺列表，强制列表视图并显示来源目录
-  if (state.recentMode || state.view === 'list') {
-    const wrap = document.createElement('div');
-    wrap.className = 'list';
-    const head = document.createElement('div');
-    head.className = 'row list-head';
-    head.innerHTML = `<div></div><div>名称</div><div>修改时间</div><div>大小</div><div></div>`;
-    wrap.appendChild(head);
-    list.forEach((e, i) => wrap.appendChild(listRow(e, i)));
+  const listMode = state.recentMode || state.view === 'list';
+  const cls = listMode ? 'list' : 'grid size-' + state.gridSize;
+  // 增量渲染：容器还是同一种视图就按 path 做 keyed diff，只增删移动有变化的卡片，
+  // 没变的连 DOM 节点一起留着——缩略图不重新解码、正在弹跳的发光动画不被打断。
+  // 从前每次 innerHTML 全量重建，agent 干活时 fs 刷新 + 热度 sweep 一秒能把整目录重建四次
+  let box = area.firstElementChild;
+  if (!box || box.className !== cls) {
+    box = document.createElement('div');
+    box.className = cls;
+    if (listMode) {
+      const head = document.createElement('div');
+      head.className = 'row list-head';
+      head.innerHTML = `<div></div><div>名称</div><div>修改时间</div><div>大小</div><div></div>`;
+      box.appendChild(head);
+    }
     area.innerHTML = '';
-    area.appendChild(wrap);
-    if (state.recentMode && state.recentTruncated) area.insertAdjacentHTML('beforeend', truncNote());
-    state.cols = 1;
-    highlightCursor();
-    return;
+    area.appendChild(box);
   }
-  // 至此只剩网格视图（列表/最近已在上面提前返回）
-  const grid = document.createElement('div');
-  grid.className = 'grid size-' + state.gridSize;
-  list.forEach((e, i) => grid.appendChild(gridItem(e, i)));
-  area.innerHTML = '';
-  area.appendChild(grid);
-  measureCols();
+  const make = listMode ? listRow : gridItem;
+  const old = new Map();
+  for (const el of box.children) if (el.dataset.path) old.set(el.dataset.path, el);
+  let cur = listMode ? box.children[1] : box.firstElementChild; // 列表模式第 0 个是表头
+  shown.forEach((e, i) => {
+    const sig = itemSig(e);
+    let el = old.get(e.path);
+    if (el && el.dataset.sig === sig) { old.delete(e.path); decorateItem(el, e, i); }
+    else el = make(e, i); // 新条目，或名字/mtime/大小变了的条目：整张重建（旧节点留在 old 里，最后统一摘掉）
+    if (el === cur) cur = cur.nextElementSibling;
+    else box.insertBefore(el, cur);
+  });
+  for (const el of old.values()) el.remove();
+  while (box.nextSibling) box.nextSibling.remove(); // 容器后面只放提示条，每次重铺
+  if (state.recentMode && state.recentTruncated) area.insertAdjacentHTML('beforeend', truncNote());
+  if (shown.length < list.length) {
+    const n = document.createElement('div');
+    n.className = 'more-note';
+    n.innerHTML = `<span>已显示 ${shown.length} / ${list.length} 项</span> · <a class="more-all">显示全部</a>`;
+    n.querySelector('.more-all').onclick = () => { state.showAllFiles = true; renderFiles(); };
+    area.appendChild(n);
+  }
+  if (listMode) state.cols = 1; else measureCols();
   highlightCursor();
+}
+// 卡片的「静态指纹」：这些字段有一个变了就整张重建（缩略图 URL 带 mtime 版本号，改过的图才会换新）；
+// 都没变就复用节点，只由 decorateItem 刷选中/热度这类动态状态
+function itemSig(e) {
+  return [e.name, e.kind, e.isDir ? 1 : 0, e.hidden ? 1 : 0, e.mtime, e.size, e.project || '', isFav(e.path) ? 1 : 0, state.recentMode ? 1 : 0].join('|');
+}
+// 只切 class / 属性，不动 innerHTML：序号、选中态、agent 刚改过的热度发光
+function decorateItem(el, e, i) {
+  el.dataset.idx = i;
+  el.classList.toggle('selected', state.selected === e.path);
+  const chg = state.changed && state.changed.get(e.name);
+  if (chg) {
+    el.classList.add('changed');
+    el.dataset.changed = chg.count > 1 ? '改·' + chg.count : '改';
+    el.style.setProperty('--heat', Math.min(1, 0.4 + chg.count * 0.12).toFixed(2));
+    if (chg.files.size) el.title = '刚变更：\n' + [...chg.files].join('\n');
+  } else if (el.classList.contains('changed')) {
+    el.classList.remove('changed', 'live-edit');
+    delete el.dataset.changed;
+    el.style.removeProperty('--heat');
+    el.removeAttribute('title');
+  }
+}
+// 热度 sweep 每秒调这个：只给到期的卡片熄灯，不重铺目录
+function refreshHeat() {
+  const area = $('#file-area'); if (!area || state.skillsMode) return;
+  area.querySelectorAll('[data-path]').forEach((el) => {
+    const i = Number(el.dataset.idx); const e = state.visible[i];
+    if (e && e.path === el.dataset.path) decorateItem(el, e, i);
+  });
 }
 function measureCols() {
   const items = $('#file-area').querySelectorAll('.item');
@@ -496,13 +572,53 @@ function favBtn(e) {
   const on = isFav(e.path);
   return `<span class="fav-btn ${on ? 'on' : ''}" title="收藏">${svgWrap(SVG.star, 'currentColor', 15, on)}</span>`;
 }
+// 本机图片的「显示用 URL」：唯一的出口，谁要在屏幕上画一张本地图都从这里拿。
+// 存储层（markdown 里的路径、state.entries[].path）永远是干净的绝对路径，只有渲染的
+// 这一刻才映射成 URL。这条边界一破，编辑器就会为了显示一个 600px 的框去解码 4032px 的
+// 原图（一张手机照片 = 48MB 位图），十张就能把渲染进程拖死。
+// mtime 给了就带上版本号，服务端按「内容不会再变」发长缓存；给不了（md 里引用的图，
+// 拿不到条目元数据）就不带，服务端改发协商缓存——改过的图下一眼就是新的，别让 7 天
+// 强缓存把刚打完马赛克的图锁成旧的
+function thumbUrl(abs, w, mtime) {
+  return `/api/thumb?path=${encodeURIComponent(abs)}&w=${Math.round(w)}${mtime ? `&v=${mtime}` : ''}`;
+}
+// 能安全走缩略图的扩展名。gif 不能——服务端 sips 会把它转成 png，动图当场变成第一帧；
+// svg 也不进——本来就是矢量、体积小，光栅化只会更糊更大
+const DISPLAY_THUMB_EXT = new Set(['jpg', 'jpeg', 'png', 'webp', 'bmp', 'tiff', 'tif', 'heic', 'heif', 'avif']);
+function canThumb(p) {
+  const b = baseOf(String(p || ''));
+  return b.includes('.') && DISPLAY_THUMB_EXT.has((b.split('.').pop() || '').toLowerCase());
+}
+// 文档类图片的显示宽度：按预览区实宽 × 像素密度取图，跟着分栏拖动走。1600 是服务端上限
+function displayImgWidth() {
+  const host = $('#preview-body');
+  const css = (host && host.clientWidth) || 900;
+  return Math.min(1600, Math.max(480, Math.round(css * (window.devicePixelRatio || 1))));
+}
+// CSP（script-src 'self'）不跑内联 onerror/onclick：缩略图加载失败的回退和微信图片点击改为文档级委托。
+// error 事件不冒泡，用捕获阶段接。
+document.addEventListener('error', (ev) => {
+  const im = ev.target;
+  if (!(im instanceof HTMLImageElement)) return;
+  if (im.classList.contains('thumb')) {
+    const wrap = im.closest('.thumb-wrap');
+    if (wrap) wrap.replaceWith(Object.assign(document.createElement('span'), { className: 'svg-icon', innerHTML: im.dataset.fbk === 'video' ? window.__svgVideo : window.__svgImg }));
+  } else if (im.classList.contains('thumb-sm')) {
+    im.replaceWith(Object.assign(document.createElement('span'), { className: 'svg-icon', innerHTML: im.dataset.fb || '' }));
+  } else if (im.classList.contains('pv-img') && im.dataset.fallback) {
+    const fb = im.dataset.fallback; delete im.dataset.fallback; im.src = fb; // 只退一次，防止回退图也失败时无限循环
+  }
+}, true);
+document.addEventListener('click', (ev) => {
+  const im = ev.target && ev.target.closest && ev.target.closest('.wx-img');
+  if (im) lightbox(im.dataset.path);
+});
 function thumbHtml(e) {
   // 关键性能修复：用缩略图端点（sips/qlmanage 缓存小图），不再把原图/原视频整文件拉进来解码
   if (e.kind === 'image' || e.kind === 'video') {
     const w = state.gridSize === 'lg' ? 320 : (state.gridSize === 'sm' ? 160 : 240);
-    const fb = e.kind === 'video' ? 'window.__svgVideo' : 'window.__svgImg';
-    // 照片按原比例呈现（object-fit:contain）+ 柔和投影，像散落的照片；缩略图失败回退强色字形
-    const img = `<img class="thumb" loading="lazy" decoding="async" src="/api/thumb?path=${encodeURIComponent(e.path)}&w=${w}&v=${e.mtime || 0}" alt="" onerror="this.closest('.thumb-wrap').replaceWith(Object.assign(document.createElement('span'),{className:'svg-icon',innerHTML:${fb}}))">`;
+    // 照片按原比例呈现（object-fit:contain）+ 柔和投影，像散落的照片；缩略图失败回退强色字形（见上方 error 委托）
+    const img = `<img class="thumb" loading="lazy" decoding="async" src="${thumbUrl(e.path, w, e.mtime)}" alt="" data-fbk="${e.kind}">`;
     const play = e.kind === 'video' ? '<span class="play-badge"><svg viewBox="0 0 24 24" width="40%" height="40%"><path d="M8 5.5l11 6.5-11 6.5z" fill="#fff"/></svg></span>' : '';
     return `<span class="thumb-wrap${e.kind === 'video' ? ' is-video' : ''}">${img}${play}</span>`;
   }
@@ -521,30 +637,28 @@ function projBadge(e) {
 }
 function gridItem(e, i) {
   const el = document.createElement('div');
-  const chg = state.changed && state.changed.get(e.name);
-  el.className = 'item' + (e.isDir ? ' is-dir' : ' is-file') + (e.hidden ? ' hidden-file' : '') + (state.selected === e.path ? ' selected' : '') + (chg ? ' changed' : '');
-  el.dataset.idx = i;
+  el.className = 'item' + (e.isDir ? ' is-dir' : ' is-file') + (e.hidden ? ' hidden-file' : '');
   el.dataset.path = e.path;
-  if (chg) { el.dataset.changed = chg.count > 1 ? '改·' + chg.count : '改'; el.style.setProperty('--heat', Math.min(1, 0.4 + chg.count * 0.12).toFixed(2)); if (chg.files.size) el.title = '刚变更：\n' + [...chg.files].join('\n'); }
+  el.dataset.sig = itemSig(e);
   el.innerHTML = `<div class="icon" style="--tint:${iconColorFor(e)}">${thumbHtml(e)}${projBadge(e)}</div><div class="fname">${escapeHtml(e.name)}</div>${favBtn(e)}`;
   bindItem(el, e);
+  decorateItem(el, e, i);
   return el;
 }
 function listRow(e, i) {
   const el = document.createElement('div');
-  const chgR = state.changed && state.changed.get(e.name);
-  el.className = 'row' + (e.isDir ? ' is-dir' : ' is-file') + (e.hidden ? ' hidden-file' : '') + (state.selected === e.path ? ' selected' : '') + (chgR ? ' changed' : '');
-  el.dataset.idx = i;
+  el.className = 'row' + (e.isDir ? ' is-dir' : ' is-file') + (e.hidden ? ' hidden-file' : '');
   el.dataset.path = e.path;
-  if (chgR) { el.dataset.changed = chgR.count > 1 ? '改·' + chgR.count : '改'; el.style.setProperty('--heat', Math.min(1, 0.4 + chgR.count * 0.12).toFixed(2)); if (chgR.files.size) el.title = '刚变更：\n' + [...chgR.files].join('\n'); }
+  el.dataset.sig = itemSig(e);
   // 最近修改是跨目录列表，名称后缀显示来源目录，方便区分同名文件
   const dirHint = state.recentMode ? ` <span class="row-dir">· ${escapeHtml(tilde(e.dir || dirOf(e.path)))}</span>` : '';
-  el.innerHTML = `<div class="icon">${(e.kind === 'image' || e.kind === 'video') ? `<img class="thumb-sm" loading="lazy" decoding="async" src="/api/thumb?path=${encodeURIComponent(e.path)}&w=96&v=${e.mtime || 0}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'svg-icon',innerHTML:this.dataset.fb||''}))" data-fb='${escapeHtml(iconSvg(e, 18))}'>` : `<span class="svg-icon">${iconSvg(e, 18)}</span>`}</div>
+  el.innerHTML = `<div class="icon">${(e.kind === 'image' || e.kind === 'video') ? `<img class="thumb-sm" loading="lazy" decoding="async" src="${thumbUrl(e.path, 96, e.mtime)}" data-fb='${escapeHtml(iconSvg(e, 18))}'>` : `<span class="svg-icon">${iconSvg(e, 18)}</span>`}</div>
     <div class="fname">${escapeHtml(e.name)}${projBadge(e)}${dirHint}</div>
     <div class="meta">${fmtTime(e.mtime)}</div>
     <div class="meta">${e.isDir ? '' : fmtSize(e.size)}</div>
     ${favBtn(e)}`;
   bindItem(el, e);
+  decorateItem(el, e, i);
   return el;
 }
 function bindItem(el, e) {
@@ -679,7 +793,7 @@ async function openPreview(e) {
     const exi = (e.name.split('.').pop() || '').toLowerCase();
     const nativeImg = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'].includes(exi);
     const fallback = nativeImg ? `/api/raw?path=${encodeURIComponent(e.path)}&v=${e.mtime || 0}` : `/api/thumb?path=${encodeURIComponent(e.path)}&w=1600&v=${e.mtime || 0}`;
-    body.innerHTML = `<img class="pv-img" src="/api/thumb?path=${encodeURIComponent(e.path)}&w=1000&v=${e.mtime || 0}" title="点击放大" onerror="this.onerror=null;this.src='${fallback}'">`;
+    body.innerHTML = `<img class="pv-img" src="/api/thumb?path=${encodeURIComponent(e.path)}&w=1000&v=${e.mtime || 0}" title="点击放大" data-fallback="${fallback}">`;
     body.querySelector('.pv-img').onclick = () => lightbox(e.path, nativeImg, e.mtime);
   } else if (k === 'video') {
     body.innerHTML = `<video controls src="/api/raw?path=${encodeURIComponent(e.path)}"></video>`;
@@ -736,12 +850,14 @@ function mdReadBody(md, srcPath) {
   const div = document.createElement('div');
   div.className = 'md-body';
   div.innerHTML = mdHtml(md);
-  fixLocalImages(div, srcPath);
+  fixLocalImages(div, srcPath, displayImgWidth()); // 三个调用点都是「给人看」，一律走缩略图；导出走 typeset 那条，不经这里
   if (window.hljs && !window.__noHljs) div.querySelectorAll('pre code').forEach((b) => { try { window.hljs.highlightElement(b); } catch { /* */ } });
   return div;
 }
-// 把 md 里指向本机文件的图片换成 /api/raw；外链 http(s)/data/blob 不动
-function fixLocalImages(root, srcPath) {
+// 把 md 里指向本机文件的图片接到本机端点；外链 http(s)/data/blob 不动。
+// dispW 给了就按那个宽度走缩略图（屏幕上看的场合：阅读态、跟随、编辑器兜底）；
+// 不给就出原图（排版导出、复制到公众号——那些是要发出去的成品，不能拿缩略图糊弄）。
+function fixLocalImages(root, srcPath, dispW) {
   if (!srcPath) return;
   const base = dirOf(srcPath);
   root.querySelectorAll('img').forEach((im) => {
@@ -749,26 +865,8 @@ function fixLocalImages(root, srcPath) {
     if (!raw || /^(https?:|data:|blob:|\/api\/|\/fs\/)/i.test(raw)) return;
     let rel = raw.split('#')[0].split('?')[0];
     try { rel = decodeURIComponent(rel); } catch { /* 本来就没编码 */ }
-    let abs;
-    if (state.sep === '\\') {
-      // win：盘符/UNC/规范编码走 displaySrc；相对路径按文档目录逐段折叠（两种斜杠都认）。
-      // 不能把 ./cover.png 直接塞进 /api/raw——resolvePath 会拼到 $HOME。
-      if (window.fanboxWinPath && window.fanboxWinPath.localImageSrc) {
-        im.setAttribute('src', window.fanboxWinPath.localImageSrc(raw, base));
-        return;
-      }
-      if (/^[A-Za-z]:[\\/]/.test(rel) || rel.startsWith('\\\\')) abs = rel;
-      else {
-        const stack = base.split(/[\\/]/).filter(Boolean);
-        for (const seg of rel.split(/[\\/]/)) {
-          if (seg === '..') stack.pop(); else if (seg && seg !== '.') stack.push(seg);
-        }
-        abs = stack.join('/');
-      }
-    } else {
-      abs = rel.startsWith('/') ? rel : normPath(base + '/' + rel);
-    }
-    im.setAttribute('src', '/api/raw?path=' + encodeURIComponent(abs));
+    const abs = rel.startsWith('/') ? rel : normPath(base + '/' + rel);
+    im.setAttribute('src', dispW && canThumb(abs) ? thumbUrl(abs, dispW) : '/api/raw?path=' + encodeURIComponent(abs));
   });
 }
 // 折掉路径里的 ./ 和 ../，让相对图片路径能拼成真实绝对路径
@@ -817,7 +915,7 @@ function renderHtmlPreview(data, meta) {
   // 头部不再放 meta/「查看源码」/「浏览器打开」：顶栏的编辑（笔）= 看源码、打开 = 浏览器打开，已经够了
   body.innerHTML =
     `<div class="html-preview-host">
-      <div class="iframe-wrap"><iframe class="iframe-preview" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals" scrolling="yes" src="${fsUrl(data.path, data.mtime)}"></iframe></div>
+      <div class="iframe-wrap"><iframe class="iframe-preview" sandbox="allow-scripts allow-same-origin allow-forms allow-modals" scrolling="yes" src="${fsUrl(data.path, data.mtime)}"></iframe></div>
     </div>`;
   // 桌面 Chromium 的 iframe 不认 viewport meta，定宽桌面页在窄预览框里只露左上角。
   // /fs/ 注入的测宽脚本会把页面自然宽度 postMessage 过来：超出容器就整页等比缩到适配宽度。
@@ -843,14 +941,18 @@ function renderHtmlPreview(data, meta) {
   ro.observe(wrap);
   renderHtmlPreview._cleanup = () => { window.removeEventListener('message', onMsg); ro.disconnect(); renderHtmlPreview._cleanup = null; };
 }
-// 查看改动：HEAD 版本 vs 工作区当前内容，用 Monaco 只读 DiffEditor 并排渲染
-async function showDiff(e) {
+// 查看改动：HEAD 版本 vs 工作区当前内容，用 Monaco 只读 DiffEditor 并排渲染。
+// md 默认走「读者视图」（渲染后并排，看发出去长什么样），mode='source' 才是源码 diff；图片走前后对比
+async function showDiff(e, mode) {
   if (follow.on) setFileFollow(false, '手动接管，文件跟随已停');
+  if (e.kind === 'image') return showImageDiff(e);
   const data = await api('/api/git-file?path=' + encodeURIComponent(e.path));
   if (!data.isRepo && !data.shadow) { toast('该文件不在 git 仓库里，也还没有回合存档（跑过 agent 就有了）', true); return; }
   if (!data.diffable) { toast('该类型不支持 diff', true); return; }
   if (!data.isNew && (data.original || '') === (data.modified || '')) { toast(data.shadow ? '与上一回合存档无差异' : '与 HEAD 无差异'); return; }
-  if (!await mona.load()) { toast('编辑器未就绪', true); return; }
+  const isMd = isMdName(e.name);
+  const reader = isMd && mode !== 'source';
+  if (!reader && !await mona.load()) { toast('编辑器未就绪', true); return; }
   if (!await guardDirty()) return;
   mona.disposeIfAny(); crepe.disposeIfAny(); imgEditState = null;
   showPreviewPanel();
@@ -859,28 +961,98 @@ async function showDiff(e) {
   renderPreviewActions(e);
   renderPreviewFoot(e);
   const body = $('#preview-body');
+  const hint = `${data.isNew ? (data.shadow ? '新文件（上一回合存档时还没有）' : '新文件（HEAD 中不存在）') : (data.shadow ? `左：回合存档（${fmtTime(data.baseTs)}）　·　右：当前` : '左：HEAD　·　右：当前工作区')} · 只读`;
+  // md 两档：读者视图 / 源码 diff（沿用编辑器三档的分段样式）
+  const modes = isMd ? `<span class="seg ed-modes"><button class="seg-btn${reader ? ' active' : ''}" data-dm="reader">读者视图</button><button class="seg-btn${reader ? '' : ' active'}" data-dm="source">源码 diff</button></span>` : '';
   body.innerHTML =
-    `<div class="editor-bar"><span class="editor-hint">${data.isNew ? (data.shadow ? '新文件（上一回合存档时还没有）' : '新文件（HEAD 中不存在）') : (data.shadow ? `左：回合存档（${fmtTime(data.baseTs)}）　·　右：当前` : '左：HEAD　·　右：当前工作区')} · 只读</span><button id="diff-close" class="ghost-btn">返回预览</button></div>` +
-    `<div id="ed-host" class="mona-host"></div>`;
-  mona.openDiff($('#ed-host'), data.original, data.modified, (e.name.split('.').pop() || '').toLowerCase());
+    `<div class="editor-bar diff-bar">${modes}<button id="diff-send" class="ghost-btn" title="把选中的行（或整个文件）连同你的批注粘进当前终端，交给 agent 改">发给 agent</button><span class="editor-hint">${hint}</span><button id="diff-close" class="ghost-btn">返回预览</button></div>` +
+    (reader
+      ? `<div class="diff-reader" id="diff-reader"><div class="diff-col"><div class="diff-col-head">${data.isNew ? '（基准里没有）' : (data.shadow ? '上一回合' : 'HEAD')}</div><div class="read-host diff-read"></div></div><div class="diff-col"><div class="diff-col-head">当前</div><div class="read-host diff-read" id="diff-read-new"></div></div></div>`
+      : `<div id="ed-host" class="mona-host"></div>`);
+  if (reader) {
+    const cols = body.querySelectorAll('.diff-read');
+    cols[0].appendChild(mdReadBody(data.original || '', e.path));
+    cols[1].appendChild(mdReadBody(data.modified || '', e.path));
+  } else {
+    mona.openDiff($('#ed-host'), data.original, data.modified, (e.name.split('.').pop() || '').toLowerCase());
+  }
+  body.querySelectorAll('[data-dm]').forEach((b) => { b.onclick = () => { if (!b.classList.contains('active')) showDiff(e, b.dataset.dm); }; });
+  $('#diff-send').onclick = () => sendDiffReview(e);
+  $('#diff-close').onclick = () => openPreview(e);
+}
+// diff 行评论回喂：取修改侧选区（源码 diff 里是 Monaco 选区，读者视图里是「当前」栏的文字选区），
+// 拼成 `路径:起-止` + 围栏 + 批注，走 sendPrompt 粘进当前终端（bracketed paste、不回车，裸 shell 会被拦下）
+async function sendDiffReview(e) {
+  const rel = e.path.replace(state.home, '~');
+  let text = '', range = '';
+  const de = mona.editor;
+  if (de && de.getModifiedEditor) {
+    const med = de.getModifiedEditor();
+    const sel = med.getSelection();
+    if (sel && !sel.isEmpty()) {
+      text = med.getModel().getValueInRange(sel);
+      // 选区收在下一行行首（整行选法）时，那一行其实没选中
+      const endLine = sel.endColumn === 1 && sel.endLineNumber > sel.startLineNumber ? sel.endLineNumber - 1 : sel.endLineNumber;
+      range = `:${sel.startLineNumber}-${endLine}`;
+    }
+  } else {
+    const s = window.getSelection();
+    const col = $('#diff-read-new');
+    if (s && !s.isCollapsed && col && col.contains(s.anchorNode)) text = s.toString();
+  }
+  const note = await inputDialog(text ? `批注 ${rel}${range}` : `批注整个 ${rel}`, '', '想让 agent 怎么改？');
+  if (note === null) return;
+  const block = `${rel}${range}\n` + (text ? `\`\`\`\n${text}\n\`\`\`\n` : '') + (note ? `批注：${note}\n` : '');
+  await term.sendPrompt(block);
+}
+// 图片前后对比：基准版本（/api/base-file）与当前图叠放，一根滑杆控制上层裁切——纯 CSS/JS，不引依赖
+async function showImageDiff(e) {
+  if (!await guardDirty()) return;
+  const oldUrl = `/api/base-file?path=${encodeURIComponent(e.path)}&v=${e.mtime || 0}`;
+  const head = await fetch(oldUrl, { method: 'HEAD' }).catch(() => null);
+  const hasOld = !!(head && head.ok);
+  mona.disposeIfAny(); crepe.disposeIfAny(); imgEditState = null;
+  showPreviewPanel();
+  applySelection(e.path);
+  $('#preview-title').textContent = (hasOld ? '改动 · ' : '新增 · ') + e.name;
+  renderPreviewActions(e);
+  renderPreviewFoot(e);
+  const body = $('#preview-body');
+  const newUrl = `/api/raw?path=${encodeURIComponent(e.path)}&v=${e.mtime || 0}`;
+  body.innerHTML =
+    `<div class="editor-bar diff-bar"><span class="editor-hint">${hasOld ? '左：基准版本　·　右：当前 · 拖滑杆对比' : '新图片（基准里没有）'}</span><button id="diff-close" class="ghost-btn">返回预览</button></div>` +
+    (hasOld
+      ? `<div class="imgdiff"><div class="imgdiff-stage"><img class="imgdiff-old" src="${oldUrl}" alt="旧"><img class="imgdiff-new" src="${newUrl}" alt="新" style="clip-path:inset(0 0 0 50%)"><div class="imgdiff-bar" style="left:50%"></div><span class="imgdiff-tag imgdiff-tag-old">旧</span><span class="imgdiff-tag imgdiff-tag-new">新</span></div><input type="range" class="imgdiff-range" min="0" max="100" value="50"></div>`
+      : `<img class="pv-img" src="${newUrl}">`);
+  const range = body.querySelector('.imgdiff-range');
+  if (range) {
+    range.oninput = () => {
+      body.querySelector('.imgdiff-new').style.clipPath = `inset(0 0 0 ${range.value}%)`;
+      body.querySelector('.imgdiff-bar').style.left = range.value + '%';
+    };
+  }
   $('#diff-close').onclick = () => openPreview(e);
 }
 function renderPreviewActions(e) {
   const box = $('#preview-actions');
   box.innerHTML = '';
   const clip = window.fanboxClipboard;
-  // 图标为主、文字精简：主操作「打开」留字，其余只留图标 + tooltip
+  // 只留两个带字的主操作（打开 / 编辑）和一个全屏开关；其余低频动作收进「…」菜单——
+  // 八个无字图标排一行，没人记得住哪个是哪个
+  const more = [
+    ...(e.kind === 'text' ? [{ label: '查看改动（HEAD vs 当前）', fn: () => showDiff(e) }] : []),
+    { label: '在编辑器打开', fn: () => openWith(e.path, 'editor') },
+    { label: '在访达显示', fn: () => openWith(e.path, 'reveal') },
+    ...(e.kind === 'image' && clip ? [{ label: '复制图片（可粘贴到其它应用）', fn: () => copyImage(e.path) }] : []),
+    ...(clip ? [{ label: '复制文件（访达里可粘贴）', fn: () => copyFile(e.path) }] : []),
+    { label: '复制路径', fn: () => copyPath(e.path) },
+  ];
   const acts = [
     { id: 'preview-maxbtn', icon: ic(previewMax ? 'minimize' : 'maximize', 'currentColor', 15), title: previewMax ? '退出全屏' : '全屏放大', fn: () => setPreviewMax() },
     { icon: ic('link', 'currentColor', 14), label: '打开', title: '默认应用打开', cls: 'primary', fn: () => openWith(e.path, 'default') },
-    ...(e.kind === 'text' && !isMdName(e.name) ? [{ icon: ic('edit3', 'currentColor', 15), title: '编辑文本', fn: () => enterEditMode(e) }] : []), // md 预览即编辑，无需入口
-    ...(e.kind === 'text' ? [{ icon: ic('gitbranch', 'currentColor', 15), title: '查看改动（HEAD vs 当前）', fn: () => showDiff(e) }] : []),
-    ...(e.kind === 'image' ? [{ icon: ic('edit3', 'currentColor', 15), title: '编辑图片', fn: () => enterImageEdit(e) }] : []),
-    { icon: ic('term', 'currentColor', 15), title: '在编辑器打开', fn: () => openWith(e.path, 'editor') },
-    { icon: ic('folder', 'currentColor', 15), title: isMacOS() ? '在访达显示' : `在 ${fileManagerName()} 显示`, fn: () => openWith(e.path, 'reveal') },
-    ...(e.kind === 'image' && clip ? [{ icon: ic('image', 'currentColor', 15), title: '复制图片（可粘贴到其它应用）', fn: () => copyImage(e.path) }] : []),
-    ...(clip ? [{ icon: ic('copy', 'currentColor', 15), title: isMacOS() ? '复制文件（访达里可粘贴）' : (isWindows() ? '复制文件（资源管理器里可粘贴）' : '复制文件（文件管理器里可粘贴）'), fn: () => copyFile(e.path) }] : []),
-    { icon: ic('clip', 'currentColor', 15), title: '复制路径', fn: () => copyPath(e.path) },
+    ...(e.kind === 'text' && !isMdName(e.name) ? [{ icon: ic('edit3', 'currentColor', 15), label: '编辑', title: '编辑文本', fn: () => enterEditMode(e) }] : []), // md 预览即编辑，无需入口
+    ...(e.kind === 'image' ? [{ icon: ic('edit3', 'currentColor', 15), label: '编辑', title: '编辑图片', fn: () => enterImageEdit(e) }] : []),
+    { id: 'preview-more', icon: ic('more', 'currentColor', 15), title: '更多操作', fn: (ev) => (ev.stopPropagation(), popupMenuAt(ev.currentTarget, more)) },
   ];
   acts.forEach((a) => {
     const b = document.createElement('button');
@@ -1477,6 +1649,15 @@ async function mdEditor(e, data, mode = 'rich') {
   // fanboxDrop.saveInto 上，别再造一套。返回绝对路径，写进 markdown 就是真文件，不是 blob:
   async function saveEditorImage(fileOrBlob, suggestedName) {
     if (!window.fanboxDrop) throw new Error('该环境不支持图片写盘');
+    // Finder 拖进来的图本来就有真实路径，让主进程直接 copyFileSync（APFS 上基本是 COW 克隆）。
+    // 走下面 arrayBuffer 那条要把整个文件读进渲染进程堆、再结构化克隆一份跨 IPC、再写盘——
+    // 一张 12MB 的截图白走两趟全量内存拷贝。只有真拿不到路径的（剪贴板位图、blob:）才落到那条
+    const src = window.fanboxDrop.pathForFile ? window.fanboxDrop.pathForFile(fileOrBlob) : '';
+    if (src) {
+      const r = await window.fanboxDrop.copyInto(src, imgDir);
+      if (!r || !r.ok) throw new Error((r && r.error) || '图片写盘失败');
+      return r.path;
+    }
     let name = suggestedName;
     if (!name || !/\.[a-z0-9]+$/i.test(name)) {
       const ext = ((fileOrBlob.type ? fileOrBlob.type.split('/')[1] : '') || 'png').toLowerCase().replace('jpeg', 'jpg');
@@ -1501,15 +1682,8 @@ async function mdEditor(e, data, mode = 'rich') {
   // 两项都一致才算无损。只比文字会漏掉「图没了」，只比 HTML 会被排版差异带偏。
   // marked 不可用时退回严格比对（保守禁掉富文本，绝不误放行有损）。
   const semanticSig = (md) => {
-    // 指纹这里必须看「未过滤」的解析结果，不能走 mdHtml：过滤是一次确定性的信息坍缩，
-    // 两侧同时过滤只会把差异抹平——DOMPurify 删掉的标签（iframe、script 等）从两份指纹里
-    // 一起消失，于是「Milkdown 把 iframe 吃了」这类真丢内容会被判成无损，富文本继续可用，
-    // 下一次自动保存就把丢失写回磁盘（本函数上方注释里点名要拦的正是「HTML 被删」）。
-    // 用 <template>：它的内容在惰性文档里解析，脚本不执行、子资源不加载，
-    // 所以既拿回了 master 的保真度，也没有把 XSS 面放回来。
-    const t = document.createElement('template');
-    t.innerHTML = window.marked.parse(md || '');
-    const d = t.content;
+    const d = document.createElement('div');
+    d.innerHTML = mdHtml(md); // 离屏 div 一样会加载 <img> 并触发 onerror，同样得过净化
     const text = (d.textContent || '').replace(/\s+/g, ' ').trim();
     const bones = [];
     d.querySelectorAll('*').forEach((el) => {
@@ -1640,8 +1814,8 @@ async function mdEditor(e, data, mode = 'rich') {
     const hostCls = { rich: 'crepe-host', read: 'read-host', code: 'mona-host' }[m];
     const seg = (id, label, on) =>
       `<button class="seg-btn${m === id ? ' active' : ''}" data-m="${id}"${on ? '' : ' disabled title="此文件含富文本无法无损保存的语法，改请用源码"'}>${label}</button>`;
-    const hint = m === 'read' ? edStr(forceCode ? '只读 · 此文件富文本往返有损，要改请点源码' : '只读 · 要改请点富文本或源码')
-      : edStr('自动保存 · ' + (isMacOS() ? '⌘S' : 'Ctrl+S') + ' 立即保存');
+    const hint = m === 'read' ? (forceCode ? '此文件用源码模式编辑' : '只读 · 要改请点富文本或源码')
+      : '自动保存 · ⌘S 立即保存';
     // 插入图片：source/rich 都能用，唯独只读（有损文件的兜底阅读态）没意义，不给按钮添乱
     const insImgBtn = m !== 'read' ? `<button id="ed-insimg-btn" class="ghost-btn" type="button">+ ${edStr('插入图片')}</button>` : '';
     body.innerHTML =
@@ -1689,8 +1863,7 @@ async function mdEditor(e, data, mode = 'rich') {
       if (!semanticEqual(front + inst.getMarkdown(), content0)) {
         crepe.disposeIfAny();
         forceCode = true;
-        toast('此文件富文本往返有损，已切到只读阅读模式（要改点源码）');
-        return render('read');
+        return render('read'); // 状态条会写明「此文件用源码模式编辑」，不再额外弹 toast
       }
       try { inst.on((l) => l.markdownUpdated(() => queue())); } catch { /* 旧版 Crepe 无 .on，靠下面的 input 兜底 */ }
       host.addEventListener('input', () => queue(), true); // 兜底：键入路径一定触发
@@ -2006,18 +2179,46 @@ async function snapshotPanel(dirPath) {
   const close = () => { ov.remove(); document.removeEventListener('keydown', onKey, true); };
   ov.onclick = (ev) => { if (ev.target === ov) close(); };
   document.addEventListener('keydown', onKey, true);
-  const d = await api('/api/snapshots?path=' + encodeURIComponent(dirPath));
+  const [d, u] = await Promise.all([api('/api/snapshots?path=' + encodeURIComponent(dirPath)), api('/api/snapshots/usage').catch(() => null)]);
   const body = ov.querySelector('.snap-body');
+  const projName = d.project ? baseOf(d.project) : '';
+  // agent 正在这个项目里干活时不给回滚/清理：一边写一边动它的仓库只会两败俱伤
+  const busyHere = () => {
+    let busy = false;
+    term.sessions.forEach((t) => {
+      const c = t.cwd || t.startDir || '';
+      if (!t.dead && t.status === 'busy' && (c === d.project || c.startsWith(d.project + '/') || d.project.startsWith(c + '/'))) busy = true;
+    });
+    return busy;
+  };
+  // 占用一栏：影子仓库堆在 ~/.fanbox 里从前界面上完全看不见（实测 22GB），这里给个数字和两个清理口
+  const mine = u && u.ok && d.project ? u.repos.find((r) => r.project === d.project) : null;
+  const usageHtml = !u || !u.ok ? '' : `<div class="snap-usage"><span>存档共占用 ${fmtSize(u.total) || '0 B'}${d.project ? ` · 此项目 ${fmtSize(mine ? mine.bytes : 0) || '0 B'}` : ''}</span>` +
+    (mine ? '<button class="ghost-btn snap-restore" data-clean="project">清理此项目存档</button>' : '') +
+    '<button class="ghost-btn snap-restore" data-clean="dead">清理失效仓库</button></div>';
+  const wireClean = () => body.querySelectorAll('[data-clean]').forEach((b) => {
+    b.onclick = async () => {
+      const dead = b.dataset.clean === 'dead';
+      if (!dead && busyHere()) { toast('这个项目的 agent 正在干活，先等它停下（或按 Esc 打断）再清理', true); return; }
+      const msg = dead ? '删除所有没有任何可恢复快照的失效仓库？' : `删除「${projName}」的全部回合存档？删掉后无法再回到之前的任何一轮`;
+      if (!await confirmDialog(msg)) return;
+      b.disabled = true;
+      const r = await apiPost('/api/snapshots/clean', dead ? { dead: true } : { project: d.project });
+      if (!r.ok) { toast(r.error || '清理失败', true); b.disabled = false; return; }
+      toast(r.removed ? `已清理 ${r.removed} 个仓库，释放 ${fmtSize(r.freed) || '0 B'}` : '没有失效仓库');
+      snapshotPanel(dirPath); // 重开一遍，数字和列表都刷新
+    };
+  });
   if (!d.project || !d.snaps.length) {
-    body.innerHTML = '<div class="empty-state">这个文件夹还没有存档<br><br><span class="usage-sub">在内嵌终端里跑 agent 时，每轮开工前会自动存一份，坏了随时能回来</span></div>';
+    body.innerHTML = usageHtml + '<div class="empty-state">这个文件夹还没有存档<br><br><span class="usage-sub">在内嵌终端里跑 agent 时，每轮开工前会自动存一份，坏了随时能回来</span></div>';
+    wireClean();
     return;
   }
   const clock = (ts) => {
     const t = new Date(ts); const hm = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
     return t.toDateString() === new Date().toDateString() ? hm : `${t.getMonth() + 1}/${t.getDate()} ${hm}`;
   };
-  const projName = baseOf(d.project);
-  body.innerHTML = `<div class="snap-hint">每一条都是当时整个项目的完整状态。恢复前会自动把当前状态也存一份，随时能再滚回来。</div>` +
+  body.innerHTML = usageHtml + `<div class="snap-hint">每一条都是当时整个项目的完整状态。恢复前会自动把当前状态也存一份，随时能再滚回来。</div>` +
     d.snaps.map((s, i) => `
     <div class="snap-row">
       <span class="snap-time" title="${new Date(s.ts).toLocaleString()}">${clock(s.ts)}</span>
@@ -2025,16 +2226,11 @@ async function snapshotPanel(dirPath) {
       <span class="snap-ago">${fmtTime(s.ts)}</span>
       <button class="ghost-btn snap-restore" data-i="${i}">回到这时</button>
     </div>`).join('');
-  body.querySelectorAll('.snap-restore').forEach((b) => {
+  wireClean();
+  body.querySelectorAll('.snap-restore[data-i]').forEach((b) => {
     b.onclick = async () => {
       const s = d.snaps[Number(b.dataset.i)];
-      // agent 正在这个项目里干活时不给回滚：一边写一边恢复只会两败俱伤
-      let busy = false;
-      term.sessions.forEach((t) => {
-        const c = t.cwd || t.startDir || '';
-        if (!t.dead && t.status === 'busy' && (c === d.project || c.startsWith(d.project + '/') || d.project.startsWith(c + '/'))) busy = true;
-      });
-      if (busy) { toast('这个项目的 agent 正在干活，先等它停下（或按 Esc 打断）再恢复', true); return; }
+      if (busyHere()) { toast('这个项目的 agent 正在干活，先等它停下（或按 Esc 打断）再恢复', true); return; }
       if (!await confirmDialog(`把「${projName}」整个恢复到 ${clock(s.ts)} 存档时的样子？之后的改动会被移除（当前状态已自动存档，可再滚回来）`)) return;
       b.disabled = true; b.textContent = '恢复中…';
       const r = await apiPost('/api/snapshot-restore', { path: d.project, hash: s.hash });
@@ -2161,6 +2357,14 @@ function showContextMenu(ev, e) {
   items.push({ label: '重命名…', fn: () => doRename(e) });
   items.push({ label: `移到${trashName()}`, danger: true, fn: () => doTrash(e) });
   popupMenu(ev, items);
+}
+// 贴着某个按钮下沿弹菜单（侧栏「更多…」、预览「…」、终端「…」共用；调用方要先 stopPropagation，否则这次点击会冒泡到 document 把菜单当场关掉）
+function popupMenuAt(el, items) {
+  const r = el.getBoundingClientRect();
+  popupMenu({ clientX: r.left, clientY: r.bottom + 4 }, items);
+  // 下方放不下（侧栏贴底的「更多…」）就翻到按钮上方，别压住按钮本身
+  const m = $('#context-menu');
+  if (m && r.bottom + 4 + m.offsetHeight > window.innerHeight - 8) m.style.top = Math.max(8, r.top - m.offsetHeight - 4) + 'px';
 }
 // 在鼠标位置弹一个菜单（右键菜单与空白处双击菜单共用）
 function popupMenu(ev, items) {
@@ -2296,6 +2500,10 @@ async function loadAgentProjects() {
       when.appendChild(dot);
     });
     when.append(agoShort(pj.lastActive));
+    // 两个色点没有文字，悬停给一张图例（复用侧栏解释卡）
+    sideHoverCard(when, () => `<b>Agent 项目</b>
+      <p><i class="agent-dot claude"></i>Claude Code　<i class="agent-dot codex"></i>Codex</p>
+      <p class="tip-note">色点是最近处理过这个项目的 agent，右侧是它最后一次活跃距今多久</p>`);
     li.appendChild(when);
     ul.appendChild(li);
   });
@@ -2322,29 +2530,44 @@ function truncNote() {
 
 // ---------- 命令面板 ----------
 const cmdk = {
-  results: [], active: 0, timer: null, scopeAll: true,
+  results: [], active: 0, timer: null, scopeAll: true, contentMode: false,
   open() {
     $('#cmdk').classList.remove('hidden');
     this.updateScopeLabel();
+    this.updateModeLabel();
     const inp = $('#cmdk-input');
     inp.value = '';
     inp.focus();
-    $('#cmdk-results').innerHTML = '<div class="cmdk-loading">输入开始搜索 · 文件名模糊匹配，「内容:」搜全文（含 PDF、截图里的文字）</div>';
+    $('#cmdk-results').innerHTML = `<div class="cmdk-loading">${this.emptyHint()}</div>`;
     this.results = [];
     this.active = 0;
   },
   close() { $('#cmdk').classList.add('hidden'); },
   toggleScope() { this.scopeAll = !this.scopeAll; this.updateScopeLabel(); this.search($('#cmdk-input').value); },
+  // 全文搜索开关：点「搜内容」或 ⇧Tab 即切换，不用再手输「内容:」前缀（前缀仍兼容）
+  toggleMode() { this.contentMode = !this.contentMode; this.updateModeLabel(); this.search($('#cmdk-input').value); },
   root() { return this.scopeAll ? state.home : (state.cwd || state.home); },
   updateScopeLabel() {
     $('#cmdk-scope').textContent = this.scopeAll ? '全机（主目录及以下）' : '当前目录 ' + tilde(state.cwd || state.home);
     $('#scope-toggle').textContent = this.scopeAll ? '⤢ 全机' : '▢ 当前目录';
     $('#scope-toggle').classList.toggle('on', this.scopeAll);
   },
+  updateModeLabel() {
+    $('#mode-toggle').classList.toggle('on', this.contentMode);
+    $('#cmdk-input').placeholder = this.contentMode
+      ? '搜文件内容（全文，含 PDF、截图里的文字）…'
+      : '按文件名搜索…   用 “内容:” 前缀搜文件内容，如 “内容:useState”';
+    if (!$('#cmdk-input').value.trim()) $('#cmdk-results').innerHTML = `<div class="cmdk-loading">${this.emptyHint()}</div>`;
+  },
+  emptyHint() {
+    return this.contentMode
+      ? '输入开始搜索 · 全文搜索（含 PDF、截图里的文字）'
+      : '输入开始搜索 · 文件名模糊匹配，点「搜内容」或用「内容:」前缀搜全文（含 PDF、截图里的文字）';
+  },
   search(q) {
     clearTimeout(this.timer);
-    if (!q.trim()) { $('#cmdk-results').innerHTML = '<div class="cmdk-loading">输入开始搜索</div>'; return; }
-    const isContent = /^(内容[:：]|content:)/i.test(q);
+    if (!q.trim()) { $('#cmdk-results').innerHTML = `<div class="cmdk-loading">${this.emptyHint()}</div>`; return; }
+    const isContent = this.contentMode || /^(内容[:：]|content:)/i.test(q);
     $('#cmdk-results').innerHTML = '<div class="cmdk-loading">搜索中…</div>';
     this.timer = setTimeout(async () => {
       const root = this.root();
@@ -2425,20 +2648,26 @@ function maybeShowGuide() {
   if (localStorage.getItem('fb_guided')) return;
   const ov = document.createElement('div');
   ov.className = 'guide-overlay';
+  // 一屏说完：一句定位、两个能立刻做的动作。快捷键清单不放这——没人在第一屏记得住
   ov.innerHTML = `<div class="guide-card">
     <div class="guide-logo">${svgWrap(SVG.box, 'currentColor', 46, true)}</div>
-    <h2>欢迎用 FanBox</h2>
-    <p>vibe coding 的驾驶舱——找文件、跑 agent、看它改、随手改，都在一个窗口：</p>
-    <ul>
-      <li><b>${modKey()}K</b> 全局搜文件和文件夹；<b>${modKey()}↵</b> 把项目直接在编辑器整包打开；<code>内容:关键词</code> 搜文件里的字</li>
-      <li>顶部 <b>终端</b> 按钮开内嵌终端跑 Claude Code 等 agent；<b>把文件/文件夹拖进终端</b> 即插入路径喂给它当上下文</li>
-      <li><b>单击</b> 预览，<b>双击</b> 系统打开；预览里 <b>编辑</b> md 走所见即所得、<b>编辑图片</b> 可标注/打码/转格式</li>
-      <li>agent 改了哪些文件，列表实时高亮「改·N」，不用切窗口盯着看</li>
-    </ul>
-    <button id="guide-ok">开始使用</button>
+    <h2>FanBox</h2>
+    <p>找回文件、指挥 agent、看清它改了什么。</p>
+    <div class="guide-actions">
+      <button id="guide-open" class="primary">打开一个项目</button>
+      <button id="guide-agent">启动 Claude Code</button>
+    </div>
+    <a id="guide-skip" class="guide-skip">稍后再说</a>
   </div>`;
   document.body.appendChild(ov);
-  $('#guide-ok').onclick = () => { localStorage.setItem('fb_guided', '1'); ov.remove(); };
+  const done = () => { localStorage.setItem('fb_guided', '1'); ov.remove(); };
+  $('#guide-open').onclick = () => { done(); cmdk.open(); }; // ⌘K 面板：搜到项目回车即进
+  $('#guide-agent').onclick = () => { // 走一键启动按钮同一条路（空闲终端就地起，忙则新标签）
+    done();
+    const a = activeAgents().find((x) => x.id === 'claude') || AGENT_REGISTRY.find((x) => x.id === 'claude');
+    if (a) term.launchAgent(a.cmd);
+  };
+  $('#guide-skip').onclick = done;
 }
 
 // ---------- 预览面板拖拽调宽 ----------
@@ -2721,7 +2950,7 @@ const wechatView = {
     const text = me ? escapeHtml(m.text) : this.mdBody(m.text);
     // 用户发来的图片：用 /api/raw 直接读本机收件箱里的原图，点击走全局 lightbox 放大
     const imgs = (m.images || []).map((p) =>
-      `<img class="wx-img" src="/api/raw?path=${encodeURIComponent(p)}" loading="lazy" alt="图片" onclick="lightbox(this.dataset.path)" data-path="${escapeHtml(p)}">`
+      `<img class="wx-img" src="/api/raw?path=${encodeURIComponent(p)}" loading="lazy" alt="图片" data-path="${escapeHtml(p)}">`
     ).join('');
     const body = imgs ? imgs + (m.text ? `<div class="wx-cap">${text}</div>` : '') : text;
     return `<div class="wx-row ${me ? 'me' : 'bot'}"><div class="wx-av ${me ? 'me' : 'bot'}">${av}</div><div class="wx-bub${me ? '' : ' md'}">${body}</div></div>`;
@@ -2781,10 +3010,14 @@ const wechatView = {
 // app: true 的是桌面应用（无终端 CLI 形态，官方确认），按钮改为 open -a / Start-Process 拉起，检测走 open -Ra
 // sessions: 有会话适配器的 agent 声明续接方式——badge 是项目记忆面板的徽标，resumeCmd 里 {id} 占位符替换成会话 id；
 //           没有 sessions 字段 = 该 agent 暂不支持会话回溯（服务端也没有对应适配器）
-
+// 桌面版拉起的 claude / codex 带上官方 hooks（主进程启动时写到 ~/.fanbox/hooks/），agent 自己汇报忙/等确认/收工，
+// 不再靠刮终端文本。$HOME 交给 shell 展开；网页版没有这份文件（claude 遇到不存在的 --settings 会报错），保持裸命令。
+// config.json 里用户自定义的 agents 命令原样生效，不带 hooks 就退回旧的刮屏判定
+const CLAUDE_HOOKS = window.fanboxEnv ? ' --settings "$HOME/.fanbox/hooks/claude-settings.json"' : '';
+const CODEX_HOOKS = window.fanboxEnv ? ' -c "notify=[\\"$HOME/.fanbox/hooks/codex-notify.sh\\"]"' : '';
 const AGENT_REGISTRY = [
-  { id: 'claude', label: 'Claude Code', cmd: 'claude --dangerously-skip-permissions', bin: 'claude', install: 'npm install -g @anthropic-ai/claude-code', sessions: { badge: 'C', resumeCmd: 'claude --dangerously-skip-permissions --resume {id}' } },
-  { id: 'codex', label: 'Codex', cmd: 'codex', bin: 'codex', install: 'npm install -g @openai/codex', sessions: { badge: '>_', resumeCmd: 'codex resume {id}' } },
+  { id: 'claude', label: 'Claude Code', cmd: 'claude --dangerously-skip-permissions' + CLAUDE_HOOKS, bin: 'claude', install: 'npm install -g @anthropic-ai/claude-code', sessions: { badge: 'C', resumeCmd: 'claude --dangerously-skip-permissions' + CLAUDE_HOOKS + ' --resume {id}' } },
+  { id: 'codex', label: 'Codex', cmd: 'codex' + CODEX_HOOKS, bin: 'codex', install: 'npm install -g @openai/codex', sessions: { badge: '>_', resumeCmd: 'codex' + CODEX_HOOKS + ' resume {id}' } },
   { id: 'hermes', label: 'Hermes Agent', cmd: 'hermes', bin: 'hermes', install: 'curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash' },
   { id: 'openclaw', label: 'OpenClaw', cmd: 'openclaw', bin: 'openclaw', install: 'npm install -g openclaw' },
   { id: 'kimi', label: 'Kimi Code', cmd: 'kimi', bin: 'kimi', install: 'curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash', sessions: { badge: 'K', resumeCmd: 'kimi -S {id}' } },
@@ -2993,10 +3226,7 @@ function bindEvents() {
   $('#preview-close').onclick = closePreview;
   $('#cmdk-trigger').onclick = () => cmdk.open();
   $('#btn-recent').onclick = showRecent;
-  $('#btn-changes').onclick = () => toggleChangesPanel();
-  $('#term-wechat').onclick = () => wechatView.toggle();
-  // 启动时点一下连接状态，连着就给终端里的微信按钮点绿点（不挡初始化）
-  if (window.fanboxWechat) window.fanboxWechat.env().then((e) => wechatView.syncDot(!!(e && e.connected))).catch(() => {});
+  $('#btn-changes').onclick = () => openRoundPanel(); // 变更收件箱 / 会话回放 / 回合存档三个入口收成「本回合」
   $('#btn-terminal').onclick = () => term.toggle();
   bindAgentButtons();
   usagePanel.bind();
@@ -3004,21 +3234,29 @@ function bindEvents() {
   $('#skills-entry').onclick = () => skillsView.show();
   $('#cron-entry').onclick = () => cronPanel.show();
   $('#term-newtab').onclick = () => { wechatView.close(); term.newTab(); };
-  $('#term-max').onclick = () => term.toggleMax();
   // 双击终端顶栏空白处（避开标签/按钮/输入框）= 铺满终端：agent 交互窗口最重要，给它一键放到最大
   $('.term-head').addEventListener('dblclick', (ev) => {
     if (ev.target.closest('button, .term-tab, input')) return;
     term.toggleMax();
   });
-  $('#term-dock').onclick = () => term.setDock(term.dock === 'bottom' ? 'right' : 'bottom');
-  $('#term-replay').onclick = () => player.open();
-  const muteBtn = $('#term-mute');
-  const syncMute = () => { muteBtn.textContent = state.muted ? '🔕' : '🔔'; muteBtn.title = state.muted ? '提示音已关（点击开启）' : '提示音已开（点击静音）'; };
-  syncMute();
-  muteBtn.onclick = () => { state.muted = !state.muted; localStorage.setItem('fb_muted', state.muted ? '1' : '0'); syncMute(); if (!state.muted) playChime('tick'); };
+  // 终端「…」：低频工具按当前状态给动词，菜单项自己说明会发生什么
+  $('#term-more').onclick = (ev) => (ev.stopPropagation(), popupMenuAt(ev.currentTarget, [
+    { label: follow.on ? '停止文件跟随' : '开启文件跟随', fn: () => setFileFollow(!follow.on) },
+    { label: term.maximized ? '还原终端（⌘⇧M）' : '终端铺满（⌘⇧M）', fn: () => term.toggleMax() },
+    { label: term.dock === 'bottom' ? '布局改为左右' : '布局改为上下', fn: () => term.setDock(term.dock === 'bottom' ? 'right' : 'bottom') },
+    { label: state.muted ? '开启提示音' : '关闭提示音', fn: () => { state.muted = !state.muted; localStorage.setItem('fb_muted', state.muted ? '1' : '0'); if (!state.muted) playChime('tick'); } },
+    { label: '终端录像', fn: () => player.open() },
+  ]));
+  // 侧栏「更多…」：五个低频功能的唯一常驻入口（代码各自原样保留，只是不再占主界面）
+  $('#more-entry').onclick = (ev) => (ev.stopPropagation(), popupMenuAt(ev.currentTarget, [
+    { label: '微信 ClawBot', fn: () => wechatView.toggle() },
+    { label: 'AI 整理当前目录…', fn: () => organizeLaunch(state.cwd || state.home) },
+    { label: '终端录像', fn: () => player.open() },
+    { label: '发版向导…', fn: () => releasePanel() },
+    { label: '磁盘占用透视', fn: () => diskPanel(state.cwd || state.home) },
+  ]));
   $('#term-close').onclick = () => term.close();
   $('#btn-sidebar').onclick = () => toggleSidebar();
-  $('#file-follow').onclick = () => setFileFollow(!follow.on);
   // 定位文件按钮已撤（双击终端 tab 即可定位，见 term.locateCwd / renderTabs 的 ondblclick）
   // 终端随窗口尺寸变化重排，避免 TUI 错位
   window.addEventListener('resize', () => term.fitActive());
@@ -3103,6 +3341,7 @@ function bindEvents() {
   document.addEventListener('click', (e) => { if (!e.target.closest('#context-menu')) closeContextMenu(); });
   window.addEventListener('blur', closeContextMenu);
   $('#scope-toggle').onclick = () => cmdk.toggleScope();
+  $('#mode-toggle').onclick = () => { cmdk.toggleMode(); $('#cmdk-input').focus(); };
 
   $('#toggle-hidden').checked = state.showHidden;
   $('#toggle-hidden').onchange = (e) => { state.showHidden = e.target.checked; localStorage.setItem('fb_hidden', state.showHidden ? '1' : '0'); renderFiles(); };
@@ -3139,11 +3378,19 @@ function bindEvents() {
     const cmdkOpen = !$('#cmdk').classList.contains('hidden');
     const lbOpen = !!document.querySelector('.lightbox');
     if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); cmdkOpen ? cmdk.close() : cmdk.open(); return; }
+    // ⌘⇧M 终端铺满/还原（只认 ⌘，Ctrl 组合留给终端里的 TUI）；终端收着时先打开再铺满
+    if (e.metaKey && e.shiftKey && (e.key === 'm' || e.key === 'M')) {
+      if (!term.available()) return; // 浏览器版没有内嵌终端
+      e.preventDefault();
+      if ($('#terminal-panel').classList.contains('hidden')) { term.open(); term.toggleMax(true); }
+      else term.toggleMax();
+      return;
+    }
     if (cmdkOpen) {
       if (e.key === 'Escape') cmdk.close();
       else if (e.key === 'ArrowDown') { e.preventDefault(); cmdk.move(1); }
       else if (e.key === 'ArrowUp') { e.preventDefault(); cmdk.move(-1); }
-      else if (e.key === 'Tab') { e.preventDefault(); cmdk.toggleScope(); }
+      else if (e.key === 'Tab') { e.preventDefault(); e.shiftKey ? cmdk.toggleMode() : cmdk.toggleScope(); }
       else if (e.key === 'Enter') { e.preventDefault(); cmdk.choose(cmdk.active, e.metaKey || e.ctrlKey); }
       return;
     }
@@ -3158,6 +3405,7 @@ function bindEvents() {
     if (e.key === 'Escape' && !$('#preview').classList.contains('hidden')) { closePreview(); return; }
     if ((e.metaKey || e.ctrlKey) && e.key === '[') { e.preventDefault(); goBack(); return; }
     if ((e.metaKey || e.ctrlKey) && (e.key === 'b' || e.key === 'B') && !inInput) { e.preventDefault(); toggleSidebar(); return; }
+    if ((e.metaKey || e.ctrlKey) && e.altKey && e.code === 'KeyL') { e.preventDefault(); roster.next(); return; } // 跳到下一个在等你的会话（终端里也响，按 code：mac 上 ⌥L 的 key 是 ¬）
     if (inInput) return;
     // 主区键盘导航
     if (e.key === 'ArrowDown') { e.preventDefault(); moveCursor(state.cols); }
@@ -3174,6 +3422,48 @@ function bindEvents() {
 function updateGridSizeVisibility() {
   $('#gridsize-seg').style.display = state.view === 'grid' ? '' : 'none';
 }
+
+// ---------- 侧栏「合盖继续干活」开关（macOS 桌面版专属）----------
+// 出门前顺手一勾属高频动作，常驻侧栏；成对的「微信遥控不断线」低频，只在原生「视图」菜单里。
+// 两边读同一份 power:state，主进程改了会广播 power:changed，勾选状态永远一致。
+const powerBar = {
+  st: null,
+  async init() {
+    if (!window.fanboxPower) return; // 浏览器版 / 老 preload：整行不显示
+    const st = await window.fanboxPower.state().catch(() => null);
+    if (!st || st.platform !== 'darwin') return; // 禁休眠靠 pmset，仅 macOS
+    this.st = st;
+    $('#pw-lid').classList.remove('hidden');
+    $('#pw-lid').onclick = () => this.flip();
+    sideHoverCard($('#pw-lid'), () => this.tip());
+    window.fanboxPower.onChange((m) => { this.st = m; this.sync(); });
+    this.sync();
+  },
+  async flip() {
+    const on = !(this.st && this.st.lid);
+    const r = await window.fanboxPower.setLid(on).catch(() => null);
+    if (r) { this.st = r; this.sync(); }
+    if (r && r.ok) toast(r.on ? '已开启 · agent 干活时合盖不休眠' : '已关闭 · 合盖照常休眠');
+    else if (r && r.error && r.error !== 'cancelled' && r.error !== 'setup-cancelled') toast('开启失败：' + r.error, true);
+  },
+  sync() {
+    const st = this.st; const el = $('#pw-lid'); if (!st || !el) return;
+    el.querySelector('.pw-switch').classList.toggle('on', !!st.lid);
+    el.querySelector('.pw-dot').classList.toggle('lit', !!st.lidHolding); // 点亮 = 此刻真的拦着休眠
+  },
+  tip() {
+    const st = this.st || {};
+    let now;
+    if (!st.lid) now = '现在：未开启，合盖照常休眠';
+    else if (st.lidHolding) now = `现在：${st.terms} 个终端开着，agent 正在干活 → 生效中，合盖也不休眠`;
+    else if (st.terms > 0) now = `现在：${st.terms} 个终端开着但都空闲 → 合盖照常休眠`;
+    else now = '现在：没有终端会话 → 合盖照常休眠';
+    return `<b>合盖继续干活</b>
+      <p>翻箱盯着每个终端窗口的工作状态。开启后：只要检测到有 agent 正在干活，合上盖子 Mac 也不休眠，任务接着跑；所有终端都空闲约两分钟后，自动恢复正常休眠——不会让 Mac 一直不睡。</p>
+      <p class="tip-note">合盖跑任务持续耗电发热，建议接电源。首次开启需输一次管理员密码（装一条仅限电源设置的免密规则）。</p>
+      <p class="tip-state">${escapeHtml(now)}</p>`;
+  },
+};
 
 // ---------- 主题 / 皮肤 ----------
 function applyTheme(skin, rerender = true) {
@@ -3415,7 +3705,7 @@ const player = {
   // 入口发现性：有录像时给回放按钮点一个小红点（飞行记录仪默默录了一堆，得让用户知道能回看）
   async refreshHint() {
     if (!window.fanboxRec) return;
-    const btn = $('#term-replay'); if (!btn) return;
+    const btn = $('#term-more'); if (!btn) return; // 录像入口在终端「…」里，红点打在它身上
     try { const r = await window.fanboxRec.list(); btn.classList.toggle('has-rec', !!(r && r.items && r.items.length)); } catch { /* */ }
   },
 };
@@ -3595,7 +3885,9 @@ const term = {
     $('#terminal-resizer').classList.remove('hidden');
     this.applyDock();
     $('#btn-terminal').classList.add('active');
-    for (const t of (saved.tabs || []).slice(0, 8)) await this.newTab(t.cwd || undefined);
+    // 并行 spawn：newTab 在第一个 await 前就把 session 压进数组，按调用顺序排——标签顺序不变，
+    // 而 8 个 pty 的启动从串行 8 次往返变成一轮
+    await Promise.all((saved.tabs || []).slice(0, 8).map((t) => this.newTab(t.cwd || undefined)));
     const want = this.sessions[saved.active];
     if (want) this.activate(want.id);
     if (!this.sessions.length) this.newTab(); // 快照坏了也保证有一个标签
@@ -3682,7 +3974,13 @@ const term = {
     if (this.sessions.length) {
       if ($('#terminal-panel').classList.contains('hidden')) this.open();
       const cur = this.sessions.find((x) => x.id === this.active);
-      if (cur && !cur.dead && await this.isPlainShell(cur)) sess = cur;
+      // 裸 shell 也得站在当前浏览目录里才能复用：浏览到项目 B 点 Claude，不能让它在项目 A 的 shell 里启动。
+      // 先强制校准一次 cwd（平时 4 秒节流，用户可能刚 cd 过），拿不到就按 startDir 算
+      if (cur && !cur.dead) {
+        await this.refreshCwd(cur, true).catch(() => {});
+        const norm = (p) => String(p || '').replace(/\/+$/, '');
+        if (norm(cur.cwd || cur.startDir) === norm(state.cwd) && await this.isPlainShell(cur)) sess = cur;
+      }
     }
     if (!sess) sess = await this.openInDir(state.cwd); // 等 spawn 完，拿确切 session 写入
     if (sess && !sess.dead) { this.input(sess.id, cmd + '\r'); sess.xterm.focus(); toast('已在终端启动 ' + cmd); }
@@ -3937,6 +4235,8 @@ const term = {
         term.adjustFont(sess, -1);
         return false;
       }
+      if (cmd && e.altKey && e.code === 'KeyL') return false; // ⌘⌥L 跳「下一个在等你的」：不给 xterm，冒泡到全局快捷键
+    if (cmd && e.shiftKey && e.code === 'KeyM') return false; // ⌘⇧M 终端铺满/还原：同上，冒泡到全局快捷键（PR #53）
       return true;
     });
 
@@ -4135,7 +4435,7 @@ const term = {
     s.host.remove();
     this.sessions.splice(i, 1);
     updateWatches(); // 该终端的项目目录不再需要监听
-    if (!this.sessions.length) { this.close(); return; }
+    if (!this.sessions.length) { this.close(); roster.render(); return; } // 不经 renderTabs，角标得在这清零
     if (this.active === id) this.activate(this.sessions[Math.max(0, i - 1)].id);
     else this.renderTabs();
   },
@@ -4229,6 +4529,9 @@ const term = {
   // 非活动标签产生输出标记未读小点；长任务（busy>4s）完成且窗口失焦/非当前标签时发系统通知。
   markBusy(s) {
     const now = Date.now();
+    // hooked 会话（收到过 agent 官方 hook 事件）：忙闲由 onAgentEvent 定，输出只管非活动标签的未读点——
+    // 收工后 TUI 的重绘/光标闪烁不能再把它拉回 busy
+    if (s.hooked) { if (s.id !== this.active && !s.unread && now - (s.lastInput || 0) >= 400) { s.unread = true; this.renderTabs(); } return; }
     $('#terminal-panel').classList.remove('term-awaiting'); // 又有动静了，撤掉「轮到你」呼吸
     // 回显过滤：距上次用户输入 <400ms 的输出多半是回显/TUI 重绘，不算 agent 自主干活：
     // 不进入 busy、不推 busyStart；已在 busy 则只续命（agent 干活时排队打字不打断）。
@@ -4261,6 +4564,46 @@ const term = {
     clearTimeout(this._awaitT);
     this._awaitT = setTimeout(() => p.classList.remove('term-awaiting'), 6500);
   },
+  // 官方 hook 事件（main 的 agent:event，见 docs/12「事件端点」）：hooked 会话的忙 / 等确认 / 收工全由 agent 自己说了算，
+  // 不再跑 25 行正则和 2.5s 静默判定；视觉与提示音走和旧路径同一套。未 hooked 的会话（用户手敲 claude、裸 shell）完全不变
+  onAgentEvent({ id, state, event, file, agent }) {
+    const s = this.sessions.find((x) => x.id === id);
+    if (!s) return;
+    if (file) attributeChange(file, id, agent);
+    if (state === 'ended') { // 会话结束回到裸 shell：交还给旧判据
+      s.hooked = false;
+      if (s.status === 'busy') { s.status = 'idle'; this.renderTabs(); }
+      return;
+    }
+    s.hooked = true; s.agent = agent;
+    s.evState = state; roster.render(); // 指挥台按事件态分「等你确认 / 等你输入」；idle_prompt 来时下面可能直接 return，先画
+    const now = Date.now();
+    if (state === 'working') {
+      $('#terminal-panel').classList.remove('term-awaiting');
+      if (s.status !== 'busy') { s.status = 'busy'; s.busyStart = now; this.renderTabs(); }
+      if (event === 'UserPromptSubmit' || event === 'SessionStart') this.roundSnapshot(s); // 回合开工才存档，工具调用不刷
+      this.ensureStatusTick(); // 只为图集保养
+      return;
+    }
+    // needs_permission / needs_input / done：把球踢回给你。idle_prompt 在 Stop 之后 60s 才来，已空闲就别二次报喜
+    if (s.status !== 'busy' && state !== 'needs_permission') return;
+    const dur = now - (s.busyStart || now);
+    s.status = 'idle';
+    this.renderTabs();
+    this.refreshCwd(s);
+    if (state === 'needs_permission') {
+      this.awaitGlow();
+      playChime('ask');
+      if (!document.hasFocus() || s.id !== this.active) this.notify(s, '等待你确认 · ' + (s.title || 'shell'), this.lastReplyExcerpt(s) || (s.title || 'shell') + ' 在等你拍板');
+      return;
+    }
+    if (dur > 1500) this.awaitGlow();
+    if (dur > 4000) {
+      rippleFileArea();
+      playChime('done');
+      if (!document.hasFocus() || s.id !== this.active) this.notify(s, 'agent 任务完成 · ' + (s.title || 'shell'), this.lastReplyExcerpt(s) || (s.title || 'shell') + ' 已空闲');
+    }
+  },
   ensureStatusTick() {
     if (this._statusTimer) return;
     this._statusTimer = setInterval(() => {
@@ -4268,6 +4611,7 @@ const term = {
       this.sessions.forEach((s) => {
         if (s.status !== 'busy') return;
         this.atlasCare(now); // 忙满 5 分钟清一次图集，长中文输出中途也能自愈
+        if (s.hooked) { anyBusy = true; return; } // hooked：收工由 agent 事件宣布，下面的静默/正则启发式不跑
         const quiet = now - (s.lastData || 0);
         if (quiet <= 2500) { anyBusy = true; return; } // claude/codex 忙碌心跳约 1s 一帧，容差太紧会闪断误报
         const tail = this.tailText(s);
@@ -4335,7 +4679,8 @@ const term = {
       const dotState = s.dead ? 'dead' : (s.status === 'busy' ? 'busy' : 'idle');
       const followed = follow.on && follow.sid === s.id; // 文件跟随正盯着这个 tab
       t.className = 'term-tab' + (s.id === this.active ? ' active' : '') + (s.unread ? ' unread' : '') + (followed ? ' following' : '');
-      const dotTitle = s.dead ? '进程已退出' : (s.status === 'busy' ? 'agent 运行中' : '空闲');
+      const dotTitle = roster.dotTitle(s); // 干活中带已跑时长（roster 每秒刷）
+      t.dataset.id = s.id;
       // 终端图标按项目路径染色：同项目同色，和面包屑的配对色点呼应
       const hue = this.hueOf(s.cwd || s.startDir);
       t.title = followed ? '文件跟随正盯着这个终端 · 双击跳到它所在目录' : '双击：文件区跳到该终端所在目录';
@@ -4346,11 +4691,115 @@ const term = {
       t.ondblclick = (e) => { if (e.target.classList.contains('tab-x')) return; this.locateCwd(); };
       bar.appendChild(t);
     });
+    roster.render(); // 标签的每次变化指挥台都跟着重画（状态/标题/增删）
   },
   // 换主题后 WebGL 图集里缓存的还是旧配色字形，且 CJK 宽字符偶发图集损坏（#37/#45）：清一次图集强制重栅格化。
   // try/catch 兜住 GPU 故障，别让单个 session 的渲染异常连累其它 session 或拖垮渲染进程（#35）。
   retheme() { const th = this.theme(); this.sessions.forEach((s) => { try { s.xterm.options.theme = th; s.webgl?.clearTextureAtlas?.(); } catch { /* */ } }); },
 };
+
+// ---------- 指挥台：谁在等我 ----------
+// 真机 5 个 claude 并行时，状态只有标签上的小圆点，「下一个该看谁」全靠脑内记账。这里把在等你的会话摊成一行：
+// 状态（形状 + 颜色 + 文字三重编码，色弱也分得清）、项目、agent、最后一句话、本回合改了几个文件；
+// 只列需要你的（等你确认 / 等你输入 / 刚完成没看）——干活中的标签栏已经有名字和闪点，再列一遍是第二份；
+// 干活中的已跑时长挂在标签圆点的 hover 提示里。没人等你整条消失，所以条一出现就是有事找你。
+// 只在会话 ≥ 2 时出现（一个会话没有「谁在等我」的问题）。⌘⌥L 循环跳到下一个需要你的；「需要你」的数量同步到 Dock 角标。
+// hooked 会话吃 hooks 事件态，未 hooked 的沿用 busy/idle + 确认文案判定——所以对任何 agent、裸 shell 都管用
+const roster = {
+  _tick: null, _badge: null, _iconWanted: new Set(), _h: 0,
+  LABEL: { working: '干活中', ask: '等你确认', input: '等你输入', idle: '空闲', dead: '已退出' },
+  // 形状：实心圆 / 三角 / 菱形 / 空心圆 / 叉——不靠颜色也能一眼分开
+  SHAPE: {
+    working: '<svg viewBox="0 0 10 10" width="10" height="10"><circle cx="5" cy="5" r="4" fill="currentColor"/></svg>',
+    ask: '<svg viewBox="0 0 10 10" width="10" height="10"><path d="M5 .8 9.6 9.2H.4Z" fill="currentColor"/></svg>',
+    input: '<svg viewBox="0 0 10 10" width="10" height="10"><path d="M5 .5 9.5 5 5 9.5.5 5Z" fill="currentColor"/></svg>',
+    idle: '<svg viewBox="0 0 10 10" width="10" height="10"><circle cx="5" cy="5" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>',
+    dead: '<svg viewBox="0 0 10 10" width="10" height="10"><path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  },
+  // 五态：working / ask（等你确认）/ input（等你输入）/ idle / dead
+  stateOf(s) {
+    if (s.dead) return 'dead';
+    if (s.hooked) {
+      if (s.evState === 'needs_permission') return 'ask';
+      if (s.evState === 'needs_input') return 'input';
+      return s.status === 'busy' ? 'working' : 'idle';
+    }
+    if (s.status === 'busy') return 'working';
+    return TERM_ASK_RE.test(term.tailText(s)) ? 'ask' : 'idle'; // 未 hooked：停在审批界面就是等你确认
+  },
+  // 「刚完成未看」：干活中 → 空闲的那一下你没正看着它（非当前标签或窗口失焦）就记一笔，看到即清。
+  // 未 hooked 的沿用通知同一道 4s 门槛，免得裸 shell 跑个 ls 也算「任务完成」
+  track(s, st) {
+    const seen = s.id === term.active && document.hasFocus();
+    if (st === 'idle' && s._rState === 'working' && !seen && (s.hooked || Date.now() - (s.busyStart || 0) > 4000)) s._fresh = true;
+    if (st !== 'idle' || seen) s._fresh = false;
+    s._rState = st;
+  },
+  // 需要你的优先级：等你确认 > 等你输入 > 刚完成未看；0 = 不需要
+  tier(s, st) { return st === 'ask' ? 1 : st === 'input' ? 2 : (st === 'idle' && s._fresh) ? 3 : 0; },
+  dur(ms) {
+    const t = Math.max(0, Math.round(ms / 1000)), h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = t % 60;
+    return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(s).padStart(2, '0');
+  },
+  agentIcon(id) {
+    const key = String(id).replace(/[^\w-]/g, '');
+    if (agentIconCache.has(key)) return agentIconCache.get(key) || escapeHtml(key.slice(0, 1).toUpperCase());
+    if (!this._iconWanted.has(key)) { this._iconWanted.add(key); agentIconHtml(key).then(() => this.render()); } // 首次异步取，到了重画
+    return '';
+  },
+  changed(s) { return state.changeLog.filter((c) => c.termId === s.id).length; },
+  say(s, st) { return st === 'dead' ? '' : escapeHtml(term.lastReplyExcerpt(s, 90)); },
+  rowHtml(s, st) {
+    const hue = term.hueOf(s.cwd || s.startDir);
+    const icon = s.agent ? this.agentIcon(s.agent) : ic('term', `hsl(${hue} 62% 48%)`, 12);
+    const fresh = st === 'idle' && s._fresh ? '<span class="tr-tag">刚完成</span>' : '';
+    const n = this.changed(s);
+    return `<div class="tr-row st-${st}${s.id === term.active ? ' active' : ''}" data-id="${s.id}" title="点击切到该标签">
+      <span class="tr-shape" title="${this.LABEL[st]}">${this.SHAPE[st]}</span><span class="tr-agent">${icon}</span><span class="tr-name">${escapeHtml(s.title || 'shell')}</span>
+      <span class="tr-st">${this.LABEL[st]}</span>${fresh}<span class="tr-say">${this.say(s, st)}</span><span class="tr-files"${n ? ` title="本回合改动 ${n} 个文件"` : ''}>${n ? n + ' 文件' : ''}</span></div>`;
+  },
+  render() {
+    const box = $('#term-roster'); if (!box) return;
+    const list = term.sessions.map((s) => { const st = this.stateOf(s); this.track(s, st); return { s, st }; });
+    // Dock 角标：几个会话在等你。不看指挥台显不显示——一个会话在等你也该亮
+    const need = list.filter((x) => this.tier(x.s, x.st)).length;
+    if (need !== this._badge && window.fanboxWin && window.fanboxWin.setBadge) { this._badge = need; window.fanboxWin.setBadge(need ? String(need) : ''); }
+    list.some((x) => x.st === 'working') ? this.startTick() : this.stopTick(); // 有人干活就每秒刷标签上的已跑时长
+    const rows = list.filter((x) => this.tier(x.s, x.st));
+    const show = list.length >= 2 && rows.length > 0;
+    box.classList.toggle('hidden', !show);
+    if (!show) box.innerHTML = '';
+    else {
+      box.innerHTML = rows.map(({ s, st }) => this.rowHtml(s, st)).join('');
+      box.querySelectorAll('.tr-row').forEach((el) => { el.onclick = () => term.activate(el.dataset.id); });
+    }
+    const h = show ? box.offsetHeight : 0;
+    if (h !== this._h) { this._h = h; term.fitActive(); } // 条的高度变了（出现/消失/行数变）xterm 得重新量行数
+  },
+  dotTitle(s) { return s.dead ? '进程已退出' : (s.status === 'busy' ? `agent 运行中 · 已跑 ${this.dur(Date.now() - (s.busyStart || Date.now()))}` : '空闲'); },
+  // 每秒刷标签圆点提示里的已跑时长；指挥台里的行（在等你的）不重画，重画会抖 hover
+  startTick() {
+    if (this._tick) return;
+    this._tick = setInterval(() => {
+      document.querySelectorAll('#term-tabs .term-tab').forEach((el) => {
+        const s = term.sessions.find((x) => x.id === el.dataset.id); if (!s) return;
+        const d = el.querySelector('.tab-dot'); if (d) d.title = this.dotTitle(s);
+      });
+    }, 1000);
+  },
+  stopTick() { clearInterval(this._tick); this._tick = null; },
+  // ⌘⌥L：跳到下一个需要你的会话。按优先级排好队，从当前所在位置往后循环，没有就说一声
+  next() {
+    const list = term.sessions.map((s) => ({ s, t: this.tier(s, this.stateOf(s)) })).filter((x) => x.t).sort((a, b) => a.t - b.t);
+    if (!list.length) { toast('没有在等你的'); return; }
+    const i = list.findIndex((x) => x.s.id === term.active);
+    const pick = list[(i + 1) % list.length].s;
+    if ($('#terminal-panel').classList.contains('hidden')) term.open();
+    term.activate(pick.id);
+  },
+};
+// 窗口拿回焦点 = 你在看当前标签：「刚完成未看」就算看过了，角标随之减
+window.addEventListener('focus', () => roster.render());
 
 // ---------- Agent 用量面板（侧栏常驻，可开合）----------
 // Claude Code 是官方限额窗口（5h/周，OAuth 接口）+ 本地 token 统计兜底，Codex 是官方配额快照（来自其会话日志）
@@ -4645,7 +5094,7 @@ const mona = {
   lang(ex) {
     const m = {
       js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript',
-      json: 'json', json5: 'json', jsonc: 'json', md: 'markdown', markdown: 'markdown', html: 'html', htm: 'html', vue: 'html',
+      json: 'json', jsonl: 'json', json5: 'json', jsonc: 'json', md: 'markdown', markdown: 'markdown', html: 'html', htm: 'html', vue: 'html',
       css: 'css', scss: 'scss', less: 'less', py: 'python', go: 'go', rs: 'rust', java: 'java', rb: 'ruby', php: 'php',
       c: 'c', cpp: 'cpp', cc: 'cpp', h: 'cpp', hpp: 'cpp', cs: 'csharp', sh: 'shell', bash: 'shell', zsh: 'shell',
       yml: 'yaml', yaml: 'yaml', toml: 'ini', ini: 'ini', conf: 'ini', xml: 'xml', sql: 'sql', swift: 'swift', lua: 'lua', kt: 'kotlin', dart: 'dart', r: 'r',
@@ -4748,12 +5197,30 @@ function recordChange(dir, filename) {
   state.changeTimeline.push({ path: full, name, ts: now }); // 每次写入都记一笔，供会话回放
   if (state.changeTimeline.length > 3000) state.changeTimeline.shift();
   const existing = state.changeLog.find((c) => c.path === full);
-  if (existing) { existing.ts = now; existing.count++; }
+  // hook 刚报过的同一文件，监听器紧跟着再报一次是同一笔改动：只刷时间不加次数
+  if (existing) { existing.ts = now; if (now - (existing.hookTs || 0) > 3000) existing.count++; }
   else state.changeLog.unshift({ path: full, name, dir, ts: now, count: 1 });
   // 最新置顶；已存在的移到队首
   state.changeLog.sort((a, b) => b.ts - a.ts);
   if (state.changeLog.length > 100) state.changeLog.length = 100;
   renderChangesBadge();
+}
+// agent 官方 hook 报来的文件改动（PostToolUse Edit/Write）：进同一个收件箱并归属到终端/agent。
+// 监听范围外（别的目录）的改动只有这条路进得来；监听范围内的多半随后还会被监听器报一次，靠 hookTs 去重
+function attributeChange(full, termId, agent) {
+  const cwd = state.cwd && full.startsWith(state.cwd.replace(/\/$/, '') + '/') ? state.cwd.replace(/\/$/, '') : '';
+  const dir = cwd || full.slice(0, full.lastIndexOf('/'));
+  const rel = full.slice(dir.length + 1);
+  if (!dir || !rel) return;
+  const now = Date.now();
+  let c = state.changeLog.find((x) => x.path === full);
+  if (!c || now - c.ts > 3000) { recordChange(dir, rel); c = state.changeLog.find((x) => x.path === full); }
+  if (c) { c.hookTs = now; c.termId = termId; c.agent = agent; }
+  // 时间线上这笔写入也记归属：「本回合」面板按时间窗切回合，靠它把文件分到终端/agent 名下
+  for (let i = state.changeTimeline.length - 1; i >= 0; i--) {
+    const t = state.changeTimeline[i];
+    if (t.path === full) { t.termId = termId; t.agent = agent; break; }
+  }
 }
 function renderChangesBadge() {
   const b = $('#changes-badge'); if (!b) return;
@@ -4801,26 +5268,40 @@ function toggleChangesPanel() {
   }, 0);
 }
 // WOW2 会话回放：像刷视频一样拖时间轴，重现这段时间 agent 一步步改了哪些文件
+// 类名/ID 全部带 sreplay- 前缀：和终端录像的 .replay-panel/.replay-list 同名会被后者的
+// 1180×800 + 240px 左栏样式盖掉。独立弹窗版已无入口，逻辑抽成 mountReplay 供「本回合」面板底部嵌用；函数保留
 function openReplay() {
   const tl = state.changeTimeline.slice();
   if (tl.length < 2) { toast('变更太少，先让 agent 多改几下再回放', true); return; }
-  const t0 = tl[0].ts, t1 = tl[tl.length - 1].ts;
-  const span = Math.max(1000, t1 - t0);
   const ov = document.createElement('div');
-  ov.className = 'replay-ov';
+  ov.className = 'sreplay-ov';
   ov.innerHTML =
-    `<div class="replay-panel">
-      <div class="replay-head"><span>会话回放 · ${tl.length} 次写入 · 跨 ${fmtDur(span)}</span><button class="replay-close ghost-btn">关闭 (Esc)</button></div>
-      <div class="replay-now"><span class="rn-label">此刻 agent 正在改</span><span class="rn-file" id="replay-now">—</span></div>
-      <div class="replay-track" id="replay-track"><div class="replay-fill" id="replay-fill"></div><div class="replay-playhead" id="replay-playhead"></div></div>
-      <div class="replay-ctl"><button id="replay-play" class="primary">▶ 播放</button><input type="range" id="replay-range" min="0" max="1000" value="1000"><span id="replay-count" class="replay-count"></span></div>
-      <div class="replay-list" id="replay-list"></div>
+    `<div class="sreplay-panel">
+      <div class="sreplay-head"><span>会话回放 · ${tl.length} 次写入 · 跨 ${fmtDur((tl[tl.length - 1].ts - tl[0].ts) / 1000)}</span><button class="sreplay-close ghost-btn">关闭 (Esc)</button></div>
+      <div class="sreplay-mount"></div>
     </div>`;
   document.body.appendChild(ov);
-  const track = ov.querySelector('#replay-track');
-  tl.forEach((e) => { const t = document.createElement('i'); t.className = 'replay-tick'; t.style.left = ((e.ts - t0) / span * 100) + '%'; track.appendChild(t); });
-  const range = ov.querySelector('#replay-range');
-  const playBtn = ov.querySelector('#replay-play');
+  const rp = mountReplay(ov.querySelector('.sreplay-mount'), tl);
+  const close = () => { rp.stop(); ov.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  document.addEventListener('keydown', onKey, true);
+  ov.querySelector('.sreplay-close').onclick = close;
+  ov.onclick = (e) => { if (e.target === ov) close(); };
+}
+// 回放时间轴本体：挂到任意容器里。tl 是按时间升序的写入记录 [{path,name,ts}]，返回 { stop } 供宿主关闭时停播
+function mountReplay(host, tl) {
+  const t0 = tl[0].ts, t1 = tl[tl.length - 1].ts;
+  const span = Math.max(1000, t1 - t0);
+  host.innerHTML =
+    `<div class="sreplay-now"><span class="rn-label">此刻 agent 正在改</span><span class="rn-file" id="sreplay-now">—</span></div>
+      <div class="sreplay-track" id="sreplay-track"><div class="sreplay-fill" id="sreplay-fill"></div><div class="sreplay-playhead" id="sreplay-playhead"></div></div>
+      <div class="sreplay-ctl"><button id="sreplay-play" class="primary">▶ 播放</button><input type="range" id="sreplay-range" min="0" max="1000" value="1000"><span id="sreplay-count" class="sreplay-count"></span></div>
+      <div class="sreplay-list" id="sreplay-list"></div>`;
+  const q = (s) => host.querySelector(s);
+  const track = q('#sreplay-track');
+  tl.forEach((e) => { const t = document.createElement('i'); t.className = 'sreplay-tick'; t.style.left = ((e.ts - t0) / span * 100) + '%'; track.appendChild(t); });
+  const range = q('#sreplay-range');
+  const playBtn = q('#sreplay-play');
   let raf = null, playing = false, startWall = 0, startFrac = 0;
   const DURATION = Math.min(20000, Math.max(6000, span / 3)); // 把真实时长压缩到 6–20 秒
   const render = (frac) => {
@@ -4828,12 +5309,12 @@ function openReplay() {
     let lastIdx = -1;
     for (let i = 0; i < tl.length; i++) { if (tl[i].ts <= at) lastIdx = i; else break; }
     const done = lastIdx + 1;
-    ov.querySelector('#replay-fill').style.width = (frac * 100) + '%';
-    ov.querySelector('#replay-playhead').style.left = (frac * 100) + '%';
-    ov.querySelector('#replay-now').textContent = lastIdx >= 0 ? tl[lastIdx].name : '—';
-    ov.querySelector('#replay-count').textContent = `${done}/${tl.length}`;
+    q('#sreplay-fill').style.width = (frac * 100) + '%';
+    q('#sreplay-playhead').style.left = (frac * 100) + '%';
+    q('#sreplay-now').textContent = lastIdx >= 0 ? tl[lastIdx].name : '—';
+    q('#sreplay-count').textContent = `${done}/${tl.length}`;
     const recent = tl.slice(Math.max(0, lastIdx - 5), lastIdx + 1).reverse();
-    ov.querySelector('#replay-list').innerHTML = recent.map((e, i) => `<div class="rl-row${i === 0 ? ' rl-now' : ''}"><span>${escapeHtml(e.name)}</span><span class="rl-t">${fmtClock(e.ts)}</span></div>`).join('');
+    q('#sreplay-list').innerHTML = recent.map((e, i) => `<div class="rl-row${i === 0 ? ' rl-now' : ''}"><span>${escapeHtml(e.name)}</span><span class="rl-t">${fmtClock(e.ts)}</span></div>`).join('');
   };
   const stop = () => { playing = false; if (raf) cancelAnimationFrame(raf); raf = null; playBtn.textContent = '▶ 播放'; };
   const step = () => {
@@ -4851,18 +5332,136 @@ function openReplay() {
     raf = requestAnimationFrame(step);
   };
   range.oninput = () => { stop(); render(Number(range.value) / 1000); };
-  const close = () => { stop(); ov.remove(); document.removeEventListener('keydown', onKey); };
-  const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
-  document.addEventListener('keydown', onKey, true);
-  ov.querySelector('.replay-close').onclick = close;
-  ov.onclick = (e) => { if (e.target === ov) close(); };
   render(1); // 默认停在最终态
+  return { stop };
 }
-function fmtDur(ms) {
-  const s = Math.round(ms / 1000);
-  if (s < 60) return s + ' 秒';
-  const m = Math.round(s / 60);
-  return m < 60 ? m + ' 分钟' : (m / 60).toFixed(1) + ' 小时';
+
+// ---------- 本回合面板：变更收件箱 + 会话回放 + 回合存档三个入口收成一个 ----------
+// 主链路「agent 完成 → 看到改动 → 收或退」在这一个面板里走完。回合 = 影子仓库的一次快照（agent 开工瞬间存的），
+// 最新一次就是当前回合；落在 [本回合存档, 下一回合存档) 时间窗里的写入归这一回合。hook 报过归属的归到
+// 终端/agent 名下，其余归「文件监听」。+/- 行数悬停到哪行算哪行，不一开面板就全算。
+// agent 正在这个项目里干活时不给回滚（旧存档面板同一条规矩：一边写一边动它的仓库只会两败俱伤）
+function agentBusyIn(project) {
+  let busy = false;
+  term.sessions.forEach((t) => {
+    const c = t.cwd || t.startDir || '';
+    if (!t.dead && t.status === 'busy' && (c === project || c.startsWith(project + '/') || project.startsWith(c + '/'))) busy = true;
+  });
+  return busy;
+}
+async function openRoundPanel() {
+  const old = $('.round-overlay'); if (old) old.remove();
+  const dirPath = state.cwd || state.home;
+  const ov = document.createElement('div');
+  ov.className = 'input-overlay snap-overlay round-overlay';
+  ov.innerHTML = `<div class="input-dialog snap-dialog round-dialog">
+    <div class="input-title round-title"><span>本回合 · ${escapeHtml(dirPath.replace(state.home, '~'))}</span><button class="ghost-btn round-close">关闭 (Esc)</button></div>
+    <div class="snap-body round-body"><div class="cmdk-loading">读存档中…</div></div></div>`;
+  document.body.appendChild(ov);
+  let replay = null;
+  const onKey = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  const close = () => { if (replay) replay.stop(); ov.remove(); document.removeEventListener('keydown', onKey, true); };
+  ov.onclick = (ev) => { if (ev.target === ov) close(); };
+  ov.querySelector('.round-close').onclick = close;
+  document.addEventListener('keydown', onKey, true);
+  const d = await api('/api/snapshots?path=' + encodeURIComponent(dirPath)).catch(() => ({ snaps: [] }));
+  const project = d.project || dirPath;
+  const snaps = d.snaps || []; // 最新在前
+  const body = ov.querySelector('.round-body');
+  const clock = (ts) => {
+    const t = new Date(ts); const hm = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
+    return t.toDateString() === new Date().toDateString() ? hm : `${t.getMonth() + 1}/${t.getDate()} ${hm}`;
+  };
+  const inProject = (p) => p === project || p.startsWith(project.replace(/\/$/, '') + '/');
+  const groupLabel = (termId, agent) => {
+    if (!termId) return '文件监听';
+    const s = term.sessions.find((x) => x.id === termId);
+    return `终端「${s ? s.title : termId}」 · ${agent || 'agent'}`;
+  };
+  let cur = 0;
+  const done = new Map(); // path → 已还原/已移入废纸篓（面板开着期间记住，fs 监听再报一次也不复活按钮）
+  const render = () => {
+    if (replay) { replay.stop(); replay = null; }
+    const start = snaps.length ? snaps[cur].ts : 0;
+    const end = cur > 0 ? snaps[cur - 1].ts : Infinity;
+    const tl = state.changeTimeline.filter((x) => x.ts >= start && x.ts < end && inProject(x.path));
+    // 按文件聚合：最新一次 hook 归属说了算；一个文件在本回合被写了几次也记着
+    const files = new Map();
+    for (const x of tl) {
+      const f = files.get(x.path) || { path: x.path, name: x.name, count: 0, ts: 0, termId: '', agent: '' };
+      f.count++; f.ts = Math.max(f.ts, x.ts);
+      if (x.termId) { f.termId = x.termId; f.agent = x.agent; }
+      files.set(x.path, f);
+    }
+    const groups = new Map();
+    for (const f of files.values()) { const k = f.termId || ''; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(f); }
+    const keys = [...groups.keys()].sort((a, b) => (a === '' ? 1 : 0) - (b === '' ? 1 : 0)); // 文件监听组垫底
+    const sel = snaps.length
+      ? `<select class="round-sel" title="回合 = agent 开工瞬间的一次存档">${snaps.map((s, i) => `<option value="${i}"${i === cur ? ' selected' : ''}>${i === 0 ? '当前回合 · ' : ''}${clock(s.ts)} · ${escapeHtml(s.label)}</option>`).join('')}</select>`
+      : '<span class="round-sel round-sel-none">还没有存档 · 显示本会话全部改动</span>';
+    body.innerHTML =
+      `<div class="round-top">${sel}<button class="ghost-btn snap-restore round-rollback"${snaps.length ? '' : ' disabled'} title="整个项目回到这一回合开工前的样子（回滚前会再自动存一份）">整回合回滚</button><button class="ghost-btn snap-restore round-manage" title="看存档占用、清理旧存档">存档管理…</button></div>` +
+      (files.size ? keys.map((k) => {
+        const rows = groups.get(k).sort((a, b) => b.ts - a.ts).map((f) => {
+          const rel = f.path.startsWith(project + '/') ? f.path.slice(project.length + 1) : f.path.replace(state.home, '~');
+          const e = { path: f.path, name: f.name, kind: kindFromName(f.path), isDir: false };
+          const dn = done.get(f.path);
+          return `<div class="round-row${dn ? ' rr-done' : ''}" data-path="${escapeHtml(f.path)}">
+            <span class="rr-ic">${iconSvg(e, 16)}</span>
+            <span class="rr-path" title="${escapeHtml(f.path)}">${escapeHtml(rel)}${f.count > 1 ? ` <em class="rr-n">×${f.count}</em>` : ''}</span>
+            <span class="rr-stat" title="悬停算 +/- 行数">${dn ? escapeHtml(dn) : ''}</span>
+            <span class="rr-time">${fmtClock(f.ts)}</span>
+            ${dn ? '' : `<button class="ghost-btn snap-restore" data-act="diff">查看改动</button><button class="ghost-btn snap-restore" data-act="restore" title="只把这一个文件退回本回合开工前（git 项目退回 HEAD）；本回合新建的文件会移入废纸篓">还原此文件</button>`}
+          </div>`;
+        }).join('');
+        return `<div class="round-group">${escapeHtml(groupLabel(k, groups.get(k)[0].agent))} · ${groups.get(k).length}</div>${rows}`;
+      }).join('') : '<div class="round-empty">这一回合还没有捕捉到文件改动。<br>跑起 agent，它改的文件会实时出现在这里。</div>') +
+      `<div class="round-replay"><div class="round-replay-head">回放 · ${tl.length} 次写入${tl.length >= 2 ? ' · 跨 ' + fmtDur((tl[tl.length - 1].ts - tl[0].ts) / 1000) : ''}</div><div class="round-replay-mount">${tl.length < 2 ? '<div class="round-empty">写入太少，没法回放</div>' : ''}</div></div>`;
+    if (tl.length >= 2) replay = mountReplay(body.querySelector('.round-replay-mount'), tl);
+    const selEl = body.querySelector('select.round-sel');
+    if (selEl) selEl.onchange = () => { cur = Number(selEl.value); render(); };
+    body.querySelector('.round-manage').onclick = () => { close(); snapshotPanel(dirPath); };
+    body.querySelector('.round-rollback').onclick = async () => {
+      const s = snaps[cur]; if (!s) return;
+      if (agentBusyIn(project)) { toast('这个项目的 agent 正在干活，先等它停下（或按 Esc 打断）再恢复', true); return; }
+      if (!await confirmDialog(`把「${baseOf(project)}」整个恢复到 ${clock(s.ts)} 存档时的样子？之后的改动会被移除（当前状态已自动存档，可再滚回来）`)) return;
+      const r = await apiPost('/api/snapshot-restore', { path: project, hash: s.hash });
+      if (!r.ok) { toast(r.error || '恢复失败', true); return; }
+      close();
+      toast(`已恢复到 ${clock(s.ts)} · 恢复前的状态也存了一份`);
+      navigate(state.cwd);
+    };
+    body.querySelectorAll('.round-row').forEach((row) => {
+      const p = row.dataset.path;
+      const e = { path: p, name: baseOf(p), kind: kindFromName(p), isDir: false };
+      const stat = row.querySelector('.rr-stat');
+      // +/- 行数按需算：第一次悬停才去问，问过就记在行上
+      row.addEventListener('mouseenter', async () => {
+        if (stat.dataset.got || done.has(p)) return;
+        stat.dataset.got = '1'; stat.textContent = '…';
+        const r = await api(`/api/change-stat?path=${encodeURIComponent(p)}${snaps[cur] ? '&tag=' + snaps[cur].hash : ''}`).catch(() => null);
+        if (!r || !r.ok) { stat.textContent = '—'; return; }
+        if (r.binary) stat.textContent = '二进制';
+        else if (r.same) stat.textContent = '无差异';
+        else stat.innerHTML = `${r.isNew ? '<i class="rr-new">新</i> ' : ''}<span class="rr-add">+${r.add}</span> <span class="rr-del">−${r.del}</span>`;
+      }, { once: true });
+      row.querySelectorAll('[data-act]').forEach((b) => {
+        b.onclick = async (ev) => {
+          ev.stopPropagation();
+          if (b.dataset.act === 'diff') { close(); await navigate(dirOf(p)); applySelection(p); showDiff(state.entries.find((x) => x.path === p) || e); return; } // 目录里有真条目就用它，页脚的大小/时间才有数
+          if (agentBusyIn(project)) { toast('这个项目的 agent 正在干活，先等它停下（或按 Esc 打断）再还原', true); return; }
+          if (!await confirmDialog(`把「${e.name}」退回本回合开工前的版本？之后对它的改动会被移除（本回合新建的文件会移入废纸篓，可找回）`)) return;
+          b.disabled = true; b.textContent = '还原中…';
+          const r = await apiPost('/api/snapshot-restore-file', { file: p, tag: snaps[cur] ? snaps[cur].hash : undefined });
+          if (!r.ok) { toast(r.error || '还原失败', true); b.disabled = false; b.textContent = '还原此文件'; return; }
+          done.set(p, r.trashed ? '已移入废纸篓' : '已还原');
+          toast(r.trashed ? `「${e.name}」是本回合新建的，已移入废纸篓` : `「${e.name}」已还原`);
+          render();
+        };
+      });
+    });
+  };
+  render();
 }
 function perfNow() { return (window.performance && performance.now) ? performance.now() : Date.now(); }
 // 从文件名粗判类型（变更项可能不在当前 entries 里）
@@ -5186,14 +5785,14 @@ function liveHtml(e, first) {
   const body = $('#preview-body');
   let wrap = body.querySelector('.follow-html');
   if (first || !wrap) {
-    body.innerHTML = `<div class="follow-html"><iframe class="iframe-preview" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals" src="${fsUrl(e.path, Date.now())}"></iframe></div>`;
+    body.innerHTML = `<div class="follow-html"><iframe class="iframe-preview" sandbox="allow-scripts allow-same-origin allow-forms allow-modals" src="${fsUrl(e.path, Date.now())}"></iframe></div>`;
     return;
   }
   if (follow.swapping) { follow.swapDirty = true; return; } // 正在换页，攒一次换完补刷
   follow.swapping = true;
   const next = document.createElement('iframe');
   next.className = 'iframe-preview follow-next';
-  next.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups allow-modals'); // 与常规 html 预览同口径：经隔离端口给 same-origin（跨源于 App，接管不了）
+  next.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-modals'); // 与常规 html 预览同口径：经隔离端口给 same-origin（跨源于 App，接管不了）
   let swapped = false;
   const swap = () => {
     if (swapped) return;
@@ -5266,7 +5865,7 @@ if (window.fanboxPty) {
   window.fanboxPty.onExit(({ id }) => {
     const s = term.sessions.find((x) => x.id === id);
     if (s) {
-      s.dead = true; s.status = 'dead';
+      s.dead = true; s.status = 'dead'; s.hooked = false;
       s.xterm.write('\r\n\x1b[90m[进程已退出 — 回车重开，或 ✕ 关闭]\x1b[0m\r\n');
       term.renderTabs();
       term.notify(s, '终端已退出', (s.title || 'shell') + ' 的进程结束了');
@@ -5284,7 +5883,7 @@ if (window.fanboxFs) {
       const now = Date.now(); let dirty = false;
       for (const [k, v] of state.changed) { if (now - v.ts > 4500) { state.changed.delete(k); dirty = true; } }
       if (!state.changed.size) { clearInterval(sweep); sweep = null; }
-      if (dirty) renderFiles();
+      if (dirty) refreshHeat(); // 只熄灯，不重铺目录
     }, 1000); // 单一清理定时器，避免大批量变更时堆积成千上万个 timer
   };
   window.fanboxFs.onChanged(({ dir, filename }) => {
@@ -5355,91 +5954,6 @@ function sideHoverCard(el, build) {
   window.addEventListener('blur', hide);
 }
 
-// ---------- Sidebar Away: keep working / WeChat stay-awake (macOS pmset + Windows powerSaveBlocker) ----------
-const powerBar = {
-  st: null,
-  async init() {
-    if (!window.fanboxPower) return; // browser build / old preload: hide the whole section
-    const st = await window.fanboxPower.state().catch(() => null);
-    // macOS: pmset disablesleep; Windows: powerSaveBlocker (no elevation)
-    if (!st || (st.platform !== 'darwin' && st.platform !== 'win32')) return;
-    this.st = st;
-    $('#power-sec').classList.remove('hidden');
-    // Windows has no "lid closed" product language — use "keep awake while tasks run"
-    if (st.platform === 'win32') {
-      const lidLab = $('#pw-lid') && $('#pw-lid').querySelector('.pw-label');
-      if (lidLab) lidLab.textContent = '有任务时保持唤醒';
-    }
-    $('#pw-lid').onclick = () => this.flip('lid');
-    $('#pw-wechat').onclick = () => this.flip('wechat');
-    sideHoverCard($('#pw-lid'), () => this.tipLid());
-    sideHoverCard($('#pw-wechat'), () => this.tipWechat());
-    window.fanboxPower.onChange((m) => { this.st = m; this.sync(); });
-    this.sync();
-  },
-  async flip(kind) {
-    const st = this.st || {};
-    const on = !(kind === 'lid' ? st.lid : st.wechat);
-    const r = await (kind === 'lid' ? window.fanboxPower.setLid(on) : window.fanboxPower.setWechat(on)).catch(() => null);
-    if (r) { this.st = r; this.sync(); }
-    const winPlat = (this.st && this.st.platform) === 'win32';
-    if (r && r.ok) {
-      if (kind === 'lid') {
-        toast(r.on
-          ? (winPlat ? '已开启 · 有终端时尽量不睡眠' : '已开启 · agent 干活时合盖不休眠')
-          : (winPlat ? '已关闭 · 恢复正常休眠' : '已关闭 · 合盖照常休眠'));
-      } else toast(r.on ? '已开启 · 微信连着时不休眠' : '已关闭 · 恢复正常休眠');
-    } else if (r && r.error && r.error !== 'cancelled' && r.error !== 'setup-cancelled') toast('开启失败：' + r.error, true);
-  },
-  sync() {
-    const st = this.st; if (!st) return;
-    const row = (id, on, lit) => {
-      const el = $(id); if (!el) return;
-      el.querySelector('.pw-switch').classList.toggle('on', on);
-      el.querySelector('.pw-dot').classList.toggle('lit', lit);
-    };
-    row('#pw-lid', !!st.lid, !!st.lidHolding);
-    row('#pw-wechat', !!st.wechat, !!st.wechatHolding);
-  },
-  tipLid() {
-    const st = this.st || {};
-    const winPlat = st.platform === 'win32';
-    let now;
-    if (!st.lid) now = winPlat ? '现在：未开启，系统照常休眠' : '现在：未开启，合盖照常休眠';
-    else if (st.lidHolding) now = winPlat
-      ? `现在：${st.terms} 个终端开着 → 生效中，尽量不睡眠`
-      : `现在：${st.terms} 个终端开着，agent 正在干活 → 生效中，合盖也不休眠`;
-    else if (st.terms > 0) now = winPlat
-      ? `现在：${st.terms} 个终端开着但判定空闲 → 系统照常休眠`
-      : `现在：${st.terms} 个终端开着但都空闲 → 合盖照常休眠`;
-    else now = winPlat ? '现在：没有终端会话 → 系统照常休眠' : '现在：没有终端会话 → 合盖照常休眠';
-    if (winPlat) {
-      return `<b>有任务时保持唤醒</b>
-      <p>开启后：只要还有终端会话在跑，Windows 会尽量不进入睡眠，agent 任务能接着干；终端全退约两分钟后恢复正常休眠。笔记本合盖是否睡眠仍看「电源选项 → 合上盖子的操作」。</p>
-      <p class="tip-note">持续耗电发热，建议接电源并把合盖设为「不采取任何操作」。无需管理员密码（powerSaveBlocker）。</p>
-      <p class="tip-state">${escapeHtml(now)}</p>`;
-    }
-    return `<b>合盖继续干活</b>
-      <p>翻箱盯着每个终端窗口的工作状态。开启后：只要检测到有 agent 正在干活，合上盖子 Mac 也不休眠，任务接着跑；所有终端都空闲约两分钟后，自动恢复正常休眠——不会让 Mac 一直不睡。</p>
-      <p class="tip-note">合盖跑任务持续耗电发热，建议接电源。首次开启需输一次管理员密码（装一条仅限电源设置的免密规则）。</p>
-      <p class="tip-state">${escapeHtml(now)}</p>`;
-  },
-  tipWechat() {
-    const st = this.st || {};
-    const winPlat = st.platform === 'win32';
-    let now;
-    if (!st.wechat) now = winPlat ? '现在：未开启，系统照常休眠' : '现在：未开启，合盖照常休眠';
-    else if (st.wechatHolding) now = winPlat
-      ? '现在：微信已连接 → 生效中，尽量不睡眠'
-      : '现在：微信已连接 → 生效中，合盖 / 息屏也不休眠';
-    else now = '现在：微信未连接 → 暂不生效，连上后自动开始守护';
-    return `<b>微信遥控不断线</b>
-      <p>开启后，手机微信连着 ClawBot 期间${winPlat ? '系统尽量不睡眠' : '，合盖 / 息屏也不休眠'}——人在外面也能一直用微信遥控本机的 Claude Code / Codex；微信断开自动恢复正常休眠。</p>
-      <p class="tip-note">持续耗电发热，建议接电源。${winPlat ? '无需管理员密码（powerSaveBlocker）。' : '首次开启需输一次管理员密码（装一条仅限电源设置的免密规则）。'}</p>
-      <p class="tip-state">${escapeHtml(now)}</p>`;
-  },
-};
-
 // ---------- 版本号与版本历史：brand 旁小版本标，悬停看最新更新，点击看全部 ----------
 const verInfo = {
   data: null,
@@ -5463,7 +5977,7 @@ const verInfo = {
       .replace(/^### Removed$/gm, '### 移除')
       .replace(/^### Deprecated$/gm, '### 弃用')
       .replace(/^### Security$/gm, '### 安全');
-    return mdHtml(zh);
+    return window.marked ? mdHtml(zh) : '<pre>' + escapeHtml(zh) + '</pre>';
   },
   tipHtml() {
     const e = (this.data.entries || []).find((x) => x.version !== 'Unreleased' && x.body);
@@ -5749,12 +6263,27 @@ async function init() {
   bindSidebarResizer();
   bindSelectionToTerminal();
   enableTooltips();
-  // md 里直接引用本地文件路径的图片，按页面 URL 解析必 404：加载失败时解析成
-  // 绝对路径走 /fs/ 镜像端点兜底显示。文档源码保持干净的文件路径，预览和 Crepe 里都能看图
+  // md 里直接引用本地文件路径的图片，按页面 URL 解析必 404：加载失败时解析成绝对路径兜底显示。
+  // 文档源码保持干净的文件路径，预览和 Crepe 里都能看图。
+  // 兜底目标是缩略图端点，不是 /fs/ 原图——富文本编辑器里每一张图都走这条兜底，
+  // 而 Crepe 的 image-block 是组件化 NodeView，重排/改属性会把整个 DOM 换掉，
+  // fsStage 标记随之消失、这条兜底会反复重跑。指向原图 = 每次都重新解码一张全尺寸位图
+  // （一张手机照片 48MB），指向缩略图 = 同一个 URL 命中浏览器缓存，几乎零成本。
+  // 能安全缩的才缩：gif 缩了会变静态，svg 是矢量，这两类仍走 /fs/ 原图
   $('#preview-body').addEventListener('error', (ev) => {
     const img = ev.target;
-    if (!(img instanceof HTMLImageElement) || img.dataset.fsTried) return;
+    if (!(img instanceof HTMLImageElement)) return;
+    const stage = img.dataset.fsStage || '';
+    if (stage === 'fs') return; // 原图这一跳都失败了，没有下一手，让它裂着
     const src = decodeURI(img.getAttribute('src') || '');
+    // 缩略图那一跳失败（sips 不认这个文件等）→ 退回原图再试一次，别让它当场裂掉
+    if (stage === 'thumb') {
+      const abs0 = img.dataset.fsAbs || '';
+      if (!abs0) return;
+      img.dataset.fsStage = 'fs';
+      img.src = '/fs' + encodeURI(abs0);
+      return;
+    }
     if (/^(https?:|data:|blob:)/.test(src) || src.startsWith('/api/') || src.startsWith('/fs/')) return;
     let abs = src;
     // §5: win 上盘符开头也算绝对路径；相对路径按当前文档目录解析（win 两种分隔符都切）
@@ -5771,23 +6300,22 @@ async function init() {
     } else if (winSep) {
       abs = abs.replace(/\\/g, '/');
     }
-    img.dataset.fsTried = '1';
-    // 主端口 /fs/ 镜像（master 行为，不受预览端口的 $HOME 子树限制）；
-    // win 的 C:/… 需要多一个前导 /，服务端 win32 分支会把它剥掉
-    img.src = winSep ? '/fs/' + encodeURI(abs) : '/fs' + encodeURI(abs);
+    img.dataset.fsAbs = abs;
+    if (canThumb(abs)) { img.dataset.fsStage = 'thumb'; img.src = thumbUrl(abs, displayImgWidth()); }
+    else { img.dataset.fsStage = 'fs'; img.src = '/fs' + encodeURI(abs); }
   }, true);
   document.querySelectorAll('#theme-switch .theme-seg button').forEach((b) => { b.onclick = () => applyTheme(b.dataset.skin); });
-  await loadRoots();
-  await loadFavorites();
+  // 回到上次浏览的目录（目录已不存在则退回主目录）。roots / favorites / 文件列表三条请求并发发出，
+  // 文件列表最先落地——没有上次目录时传空路径，服务端按主目录处理，不必等 roots 回来拿 home
+  const lastDir = localStorage.getItem('fb_last_cwd');
+  await Promise.all([loadRoots(), loadFavorites(), navigate(lastDir || '', false)]);
+  if (!state.cwd) await navigate(state.home, false);
+  renderRootsActive(); // 列表可能比侧栏先到，这时侧栏还没东西可高亮，补一次
   powerBar.init();
   verInfo.init();
   cronPanel.syncBadge();
   loadAgentProjects();
   setInterval(loadAgentProjects, 120000); // agent 项目入口保持新鲜（服务端有 60s 缓存，开销很小）
-  // 回到上次浏览的目录（目录已不存在则退回主目录）
-  const lastDir = localStorage.getItem('fb_last_cwd');
-  await navigate(lastDir || state.home, false);
-  if (!state.cwd) await navigate(state.home, false);
   // 恢复上次终端开合与标签布局（几个标签、各在哪个目录、谁在前台；进程不复活）。
   // 首次安装没有任何记录 → 默认打开：侧栏 + 文件区 + 终端的三栏就是 FanBox 的本来形态
   if (term.available() && localStorage.getItem('fb_term_open') !== '0') {
@@ -5799,44 +6327,68 @@ async function init() {
   maybeShowGuide();
   bindUpdateNotice();
 }
-// 新版本提示：主进程查到 GitHub 有新 Release 时右下角弹胶囊，引导去下载页（不强更不打扰）
+// 新版本提示：主进程查到 GitHub 有新 Release 时右下角弹胶囊（不强更不打扰）。
+// 三档：能自动装（Release 带 latest-mac.yml + 同架构 zip）→「更新」后台下载、下完「重启安装」；
+// 不能自动装但有 dmg →「下载更新」到 ~/Downloads 打开挂载；老 preload →「去下载」开发布页
 function bindUpdateNotice() {
   if (!window.fanboxUpdate) return;
-  const show = ({ version, url }) => {
-    if (localStorage.getItem('fb_skip_ver') === version || document.querySelector('.update-pill')) return;
+  const show = ({ version, url, auto, manual, start }) => {
+    if (!manual && localStorage.getItem('fb_skip_ver') === version) return;
+    const old = document.querySelector('.update-pill');
+    if (old) { if (!manual) return; old.remove(); } // 菜单「检查更新…」触发的要重画（可能已被 ✕ 掉）
     const bar = document.createElement('div');
     bar.className = 'update-pill';
+    const canAuto = !!auto && typeof window.fanboxUpdate.install === 'function';
     const canDl = typeof window.fanboxUpdate.download === 'function'; // 老 preload 没这桥，降级只留发布页
     bar.innerHTML = `<span class="up-msg">新版本 v${escapeHtml(version)} 已发布</span>`
-      + (canDl ? '<button class="up-go up-dl">下载更新</button><button class="up-page">发布页</button>' : '<button class="up-go">去下载</button>')
+      + (canAuto ? '<button class="up-go up-auto">更新</button><button class="up-page">发布页</button>'
+        : canDl ? '<button class="up-go up-dl">下载更新</button><button class="up-page">发布页</button>'
+          : '<button class="up-go">去下载</button>')
       + '<button class="up-x" title="这个版本不再提醒">✕</button>';
     document.body.appendChild(bar);
-    // #26 一键下载：macOS 下 dmg 并挂载；Windows 下 NSIS/portable exe 并打开安装向导
+    const msg = bar.querySelector('.up-msg');
+    // 进度只喂给「正在下载」的那颗按钮（自动更新和 dmg 下载共用同一条推送）；胶囊撤掉时解绑
+    const off = window.fanboxUpdate.onProgress ? window.fanboxUpdate.onProgress((m) => {
+      const btn = bar.querySelector('.up-go:disabled');
+      if (m.state === 'downloading' && btn) btn.textContent = m.pct >= 0 ? `下载中 ${m.pct}%` : '下载中…';
+    }) : null;
+    const dismiss = () => { if (off) off(); bar.remove(); };
+    const au = bar.querySelector('.up-auto');
+    if (au) {
+      // #26 全自动：主进程 electron-updater 下载，resolve 即可重启换包；不点「重启安装」，退出 app 时也会装上
+      au.onclick = async () => {
+        au.disabled = true; au.textContent = '下载中…';
+        const r = await window.fanboxUpdate.install().catch(() => ({ ok: false }));
+        if (r && r.ok) {
+          msg.textContent = `v${version} 已下载，重启即完成更新`;
+          au.disabled = false; au.textContent = '重启安装';
+          au.onclick = () => window.fanboxUpdate.restart();
+        } else {
+          // 自动更新走不通（网络断了、包没发全）就退回 dmg 那条路，别让人卡在这
+          toast('自动更新失败，改为下载安装包', true);
+          dismiss(); show({ version, url, auto: false, manual: true });
+        }
+      };
+      if (start) au.click();
+    }
     const dl = bar.querySelector('.up-dl');
     if (dl) {
+      // 一键下载：主进程按当前架构下对应 dmg 到 ~/Downloads 并打开挂载，拖一下完成更新
       dl.onclick = async () => {
         dl.disabled = true; dl.textContent = '下载中…';
         const r = await window.fanboxUpdate.download(version).catch(() => ({ ok: false }));
-        if (r && r.ok) {
-          bar.querySelector('.up-msg').textContent = isWindows()
-            ? '已下载并打开安装包，按提示完成覆盖安装'
-            : '已下载并打开 dmg，拖进 Applications 完成更新';
-          dl.remove();
-        } else {
+        if (r && r.ok) { msg.textContent = '已下载并打开 dmg，拖进 Applications 完成更新'; dl.remove(); }
+        else {
           dl.disabled = false; dl.textContent = '下载更新';
           // no-asset: release has no installer for this arch; main already opened the release page
           toast(r && r.error === 'no-asset' ? `这个版本没有 ${r.arch} 安装包，已打开发布页` : '下载失败，去发布页手动下吧', true);
         }
 
       };
-      if (window.fanboxUpdate.onProgress) window.fanboxUpdate.onProgress((m) => {
-        if (m.state === 'downloading' && dl.disabled) dl.textContent = m.pct >= 0 ? `下载中 ${m.pct}%` : '下载中…';
-      });
-      bar.querySelector('.up-page').onclick = () => window.fanboxUpdate.open(url);
-    } else {
-      bar.querySelector('.up-go').onclick = () => { window.fanboxUpdate.open(url); bar.remove(); };
     }
-    bar.querySelector('.up-x').onclick = () => { localStorage.setItem('fb_skip_ver', version); bar.remove(); };
+    if (au || dl) bar.querySelector('.up-page').onclick = () => window.fanboxUpdate.open(url);
+    else bar.querySelector('.up-go').onclick = () => { window.fanboxUpdate.open(url); dismiss(); };
+    bar.querySelector('.up-x').onclick = () => { localStorage.setItem('fb_skip_ver', version); dismiss(); };
   };
   window.fanboxUpdate.onAvailable(show);
   // 主进程启动 6 秒就推送，init 加载大目录时这里可能还没注册监听——补拉一次，错过的推送不丢
@@ -5863,6 +6415,7 @@ if (window.fanboxAgentCtl) {
     term.renderTabs();
     setTimeout(() => term.renderTabs(), 8200); // 标记过期后重画抹掉
   });
+  if (window.fanboxAgentCtl.onEvent) window.fanboxAgentCtl.onEvent((m) => term.onAgentEvent(m));
 }
 
 init();

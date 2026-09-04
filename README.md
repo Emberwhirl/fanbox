@@ -172,12 +172,10 @@ The UI was designed with [huashu-design](https://github.com/alchaincyf/huashu-de
   Every file the agent writes makes its card ripple and glow by change frequency; the light follows wherever the agent goes.
 - **跟随模式 / Follow mode** — 一键让文件视图 + 预览跟踪 agent 正在编辑的文件：代码随新写行高亮闪烁，HTML 边写边实时渲染（双缓冲、零白闪），Markdown 实时渲染。任何手动浏览立即把控制权交还给你。  
   One click and the file view + preview track whatever file the agent edits: code scrolls with freshly written lines flashing, HTML renders as a live web page while it's being written (double-buffered, zero white flash), Markdown renders live. Any manual browsing hands control back to you instantly.
-- **会话回放 / Session replay** — 像刷视频一样拖时间轴，重现这段时间 agent 一步步改了哪些文件。  
-  Drag the timeline like scrubbing a video to replay which files the agent touched, step by step.
-- **变更收件箱 / Change inbox** — 跨多个项目汇总本会话所有被改动的文件，多项目并行跑 agent 不再各看各的。  
-  All files modified this session, aggregated across projects, for parallel agent runs.
-- **Git 改动 diff / Git diff** — Monaco 只读 DiffEditor 并排展示 HEAD vs 当前工作区，看清 agent 到底改了哪几行。  
-  Monaco read-only DiffEditor, HEAD vs working tree side by side.
+- **本回合 / This round** — 一个面板看清这一回合 agent 改了哪些文件、是哪个终端里的哪个 agent 改的（按归属分组）、每个文件 +/- 多少行；点一行看 diff（Monaco 并排），每行可单独还原，顶部整回合回滚，底部保留可拖动的回放时间轴。Markdown 默认按「读者视图」左右对比渲染后的样子，图片给前后滑杆对比——验收的是产出物，不只是代码。  
+  One panel for the round: which files the agent changed, which terminal/agent did it, +/- per file; click for a side-by-side diff, restore any single file, roll back the whole round, scrub the replay timeline at the bottom. Markdown compares the rendered reader view, images get a before/after slider.
+- **diff 上写批注、直接回喂 / Comment on the diff, feed it back** — 在 diff 里选几行、写一句批注，一键以「文件:行 + 围栏 + 批注」的格式粘进那个 agent 的终端（bracketed paste，不回车，最后一下由你按）。  
+  Select lines in the diff, write a note, and it lands in that agent's terminal as `file:lines` + fenced code + your note. Pasted, not submitted.
 
 ### Agent cockpit · Agent 驾驶舱
 
@@ -185,15 +183,15 @@ The UI was designed with [huashu-design](https://github.com/alchaincyf/huashu-de
   Open any project folder and see what AI did there: past sessions (your first message as the title), the files each session changed, the skills it triggered — and a "resume" button that reconnects the context via `claude --resume` / `codex resume` in the embedded terminal.
 - **截图直通车 / Screenshot express** — 系统截屏落盘即浮出直通卡：喂给终端里的 agent、收进项目 `素材/`、或先标注再发。  
   Take a system screenshot and a card pops up in the corner: feed it to the terminal agent, file it into the project's `素材/` (assets) folder, or annotate before sending.
-- **AI 整理 / AI organize** — AI 只看元数据出整理提案（不读内容、不碰文件系统），每条建议带理由、逐条勾选过人，FanBox 执行并写回滚日志、一键整体撤销。引擎可选（Claude Code / Codex），策略提示词随便改。  
+- **AI 整理 / AI organize** — AI 只看元数据出整理提案（不读内容、不碰文件系统），每条建议带理由、逐条勾选过人，FanBox 执行并写回滚日志、一键整体撤销。引擎可选（Claude Code / Codex），策略提示词随便改（侧栏「更多…」/ sidebar *More…*）。  
   AI proposes a cleanup plan from metadata only (it never reads content or touches the filesystem); you approve each move; FanBox executes with a rollback log and one-click undo. Engine selectable (Claude Code / Codex), strategy prompt fully editable.
-- **发版向导 / Release wizard** — node 项目一键串起版本号、CHANGELOG、打包、推送、GitHub Release，整条命令序列在内嵌终端可见地跑。  
+- **发版向导 / Release wizard** — node 项目一键串起版本号、CHANGELOG、打包、推送、GitHub Release，整条命令序列在内嵌终端可见地跑（侧栏「更多…」/ sidebar *More…*）。  
   For node projects: version bump, CHANGELOG promotion, build, push and GitHub Release composed into one command sequence that runs visibly in the embedded terminal.
 - **Skills 透视 / Skills X-ray** — 本机全部 agent skills 一个视图：触发统计、健康检查、context 预算、不删文件的启停开关。  
   Every agent skill on your machine in one view: trigger statistics, health checks (description truncation, missing frontmatter), context budget, enable/disable without deleting.
 - **Agent 用量 / Agent usage** — Claude Code 官方 5h 窗口/周配额（和 `/usage` 同源）+ 本地 token 统计；Codex 限额快照 + 窗口重置识别。  
   Claude Code official 5h window / weekly quota (same source as `/usage`) plus local token statistics; Codex window snapshots with reset detection.
-- **磁盘占用透视 / Disk usage lens** — `du` 口径的真实占用条形榜，可下钻，专治「电脑空间又满了」。  
+- **磁盘占用透视 / Disk usage lens** — `du` 口径的真实占用条形榜，可下钻，专治「电脑空间又满了」（侧栏「更多…」/ sidebar *More…*）。  
   `du`-accurate bars per folder, drill-down, for the "my disk is full again" moments.
 
 ### Terminal · command the agent / 终端 · 指挥 agent
@@ -206,8 +204,10 @@ The UI was designed with [huashu-design](https://github.com/alchaincyf/huashu-de
   File paths appearing in terminal output open in FanBox on click; macOS screenshot names with spaces, Chinese filenames and wrapped long paths are all recognized (space boundaries verified by stat, not guessed).
 - **选中即甩给终端 / Send selection** — 预览里选一段文字，一键以「文件出处 + 围栏」格式发进终端（bracketed paste 包裹，不会被逐行误执行）。  
   Select text in a preview and fling it into the terminal with file provenance + fencing (bracketed paste, never executed line by line).
-- **态势感知 / Situational awareness** — 标签圆点显示 agent 运行/空闲/退出；agent 把球踢回给你时终端边缘呼吸提示「轮到你」，长任务完成发系统通知。  
-  Tab dots show running/idle/exited; when the agent hands the ball back, the terminal edge breathes; long tasks fire a system notification.
+- **精确的态势感知 / Exact situational awareness** — FanBox 启动 Claude Code / Codex 时会挂上它们的官方 hooks（只叠加一份自己的 settings，不碰你的配置），agent 在干活、等你确认、等你输入、已完成都是精确事件，不再靠猜终端文字。没挂上 hooks 的 agent 退回原来的判定。  
+  FanBox attaches the official Claude Code / Codex hooks when it launches them (an extra settings file of its own, your config untouched), so working / needs approval / needs input / done are exact events instead of terminal-text guesses. Agents without hooks fall back to the old heuristics.
+- **指挥台 / Command roster** — 两个以上终端、且有会话在等你时，标签栏下出现一行一个「在等你的」会话（等你确认 / 等你输入 / 刚完成没看）：状态（形状 + 颜色）、项目、agent、最后一句回复、本回合改动数；没人等你整条消失，干活中的已跑时长在标签圆点的悬停提示里。`⌘⌥L` 跳到下一个需要你的会话，Dock 角标显示「需要你」的数量，系统通知点击直达那个标签。退出确认只拦真正在干活的 agent。  
+  With two or more terminals, sessions that need you (approval / input / just finished) get a row under the tab bar: state (shape + color), project, agent, last reply, files changed this round. It disappears when nobody is waiting; elapsed time for working sessions lives in the tab dot's hover. `⌘⌥L` jumps to the next session that needs you, the Dock badge counts them, notifications click through to the tab. Quit only asks when an agent is actually mid-task.
 - **11 个 agent 一键启动 / 11 built-in agent launchers** — Claude Code、Codex、Hermes Agent、OpenClaw、Kimi Code、ZCode、opencode、pi、CodeBuddy、WorkBuddy、Qoder CLI，官方图标 + 核实过的启动命令。滑杆按钮打开设置面板勾选启用哪些（默认 Claude Code + Codex），未装的一键复制安装命令；`~/.fanbox/config.json` 的 `agents` 数组可自定义命令或追加新 agent。  
   All with official icons and verified launch commands. A sliders button opens the picker (defaults: Claude Code + Codex); not-installed entries copy their install command in one click; the `agents` array in `~/.fanbox/config.json` overrides commands or adds new agents.
 
@@ -282,6 +282,7 @@ npm run dist         # 打包签名 .dmg（产物在 dist/，不入 git）/ buil
 |---|---|---|---|
 | 全局搜索 / Global search | `⌘K` | 用编辑器打开 / Open in editor | `⌘↵` |
 | 折叠侧栏 / Toggle sidebar | `⌘B` | 后退 / Back | `⌘[` |
+| 跳到下一个需要你的会话 / Next session that needs you | `⌘⌥L` | | |
 | 当前目录筛选 / Filter current folder | `/` | 打开/预览 / Open/preview | `↵` |
 | 结果上下选择 / Navigate results | `↑` `↓` | 关闭 / Close | `Esc` |
 
@@ -292,6 +293,8 @@ npm run dist         # 打包签名 .dmg（产物在 dist/，不入 git）/ buil
   The backend listens on loopback only and validates the Host header (anti DNS-rebinding). **Data never leaves your machine.**
 - 全部前端资源（含渲染器、字体）本地内置，**离线完全可用**。仅有的出网请求：Claude 用量接口（可选）和 GitHub 更新检查。  
   All frontend assets (including renderers and fonts) are vendored locally — **fully usable offline**. The only outbound calls: the Claude usage API (optional) and the GitHub release check.
+- Markdown 渲染先过 DOMPurify，页面带 CSP（脚本只认本地文件、不放行内联与 eval）；所有写类接口要带每次启动随机生成、不落盘的 token，本机其他进程直接 curl 也进不来。  
+  Markdown goes through DOMPurify and the page ships a CSP (local scripts only, no inline/eval); every write endpoint requires a per-launch random token that never touches disk, so other local processes can't drive it.
 - HTML 预览在隔离 origin 的沙箱 iframe 里渲染，预览不可信网页也碰不到终端能力。  
   HTML previews render in a sandboxed iframe with an opaque origin; an untrusted page can never reach terminal capabilities.
 - 配置写入走串行化读-改-写 + 原子写（temp + fsync + rename），不丢数据、不留半截 JSON。  

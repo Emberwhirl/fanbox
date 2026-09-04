@@ -15,6 +15,14 @@ window.FANBOX_DICT = {
   'Skills 透视': 'Skills overview',
   '本机 Claude Code / Codex 的全部 skills：谁在干活、谁在吃灰、谁在静默失效': `All Claude Code / Codex skills on this ${FANBOX_UI_MAC ? 'Mac' : 'computer'}: which ones pull their weight, which gather dust, which silently fail`,
   'Agent 用量': 'Agent usage',
+  '工具': 'Tools',
+  '更多…': 'More…',
+  '微信 ClawBot、AI 整理、终端录像、发版向导、磁盘占用透视': 'WeChat ClawBot, AI organize, terminal recordings, release wizard, disk usage',
+  '微信 ClawBot': 'WeChat ClawBot',
+  'AI 整理当前目录…': 'Organize this folder with AI…',
+  '终端录像': 'Terminal recordings',
+  '发版向导…': 'Release wizard…',
+  '色点是最近处理过这个项目的 agent，右侧是它最后一次活跃距今多久': 'Dots mark which agents recently worked here; the time is how long since they were last active',
   'Claude Code / Codex 用量——官方限额窗口 + 本机会话日志，不用开着它们': 'Claude Code / Codex usage — official limit windows + local session logs, without keeping them open',
   '皮肤': 'Theme',
   '档案': 'Archive',
@@ -23,33 +31,16 @@ window.FANBOX_DICT = {
   '暖色纸感档案馆': 'Warm paper archive',
   '终端核 Volt': 'Terminal-core Volt',
   '编辑式 · 索引日报': 'Editorial · index daily',
-  '本地运行 · 数据不出本机': `Runs locally · data never leaves this ${FANBOX_UI_MAC ? 'Mac' : 'computer'}`,
-  // 侧栏「离开电脑」电源开关 + 版本号
-  '离开电脑': (typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform || '')) ? 'Away from Mac' : 'Away from computer',
+  '本地运行 · 数据不出本机': 'Runs locally · data never leaves this Mac',
+  // 侧栏「合盖继续干活」开关
   '合盖继续干活': 'Keep working, lid closed',
-  '有任务时保持唤醒': 'Keep awake while tasks run',
-  '开启后：只要还有终端会话在跑，Windows 会尽量不进入睡眠，agent 任务能接着干；终端全退约两分钟后恢复正常休眠。笔记本合盖是否睡眠仍看「电源选项 → 合上盖子的操作」。': 'While on: as long as a terminal session is running, Windows tries not to sleep so agent tasks keep going; normal sleep resumes ~2 minutes after every terminal exits. Lid-close sleep still follows Power Options → “When I close the lid”.',
-  // win 变体：「系统尽量不睡眠」是模板里拼进去的片段，最终整段才是一个文本节点，按整句配 key
-  '开启后，手机微信连着 ClawBot 期间系统尽量不睡眠——人在外面也能一直用微信遥控本机的 Claude Code / Codex；微信断开自动恢复正常休眠。': 'While WeChat stays connected to ClawBot, the system tries not to sleep — you can keep remote-controlling Claude Code / Codex from your phone. Normal sleep resumes once WeChat disconnects.',
-  '微信遥控不断线': 'Stay awake for WeChat',
-  '已开启 · 有终端时尽量不睡眠': 'On · try not to sleep while terminals are open',
-  '现在：未开启，系统照常休眠': 'Now: off — system sleeps as usual',
-  '现在：没有终端会话 → 系统照常休眠': 'Now: no terminal sessions → normal sleep',
-  '现在：微信已连接 → 生效中，尽量不睡眠': 'Now: WeChat connected → active, trying not to sleep',
-  '无需管理员密码（powerSaveBlocker）。': 'No admin password needed (powerSaveBlocker).',
-  '持续耗电发热，建议接电源。无需管理员密码（powerSaveBlocker）。': 'It keeps drawing power and heat — stay plugged in. No admin password needed (powerSaveBlocker).',
   '翻箱盯着每个终端窗口的工作状态。开启后：只要检测到有 agent 正在干活，合上盖子 Mac 也不休眠，任务接着跑；所有终端都空闲约两分钟后，自动恢复正常休眠——不会让 Mac 一直不睡。': 'FanBox watches what each terminal is doing. When any agent is actively working, closing the lid won\'t sleep the Mac — the task keeps going. Once every terminal has been idle for ~2 minutes, normal sleep resumes automatically.',
   '合盖跑任务持续耗电发热，建议接电源。首次开启需输一次管理员密码（装一条仅限电源设置的免密规则）。': 'Running with the lid closed keeps drawing power and heat — stay plugged in. First time needs your admin password once (installs a power-only passwordless rule).',
-  '开启后，手机微信连着 ClawBot 期间，合盖 / 息屏也不休眠——人在外面也能一直用微信遥控本机的 Claude Code / Codex；微信断开自动恢复正常休眠。': 'While WeChat stays connected to ClawBot, closing the lid / screen off won\'t sleep the Mac — you can keep remote-controlling Claude Code / Codex from your phone. Normal sleep resumes once WeChat disconnects.',
-  '持续耗电发热，建议接电源。首次开启需输一次管理员密码（装一条仅限电源设置的免密规则）。': 'It keeps drawing power and heat — stay plugged in. First time needs your admin password once (installs a power-only passwordless rule).',
   '现在：未开启，合盖照常休眠': 'Now: off — the Mac sleeps as usual when the lid closes',
   '现在：没有终端会话 → 合盖照常休眠': 'Now: no terminal sessions → normal sleep on lid close',
-  '现在：微信已连接 → 生效中，合盖 / 息屏也不休眠': 'Now: WeChat connected → active, no sleep on lid close / screen off',
-  '现在：微信未连接 → 暂不生效，连上后自动开始守护': 'Now: WeChat not connected → standing by, kicks in once connected',
   '已开启 · agent 干活时合盖不休眠': 'On · no sleep while agents are working, even lid closed',
   '已关闭 · 合盖照常休眠': 'Off · normal sleep on lid close',
-  '已开启 · 微信连着时不休眠': 'On · no sleep while WeChat stays connected',
-  '已关闭 · 恢复正常休眠': 'Off · normal sleep restored',
+  // 版本号
   '版本历史': 'Release history',
   // 定时任务
   '定时任务': 'Scheduled tasks',
@@ -141,6 +132,7 @@ window.FANBOX_DICT = {
 
   // ---------- 文件区 / 状态栏 ----------
   '这个文件夹是空的': 'This folder is empty',
+  '显示全部': 'Show all',
   '没找到最近修改的文件': 'No recently modified files',
   '发版': 'Release',
   '版本号→CHANGELOG→打包→push→Release 一条龙，在终端跑': 'Version bump → CHANGELOG → build → push → Release, end to end in the terminal',
@@ -151,6 +143,13 @@ window.FANBOX_DICT = {
   '回合存档': 'Round snapshots',
   'agent 每轮开工前的自动存档，可一键回到任意一轮之前': 'Automatic snapshot before each agent round — one click back to any point',
   '这个文件夹还没有存档': 'No snapshots for this folder yet',
+  '清理此项目存档': 'Clear this project\'s snapshots',
+  '清理失效仓库': 'Clear dead repos',
+  '删除所有没有任何可恢复快照的失效仓库？': 'Delete every dead repo (ones with no recoverable snapshot at all)?',
+  '没有失效仓库': 'No dead repos',
+  '清理失败': 'Cleanup failed',
+  '存档失败，未回滚': 'Snapshot failed — nothing was rolled back',
+  '这个项目的 agent 正在干活，先等它停下（或按 Esc 打断）再清理': 'An agent is working in this project — wait for it to stop (or press Esc) before cleaning up',
   '在内嵌终端里跑 agent 时，每轮开工前会自动存一份，坏了随时能回来': 'When an agent runs in the embedded terminal, a snapshot is taken before each round — you can always come back',
   '每一条都是当时整个项目的完整状态。恢复前会自动把当前状态也存一份，随时能再滚回来。': 'Each entry is the full project state at that moment. Before restoring, the current state is snapshotted too, so you can always roll back again.',
   '回到这时': 'Restore',
@@ -201,6 +200,8 @@ window.FANBOX_DICT = {
   '查看改动（HEAD vs 当前）': 'View changes (HEAD vs current)',
   '复制图片（可粘贴到其它应用）': 'Copy image (paste into other apps)',
   '复制文件（访达里可粘贴）': 'Copy file (paste in Finder)',
+  '更多操作': 'More actions',
+  '此文件用源码模式编辑': 'This file is edited in source mode',
   '这个文件类型无法预览': "Can't preview this file type",
   '无法读取': "Can't read",
   '空表格': 'Empty table',
@@ -369,42 +370,29 @@ window.FANBOX_DICT = {
 
   // ---------- 命令面板 ----------
   '按文件名搜索…   用 “内容:” 前缀搜文件内容，如 “内容:useState”': 'Search by filename…   prefix with “content:” to search inside files, e.g. “content:useState”',
+  '搜文件内容（全文，含 PDF、截图里的文字）…': 'Search inside files (full text, incl. PDFs and text in screenshots)…',
   '切换搜索范围（Tab）': 'Toggle search scope (Tab)',
-  '⤢ 全机': `⤢ This ${FANBOX_UI_MAC ? 'Mac' : 'PC'}`,
-  // Windows「有任务时保持唤醒」提示卡的注意事项行（合盖变体，与微信变体只差合盖那一句）
-  '持续耗电发热，建议接电源并把合盖设为「不采取任何操作」。无需管理员密码（powerSaveBlocker）。':
-    'Uses power and generates heat while on. Keep the machine plugged in, and set the lid action to "Do nothing". No administrator password required (powerSaveBlocker).',
+  '按内容全文搜索（⇧Tab）': 'Search inside files (⇧Tab)',
+  '▤ 搜内容': '▤ Full text',
+  '⤢ 全机': '⤢ This Mac',
   '▢ 当前目录': '▢ This folder',
   '范围：': 'Scope: ',
-  '· Tab 切换范围 · ↑↓ 选择 · ↵ 打开 · ⌘↵ 在编辑器打开': '· Tab scope · ↑↓ select · ↵ open · ⌘↵ open in editor',
-  '全机（主目录及以下）': `This ${FANBOX_UI_MAC ? 'Mac' : 'PC'} (home folder and below)`,
-  '输入开始搜索 · 文件名模糊匹配，「内容:」搜全文（含 PDF、截图里的文字）': 'Type to search · fuzzy filename match; “content:” searches full text (incl. PDFs and text in screenshots)',
+  '· Tab 切换范围 · ⇧Tab 搜内容 · ↑↓ 选择 · ↵ 打开 · ⌘↵ 在编辑器打开': '· Tab scope · ⇧Tab full text · ↑↓ select · ↵ open · ⌘↵ open in editor',
+  '全机（主目录及以下）': 'This Mac (home folder and below)',
+  '输入开始搜索 · 文件名模糊匹配，点「搜内容」或用「内容:」前缀搜全文（含 PDF、截图里的文字）': 'Type to search · fuzzy filename match; click “Full text” or use the “content:” prefix to search inside files (incl. PDFs and text in screenshots)',
+  '输入开始搜索 · 全文搜索（含 PDF、截图里的文字）': 'Type to search · full-text search (incl. PDFs and text in screenshots)',
   '输入开始搜索': 'Type to search',
   '搜索中…': 'Searching…',
   '没有结果': 'No results',
   '⚠ 结果可能不完整，换更具体的关键词或缩小到当前目录': '⚠ Results may be incomplete — try a more specific term or narrow to this folder',
 
-  // ---------- 欢迎页（首次引导，按文本片段拆分）----------
-  '欢迎用 FanBox': 'Welcome to FanBox',
-  'vibe coding 的驾驶舱——找文件、跑 agent、看它改、随手改，都在一个窗口：': 'The vibe-coding cockpit — find files, run agents, watch them edit, edit on the fly, all in one window:',
-  '全局搜文件和文件夹；': 'searches all files and folders;',
-  '把项目直接在编辑器整包打开；': 'opens the whole project in your editor;',
-  '内容:关键词': 'content:keyword',
-  '搜文件里的字': 'searches inside files',
-  '顶部': 'The top',
-  '按钮开内嵌终端跑 Claude Code 等 agent；': 'button opens an embedded terminal for agents like Claude Code;',
-  '把文件/文件夹拖进终端': 'drag files/folders into the terminal',
-  '即插入路径喂给它当上下文': 'to insert paths as context',
-  '单击': 'Single-click',
-  '预览，': 'to preview,',
-  '双击': 'double-click',
-  '系统打开；预览里': 'to open with the system; in preview,',
+  // ---------- 欢迎页（首次引导）----------
+  '找回文件、指挥 agent、看清它改了什么。': 'Find your files, direct your agents, see exactly what they changed.',
+  '打开一个项目': 'Open a project',
+  '启动 Claude Code': 'Launch Claude Code',
+  '稍后再说': 'Maybe later',
   '编辑': 'Edit',
   '删除': 'Delete',
-  'md 走所见即所得、': 'gives WYSIWYG markdown,',
-  '可标注/打码/转格式': 'lets you annotate / pixelate / convert',
-  'agent 改了哪些文件，列表实时高亮「改·N」，不用切窗口盯着看': 'Files agents touch light up live as "edited ×N" — no window-switching to keep watch',
-  '开始使用': 'Get started',
 
   // ---------- 终端 ----------
   '启动 Claude Code（跳过权限确认）：空闲终端就地启动，正跑着任务则新开标签': 'Launch Claude Code (skipping permission prompts): starts in the idle terminal, or opens a new tab if one is busy',
@@ -425,13 +413,18 @@ window.FANBOX_DICT = {
   '把文件区跳到终端当前所在目录': "Jump file view to the terminal's current folder",
   '定位文件': 'Locate',
   '新终端': 'New terminal',
+  '更多终端工具': 'More terminal tools',
+  '开启文件跟随': 'Follow files',
+  '停止文件跟随': 'Stop following files',
   '终端铺满': 'Maximize terminal',
   '还原终端': 'Restore terminal',
-  '切换 上下 / 左右 布局': 'Toggle bottom / right layout',
-  '提示音开关': 'Toggle chime',
+  '终端铺满（⌘⇧M）': 'Maximize terminal (⌘⇧M)',
+  '还原终端（⌘⇧M）': 'Restore terminal (⌘⇧M)',
+  '布局改为左右': 'Dock terminal to the right',
+  '布局改为上下': 'Dock terminal to the bottom',
+  '关闭提示音': 'Mute chime',
+  '开启提示音': 'Enable chime',
   '收起终端': 'Hide terminal',
-  '提示音已关（点击开启）': 'Chime off (click to enable)',
-  '提示音已开（点击静音）': 'Chime on (click to mute)',
   '提示：把左侧文件 / 文件夹拖进终端，即插入路径喂给 agent': 'Tip: drag files / folders into the terminal to insert their paths as agent context',
   '终端启动失败': 'Terminal failed to start',
   '已在终端启动': 'Started in terminal',
@@ -447,6 +440,14 @@ window.FANBOX_DICT = {
   '等待你确认': 'Waiting for your approval',
   'agent 任务完成': 'Agent task done',
   '终端已退出': 'Terminal exited',
+  // 指挥台（终端 ≥ 2 时标签栏下方的会话列表）+ ⌘⌥L
+  '干活中': 'Working',
+  '等你确认': 'Needs your approval',
+  '等你输入': 'Needs your input',
+  '已退出': 'Exited',
+  '刚完成': 'Just finished',
+  '点击切到该标签': 'Click to switch to this tab',
+  '没有在等你的': 'Nothing is waiting on you',
   '[进程已退出 — 回车重开，或 ✕ 关闭]': '[Process exited — Enter to restart, or ✕ to close]',
 
   // ---------- 用量面板 ----------
@@ -513,9 +514,49 @@ window.FANBOX_DICT = {
   '↻ 重播': '↻ Replay',
   '变更太少，先让 agent 多改几下再回放': 'Not enough changes yet — let the agent edit a bit more before replaying',
 
+  // ---------- 本回合面板（收件箱 / 回放 / 存档合一）+ 内容类对比 ----------
+  '本回合': 'This round',
+  '本回合：agent 这一轮改了哪些文件，逐个看改动、还原，或整回合回滚': 'This round: what the agent changed this turn — review each file, revert one, or roll back the whole round',
+  '读存档中…': 'Loading snapshots…',
+  '回合 = agent 开工瞬间的一次存档': 'A round = one snapshot taken the moment the agent starts working',
+  '还没有存档 · 显示本会话全部改动': 'No snapshots yet · showing all changes this session',
+  '整回合回滚': 'Roll back round',
+  '整个项目回到这一回合开工前的样子（回滚前会再自动存一份）': 'Restore the whole project to how it was before this round (a snapshot is taken first)',
+  '存档管理…': 'Manage snapshots…',
+  '看存档占用、清理旧存档': 'See snapshot disk usage and clean up old ones',
+  '文件监听': 'File watcher',
+  '悬停算 +/- 行数': 'Hover to count +/- lines',
+  '查看改动': 'View changes',
+  '还原此文件': 'Revert this file',
+  '只把这一个文件退回本回合开工前（git 项目退回 HEAD）；本回合新建的文件会移入废纸篓': 'Revert just this file to before this round (HEAD in git projects); files created this round go to Trash',
+  '还原中…': 'Reverting…',
+  '已还原': 'Reverted',
+  '已移入废纸篓': 'Moved to Trash',
+  '二进制': 'binary',
+  '无差异': 'no diff',
+  '新': 'new',
+  '这一回合还没有捕捉到文件改动。': 'No file changes captured in this round yet.',
+  '写入太少，没法回放': 'Too few writes to replay',
+  '这个项目的 agent 正在干活，先等它停下（或按 Esc 打断）再还原': 'An agent is working in this project — wait for it to stop (or press Esc) before reverting',
+  '这个文件既不在 git 仓库里，也没有回合存档': 'This file is neither in a git repo nor in any round snapshot',
+  '发给 agent': 'Send to agent',
+  '把选中的行（或整个文件）连同你的批注粘进当前终端，交给 agent 改': 'Paste the selected lines (or the whole file) with your note into the active terminal for the agent',
+  '想让 agent 怎么改？': 'What should the agent change?',
+  '读者视图': 'Reader view',
+  '源码 diff': 'Source diff',
+  '上一回合': 'Last round',
+  '当前': 'Current',
+  '（基准里没有）': '(not in base)',
+  '左：基准版本　·　右：当前 · 拖滑杆对比': 'Left: base version · Right: current · drag the slider to compare',
+  '新图片（基准里没有）': 'New image (not in base)',
+  '旧': 'old',
+
   // ---------- 更新提示 ----------
   '去下载': 'Download',
   '下载更新': 'Download update',
+  '更新': 'Update',
+  '重启安装': 'Restart to update',
+  '自动更新失败，改为下载安装包': 'Auto-update failed — downloading the installer instead',
   '发布页': 'Release page',
   '下载中…': 'Downloading…',
   '已下载并打开 dmg，拖进 Applications 完成更新': 'Downloaded — the dmg is open, drag it into Applications to finish',
@@ -534,6 +575,9 @@ window.FANBOX_DICT = {
 };
 // 含插值的动态文案：正则 → 替换式（$1 等捕获组），EN 模式下逐条尝试
 window.FANBOX_DICT_RULES = [
+  // 侧栏「合盖继续干活」悬停卡的状态行（终端数动态）
+  [/^现在：(\d+) 个终端开着，agent 正在干活 → 生效中，合盖也不休眠$/, (m) => `Now: ${m[1]} terminal(s) open, agents working → active, no sleep on lid close`],
+  [/^现在：(\d+) 个终端开着但都空闲 → 合盖照常休眠$/, (m) => `Now: ${m[1]} terminal(s) open but all idle → normal sleep on lid close`],
   // agent 启动按钮（动态生成的 title/toast）
   [/^启动 (.+)：空闲终端就地启动，正跑着任务则新开标签$/, (m) => `Launch ${m[1]}: starts in the idle terminal, or opens a new tab if one is busy`],
   [/^打开 (.+) 桌面应用（该产品无终端 CLI 形态）$/, (m) => `Open the ${m[1]} desktop app (no terminal CLI available)`],
@@ -550,7 +594,15 @@ window.FANBOX_DICT_RULES = [
   [/^(\d+) 分$/, (m) => `${m[1]}m`],
   [/^(\d+) 时$/, (m) => `${m[1]}h`],
   [/^(\d+) 天$/, (m) => `${m[1]}d`],
-  // 时长（fmtDur：会话回放）
+  // 大目录分页提示
+  [/^已显示 (\d+) \/ (\d+) 项$/, (m) => `Showing ${m[1]} / ${m[2]}`],
+  // 时长（fmtDur：录像列表 + 会话回放，「1小时30分」「1分33秒」「20秒」）
+  [/^(?=\d)(?:(\d+)小时)?(?:(\d+)分)?(?:(\d+)秒)?$/, (m) => [m[1] && `${m[1]}h`, m[2] && `${m[2]}m`, m[3] && `${m[3]}s`].filter(Boolean).join(' ')],
+  // 标签圆点提示：干活中带已跑时长
+  [/^agent 运行中 · 已跑 (.+)$/, (m) => `Agent running · ${m[1]} elapsed`],
+  // 指挥台：改动文件数
+  [/^(\d+) 文件$/, (m) => `${m[1]} files`],
+  [/^本回合改动 (\d+) 个文件$/, (m) => `${m[1]} files changed this round`],
   [/^(\d+) 秒$/, (m) => `${m[1]} s`],
   [/^(\d+) 分钟$/, (m) => `${m[1]} min`],
   [/^([\d.]+) 小时$/, (m) => `${m[1]} hr`],
@@ -586,10 +638,25 @@ window.FANBOX_DICT_RULES = [
   [/^编辑 · (.+)$/, (m) => `Edit · ${m[1]}`],
   [/^项目记忆 · (.+)$/, (m) => `Project memory · ${m[1]}`],
   [/^磁盘占用 · (.+)$/, (m) => `Disk usage · ${m[1]}`],
+  // 本回合面板
+  [/^本回合 · (.+)$/, (m) => `This round · ${m[1]}`],
+  [/^当前回合 · (.+)$/, (m) => `Current round · ${m[1]}`],
+  [/^终端「(.*)」 · (.+) · (\d+)$/, (m) => `Terminal "${m[1]}" · ${m[2]} · ${m[3]}`],
+  [/^文件监听 · (\d+)$/, (m) => `File watcher · ${m[1]}`],
+  [/^回放 · (\d+) 次写入(.*)$/, (m) => `Replay · ${m[1]} writes${m[2].replace(' · 跨 ', ' · over ')}`],
+  [/^把「(.+)」退回本回合开工前的版本？之后对它的改动会被移除（本回合新建的文件会移入废纸篓，可找回）$/, (m) => `Revert "${m[1]}" to before this round? Later changes to it will be removed (files created this round go to Trash, recoverable)`],
+  [/^「(.+)」已还原$/, (m) => `"${m[1]}" reverted`],
+  [/^「(.+)」是本回合新建的，已移入废纸篓$/, (m) => `"${m[1]}" was created this round — moved to Trash`],
+  [/^批注 (.+)$/, (m) => `Note on ${m[1]}`],
+  [/^批注整个 (.+)$/, (m) => `Note on the whole ${m[1]}`],
   // 回合存档
   [/^回合存档 · (.+)$/, (m) => `Round snapshots · ${m[1]}`],
   [/^把「(.+)」整个恢复到 (.+) 存档时的样子？之后的改动会被移除（当前状态已自动存档，可再滚回来）$/, (m) => `Restore "${m[1]}" to its state at ${m[2]}? Later changes will be removed (the current state was just snapshotted, so you can roll back again)`],
   [/^已恢复到 (.+) · 恢复前的状态也存了一份$/, (m) => `Restored to ${m[1]} · the previous state was snapshotted too`],
+  [/^存档共占用 (.+)$/, (m) => `Snapshots use ${m[1]}`],
+  [/^此项目 (.+)$/, (m) => `this project ${m[1]}`],
+  [/^删除「(.+)」的全部回合存档？删掉后无法再回到之前的任何一轮$/, (m) => `Delete all round snapshots of "${m[1]}"? You won't be able to go back to any earlier round`],
+  [/^已清理 (\d+) 个仓库，释放 (.+)$/, (m) => `Cleared ${m[1]} repo(s), freed ${m[2]}`],
   [/^左：回合存档（(.+)）　·　右：当前 · 只读$/, (m) => `Left: round snapshot (${m[1]}) · Right: current · read-only`],
   ['新文件（上一回合存档时还没有） · 只读', 'New file (did not exist in the last round snapshot) · read-only'],
   // 预览底部：创建/修改时间
@@ -643,17 +710,12 @@ window.FANBOX_DICT_RULES = [
   // 变更收件箱 / 回放
   [/^本会话变更 · (\d+)$/, (m) => `Changes this session · ${m[1]}`],
   [/^会话回放 · (\d+) 次写入 · 跨 (.+)$/, (m) => {
-    const t = m[2].replace(/^(\d+) 秒$/, '$1 s').replace(/^(\d+) 分钟$/, '$1 min').replace(/^([\d.]+) 小时$/, '$1 hr');
+    const t = window.t ? window.t(m[2]) : m[2];
     return `Session replay · ${m[1]} writes · over ${t}`;
   }],
   // 更新提示
   [/^新版本 v(.+) 已发布$/, (m) => `v${m[1]} is out`],
-  // 侧栏「离开电脑」状态行 + 版本悬停卡（动态数字/版本号）
-  [/^现在：(\d+) 个终端开着，agent 正在干活 → 生效中，合盖也不休眠$/, (m) => `Now: ${m[1]} terminal(s) open, agents working → active, no sleep on lid close`],
-  // win 变体（powerSaveBlocker 按「有没有终端会话」计，没有 agent 忙闲判定）
-  [/^现在：(\d+) 个终端开着 → 生效中，尽量不睡眠$/, (m) => `Now: ${m[1]} terminal(s) open → active, trying not to sleep`],
-  [/^现在：(\d+) 个终端开着但判定空闲 → 系统照常休眠$/, (m) => `Now: ${m[1]} terminal(s) open but idle → normal sleep`],
-  [/^现在：(\d+) 个终端开着但都空闲 → 合盖照常休眠$/, (m) => `Now: ${m[1]} terminal(s) open but all idle → normal sleep on lid close`],
+  // 版本悬停卡（动态版本号）
   [/^v(.+) 更新了什么$/, (m) => `What's new in v${m[1]}`],
   // 定时任务：时间规则 / 下次 / 上次（复合 meta 行由 i18n.js 按 · 拆段后逐段命中这里）
   [/^今天 (\d{1,2}:\d{2})$/, (m) => `today ${m[1]}`],
@@ -669,4 +731,5 @@ window.FANBOX_DICT_RULES = [
   [/^上次 (.+) ✓$/, (m) => `last ${window.t ? window.t(m[1]) : m[1]} ✓`],
   [/^将执行于：(.+)$/, (m) => `Runs at: ${window.t ? window.t(m[1]) : m[1]}`],
   [/^下载中 (\d+)%$/, (m) => `Downloading ${m[1]}%`],
+  [/^v(.+) 已下载，重启即完成更新$/, (m) => `v${m[1]} downloaded — restart to finish`],
 ];

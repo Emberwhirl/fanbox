@@ -28,14 +28,17 @@
 
 | 端点 | 方法 | 参数 | 返回 |
 |------|------|------|------|
-| `/api/agent/terminals` | GET | — | `{ok, terminals:[{id, cwd, name, proc, busy, tail}]}` |
+| `/api/agent/terminals` | GET | — | `{ok, terminals:[{id, cwd, name, proc, busy, hooked, state, tail}]}` |
 | `/api/agent/read` | GET | `id`, `lines`(≤2000, 默认200) | `{ok, id, text}` 去 ANSI 纯文本 |
 | `/api/agent/send` | POST | `{id, text, submit?, paste?}` | `{ok}` |
 | `/api/agent/create` | POST | `{cwd?, autorun?}` | `{ok, id, autorun?}` |
 | `/api/agent/wait` | POST | `{id, until?, idle?, idleMs?, timeoutMs?}` | `{ok, idle\|matched\|exited\|timeout, elapsed, output}` |
 | `/api/agent/kill` | POST | `{id}` | `{ok}` |
+| `/api/agent/event` | POST | claude hook / codex notify 的 JSON 原样；终端 id 走 `x-fanbox-term` 头 | `{ok, id, state}` |
 
 语义细节：
+
+- **event（2026-09 起，信号层换血）**：不是给 agent 手调的，是 agent 官方 hooks 的落点。主进程启动时把 `~/.fanbox/hooks/claude-settings.json`（Claude Code hooks：SessionStart / UserPromptSubmit / PreToolUse / PostToolUse(Edit|Write|MultiEdit|NotebookEdit|Bash) / Notification / Stop / SubagentStop / SessionEnd，全部 `async`）和 `codex-notify.sh`（Codex `notify`，接力调用用户原有的 notify 程序）写好；FanBox 自己拉起的 claude 带 `--settings 该文件`、codex 带 `-c notify=[脚本]`。hook 命令用 `$FANBOX_CTL` / `$FANBOX_CTL_TOKEN` / `$FANBOX_TERM_ID` 把事件 POST 回来（`--noproxy '*'`，系统代理开着时 127.0.0.1 会被拦）。主进程按事件维护每个终端的事实表 `termFacts`（agent / sessionId / state / changed 文件表）：`working → needs_permission / needs_input / done → ended`；`/terminals` 的 `busy`、电源守卫的「有 agent 在干活」对 hooked 终端都以此为准，渲染层的圆点 / 呼吸 / 提示音 / 通知也改吃 IPC `agent:event`，不再刮屏。没收到过事件的终端（用户手敲不带 hooks 的 claude、裸 shell）沿用旧判据。
 
 - **send**：`\n` 一律转 `\r`（否则 TUI 不提交）；默认末尾补 `\r` 提交，`submit:false` 只输入；`paste:true` 用 bracketed paste（`ESC[200~ … ESC[201~`）包住，多行文本整块进 claude 等 TUI 不被逐行提交。控制键直接发字符（Ctrl-C = `""`）。
 - **create**：main → renderer IPC 开真实 tab（界面上看得见、随时接管，这是产品魂，所以不做 headless pty）。`autorun` 会等 shell 就绪（有过输出且静默 ≥400ms，上限 8s）再敲，login shell 初始化慢也不怕。
