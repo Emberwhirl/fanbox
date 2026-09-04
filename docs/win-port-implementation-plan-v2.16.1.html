@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Windows Port v2.16.1 — Plan &amp; Implementation Notes</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1c1e21; --muted: #616a73; --line: #e2e5e9;
+    --card: #f6f7f9; --accent: #0969da; --code-bg: #eef1f4;
+    --high: #c93c37; --med: #b56300; --low: #57606a; --ok: #1a7f37;
+    --term-bg: #0b0c0a; --term-fg: #c8c8c8; --amber: #e0a23a; --green: #3fb950; --red: #f0625d; --blue: #58a6ff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --fg: #e6edf3; --muted: #9aa4af; --line: #2d333b;
+      --card: #161b22; --accent: #539bf5; --code-bg: #1c2128;
+      --high: #f47067; --med: #d29922; --low: #909dab; --ok: #57ab5a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0 auto; max-width: 1040px; padding: 2.2rem 1.4rem 5rem;
+         font: 15px/1.65 -apple-system, "Segoe UI", system-ui, sans-serif;
+         background: var(--bg); color: var(--fg); }
+  h1 { font-size: 1.7rem; line-height: 1.3; margin: 0 0 .4rem; }
+  h2 { font-size: 1.3rem; margin: 2.8rem 0 .8rem; padding-top: 1.2rem; border-top: 2px solid var(--line); }
+  h3 { font-size: 1.05rem; margin: 1.8rem 0 .5rem; }
+  h4 { font-size: .95rem; margin: 1.2rem 0 .3rem; }
+  p, li { max-width: 80ch; }
+  .sub { color: var(--muted); margin: 0 0 1.2rem; }
+  code { font: 12.5px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace;
+         background: var(--code-bg); padding: .1em .35em; border-radius: 4px; }
+  pre { background: var(--code-bg); padding: .8rem 1rem; border-radius: 8px; overflow-x: auto; font-size: 12.5px; line-height: 1.5; }
+  pre code { background: none; padding: 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.2rem; margin: 1rem 0; }
+  .card h3 { margin-top: .2rem; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+  table { border-collapse: collapse; width: 100%; margin: .8rem 0 1.2rem; font-size: 14px; }
+  th, td { border: 1px solid var(--line); padding: .45rem .6rem; text-align: left; vertical-align: top; }
+  th { background: var(--card); }
+  .tag { display: inline-block; font-size: 11.5px; font-weight: 600; padding: .05em .5em; border-radius: 999px; border: 1px solid currentColor; margin-right: .4em; }
+  .tag.high { color: var(--high); } .tag.med { color: var(--med); } .tag.low { color: var(--low); } .tag.ok { color: var(--ok); } .tag.you { color: var(--accent); }
+  .status { display: flex; flex-wrap: wrap; gap: .6rem 1.4rem; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: .8rem 1.2rem; margin: 1.2rem 0 1.8rem; font-size: 14px; }
+  .status b { color: var(--accent); }
+  nav.toc { font-size: 14px; margin: 0 0 1.2rem; }
+  nav.toc a { margin-right: 1rem; white-space: nowrap; }
+  a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+  .decision { border-left: 4px solid var(--accent); }
+  .decision .ask { color: var(--muted); font-size: 13.5px; margin: .4rem 0 0; }
+  .mock { background: var(--term-bg); color: var(--term-fg); border-radius: 8px; padding: .9rem 1rem; font: 13px/1.5 ui-monospace, Consolas, monospace; margin: .6rem 0; border: 1px solid #2a2c28; }
+  .mock .cap { font-family: -apple-system, "Segoe UI", system-ui, sans-serif; color: #9aa4af; font-size: 11.5px; margin-bottom: .5rem; letter-spacing: .02em; text-transform: uppercase; }
+  .figcap { color: var(--muted); font-size: 13px; margin: .2rem 0 .8rem; }
+  kbd { font: 12px ui-monospace, Consolas, monospace; background: var(--card); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: .05em .45em; }
+  ul.check { list-style: none; padding-left: 0; }
+  ul.check li { padding-left: 1.7em; position: relative; margin: .25rem 0; }
+  ul.check li::before { content: ""; position: absolute; left: 0; top: .35em; width: 1em; height: 1em; border: 1.5px solid var(--muted); border-radius: 3px; }
+  .muted { color: var(--muted); }
+  details { margin: .6rem 0; } summary { cursor: pointer; font-weight: 600; }
+  .small { font-size: 13px; }
+
+  /* ---- update capsule mock ---- */
+  .capsule { display: inline-flex; align-items: center; gap: .6rem; background: #1a1d19; border: 1px solid #3a3d38; border-radius: 999px; padding: .35rem .5rem .35rem .9rem; margin: .3rem .6rem .3rem 0; }
+  .capsule .msg { color: #e6edf3; }
+  .capsule .btn { background: #2f6fde; color: #fff; border-radius: 999px; padding: .15rem .7rem; font-size: 12.5px; }
+  .capsule .btn.ghost { background: #2a2d29; color: #c8c8c8; }
+  .capsule .x { color: #8b949e; margin-left: .2rem; }
+  .capsule.anim .btn { position: relative; overflow: hidden; min-width: 5.2em; text-align: center; }
+  .capsule.anim .btn .fill { position: absolute; inset: 0; background: rgba(255,255,255,.28); transform-origin: left; animation: fill 4s linear infinite; }
+  .capsule.anim .btn .txt { position: relative; }
+  .capsule.anim .btn .txt::after { content: "更新"; animation: label 4s linear infinite; }
+  @keyframes fill { 0% { transform: scaleX(0); } 10% { transform: scaleX(0); } 70% { transform: scaleX(1); } 100% { transform: scaleX(1); } }
+  @keyframes label { 0%, 10% { content: "更新"; } 11%, 69% { content: "下载中 …"; } 70%, 100% { content: "重启安装"; } }
+
+  /* ---- terminal tab / roster mock ---- */
+  .tabs { display: flex; gap: .4rem; margin-bottom: .5rem; }
+  .tab { display: inline-flex; align-items: center; gap: .4rem; background: #15171a; border: 1px solid #2a2c28; border-radius: 6px 6px 0 0; padding: .2rem .7rem; color: #c8c8c8; }
+  .dot { width: .55em; height: .55em; border-radius: 50%; display: inline-block; }
+  .dot.work { background: var(--amber); animation: pulse 1.2s ease-in-out infinite; }
+  .dot.ask { background: var(--red); animation: pulse .6s ease-in-out infinite; }
+  .dot.done { background: var(--green); }
+  .dot.idle { background: #555; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+  .roster { border-top: 1px dashed #2a2c28; padding-top: .4rem; }
+  .roster .row { display: grid; grid-template-columns: 7.5em 7em 1.4em 1fr 4em; gap: .6rem; align-items: center; padding: .15rem 0; }
+  .roster .st { display: inline-flex; align-items: center; gap: .35rem; }
+  .sq { width: .6em; height: .6em; display: inline-block; }
+  .sq.ask { background: var(--red); transform: rotate(45deg); }
+  .sq.input { background: var(--blue); border-radius: 50%; }
+  .sq.done { background: var(--green); border-radius: 2px; }
+  .glow { box-shadow: inset 0 0 0 2px rgba(240,98,93,.0); animation: glow 2.2s ease-in-out infinite; }
+  @keyframes glow { 50% { box-shadow: inset 0 0 0 2px rgba(240,98,93,.6); } }
+
+  /* ---- sidebar / taskbar mocks ---- */
+  .side { background: #111315; border: 1px solid #2a2c28; border-radius: 8px; padding: .6rem .8rem; font: 13px -apple-system, "Segoe UI", system-ui, sans-serif; color: #c8c8c8; }
+  .side .title { color: #8b949e; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; margin: .5rem 0 .2rem; }
+  .side .row { display: flex; align-items: center; gap: .5rem; padding: .18rem .2rem; }
+  .side .row .r { margin-left: auto; }
+  .sw { width: 26px; height: 14px; border-radius: 999px; background: #3fb950; position: relative; display: inline-block; }
+  .sw::after { content: ""; position: absolute; right: 2px; top: 2px; width: 10px; height: 10px; border-radius: 50%; background: #fff; }
+  .sw.off { background: #444; } .sw.off::after { right: auto; left: 2px; }
+  .taskbar { background: #202225; border-radius: 8px; padding: .5rem .8rem; display: flex; gap: .8rem; align-items: center; }
+  .tb-icon { width: 34px; height: 34px; border-radius: 6px; background: #2b2f36; position: relative; display: inline-block; border-bottom: 2px solid #58a6ff; }
+  .tb-icon .ov { position: absolute; right: -4px; bottom: -4px; width: 14px; height: 14px; border-radius: 50%; background: var(--red); border: 2px solid #202225; }
+  .keys { display: flex; gap: 1.2rem; flex-wrap: wrap; align-items: center; }
+  .keys div { text-align: center; font-size: 13px; color: var(--muted); }
+
+  /* ---- gates flow ---- */
+  .flow { display: flex; flex-wrap: wrap; gap: .5rem; align-items: stretch; margin: .8rem 0; }
+  .flow .g { flex: 1 1 130px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: .5rem .7rem; font-size: 13px; }
+  .flow .g b { display: block; color: var(--accent); }
+  .flow .g.you { border-color: var(--accent); }
+  svg text { font: 12px -apple-system, "Segoe UI", system-ui, sans-serif; fill: var(--fg); }
+  svg .box { fill: var(--card); stroke: var(--line); }
+  svg .lbl { fill: var(--muted); font-size: 11px; }
+  svg .path { fill: none; stroke: var(--muted); stroke-width: 1.4; marker-end: url(#arr); }
+  svg .path.hot { stroke: var(--accent); }
+</style>
+</head>
+<body>
+
+<h1>Windows Port v2.16.1 — Plan &amp; Implementation Notes</h1>
+<p class="sub">Porting upstream FanBox v2.16.1 (macOS) to the Windows fork <code>Emberwhirl/fanbox</code>. Written 2026-09-04. Replaces the Markdown draft. Sections 1–4 are the parts you are most likely to want to change; section 6 onward is engineering detail you can skim.</p>
+
+<div class="status">
+  <span>Status: <b>merge committed, port not started</b></span>
+  <span>dev = <code>498ba9e</code> (parents <code>b31c17b</code> + upstream <code>0394dae</code>)</span>
+  <span>Target: <b>v2.16.1</b> (three upstream minors: 2.14.0, 2.15.x, 2.16.x)</span>
+  <span>Fork release live: v2.13.0 (2026-08-22)</span>
+</div>
+
+<nav class="toc">
+  <a href="#decisions">1 · Decisions to review</a>
+  <a href="#users">2 · What users will see</a>
+  <a href="#you">3 · Your Windows tests</a>
+  <a href="#scope">4 · Goals, boundaries</a>
+  <a href="#gates">5 · Gates &amp; phases</a>
+  <a href="#eng">6 · Engineering</a>
+  <a href="#log">7 · Live log</a>
+</nav>
+
+<!-- ============================================================ -->
+<h2 id="decisions">1 · Decisions you are most likely to tweak</h2>
+<p>Each card states the default I will implement unless you say otherwise. Everything here is user-facing. A change is recorded as a deviation in the live log.</p>
+
+<div class="card decision">
+  <h3>D1 · In-app update on Windows: keep the download flow, no electron-updater auto-install <span class="tag ok">decided</span></h3>
+  <p>Upstream 2.16 made the update capsule fully automatic on macOS (electron-updater downloads a zip, then swaps the app on restart). That mechanism can only discover updates through a <code>latest.yml</code> asset on the release. You asked for releases without the yml, so the Windows capsule keeps today's flow for both installer and portable users: <b>下载更新</b> downloads the exact installer to Downloads and opens it; the user clicks through. Upstream's updater code stays in the tree but is inert on Windows (the probe returns <code>false</code> without a network round-trip, and an error listener is registered so a stray updater error cannot crash the main process).</p>
+  <div class="grid2">
+    <div class="mock"><div class="cap">Installed or portable, any version → 2.16.1</div>
+      <span class="capsule"><span class="msg">发现新版本 2.16.1</span><span class="btn ghost">下载更新</span><span class="x">✕</span></span>
+      <div class="figcap" style="color:#8b949e">Unchanged from 2.13.0. The offer appears only when both exact exes exist on the release.</div>
+    </div>
+    <div class="mock"><div class="cap">Not shipped on Windows this release</div>
+      <span class="capsule" style="opacity:.45"><span class="msg">发现新版本 2.17.0</span><span class="btn">更新</span><span class="x">✕</span></span>
+      <div class="figcap" style="color:#8b949e">One-click install would need <code>latest.yml</code> + blockmap on every release. Can be revisited later without code changes to the download path.</div>
+    </div>
+  </div>
+  <p class="ask">Recorded as decided 2026-09-04 (your instruction: no yml, no SHA256SUMS on the release).</p>
+</div>
+
+<div class="card decision">
+  <h3>D2 · Agent status now comes from Claude Code itself (hooks), not from reading the terminal</h3>
+  <p>Since 2.15, upstream asks Claude Code to report its own state (working / waiting for your permission / waiting for input / done). On Windows the upstream mechanism cannot work as written (it is a Unix shell command). Default: FanBox writes a hook file that makes Claude Code call FanBox directly over HTTP, with no shell involved. What you see: the tab dot, the 「轮到你」glow, the chime and the new <b>指挥台</b> (session list) react the instant Claude asks for permission, instead of 2–3 s after the screen goes quiet.</p>
+  <div class="mock">
+    <div class="cap">Terminal tab strip + 指挥台 (2 or more sessions)</div>
+    <div class="tabs">
+      <span class="tab"><span class="dot work"></span> fanbox · claude</span>
+      <span class="tab glow"><span class="dot ask"></span> blog · claude</span>
+      <span class="tab"><span class="dot done"></span> api · codex</span>
+      <span class="tab"><span class="dot idle"></span> PowerShell</span>
+    </div>
+    <div class="roster">
+      <div class="row"><span class="st"><span class="sq ask"></span> 等你确认</span><span>blog</span><span>◐</span><span style="color:#8b949e">Run `npm test`?</span><span>改 3 个</span></div>
+      <div class="row"><span class="st"><span class="sq done"></span> 刚完成</span><span>api</span><span>◑</span><span style="color:#8b949e">Done. Two files updated.</span><span>改 2 个</span></div>
+    </div>
+    <div class="figcap" style="color:#8b949e">Rows appear only for sessions that need you; <kbd>Ctrl+Alt+L</kbd> jumps to the next one. Sessions started by typing <code>claude</code> yourself keep today's heuristics.</div>
+  </div>
+  <p><b>Prerequisite on the user's machine:</b> the HTTP hook needs a recent Claude Code. If your installed version rejects it, I switch to the shell-command form, which works when Git Bash is installed (Claude Code on Windows requires Git for Windows anyway). Your test C1–C3 decides which one ships.</p>
+  <p class="ask">Options: <b>(a) default</b> · (b) ship with hooks off on Windows (everything behaves exactly like 2.13.0; 指挥台 and 本回合 attribution stay approximate).</p>
+</div>
+
+<div class="card decision">
+  <h3>D3 · Codex: best effort</h3>
+  <p>Codex reports through a "notify program" that must be a real executable. Default: a small Node script run by <code>node.exe</code>, only if <code>node.exe</code> is found and the argument survives Codex's Windows launcher byte-exact (your test C9 proves it). Otherwise Codex launches without it and keeps the old busy/idle heuristics. Codex is never launched with a flag that could make it fail to start.</p>
+  <p class="ask">Options: <b>(a) default</b> · (b) skip Codex hooks this release.</p>
+</div>
+
+<div class="card decision">
+  <h3>D4 · Keyboard shortcuts on Windows</h3>
+  <div class="keys">
+    <div><kbd>Ctrl</kbd>+<kbd>K</kbd><br>search (as before)</div>
+    <div><kbd>⇧</kbd>+<kbd>Tab</kbd><br>toggle full-text search (new upstream)</div>
+    <div><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>L</kbd><br>next session waiting for you</div>
+    <div><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>M</kbd><br>maximize / restore terminal <span class="tag med">new mapping</span></div>
+  </div>
+  <p style="margin-top:.8rem">Upstream binds terminal maximize to <kbd>⌘⇧M</kbd> and deliberately leaves <kbd>Ctrl+Shift+M</kbd> to programs inside the terminal. Windows has no ⌘, so today the chord reaches nothing. Default: <kbd>Ctrl+Alt+M</kbd>, consistent with <kbd>Ctrl+Alt+L</kbd>; the 「…」menu label shows the Windows chord. <kbd>Ctrl+Shift+M</kbd> keeps going to the TUI.</p>
+  <p class="ask">Options: <b>(a) Ctrl+Alt+M</b> · (b) Ctrl+Shift+M anyway, accepting it is taken from terminal programs · (c) no chord, menu only.</p>
+</div>
+
+<div class="card decision">
+  <h3>D5 · Sidebar "stay awake": one switch, WeChat switch moves to the View menu</h3>
+  <p>Upstream removed the two-switch 「离开电脑」section and later brought back only 「合盖继续干活」as a single sidebar row with a live dot; 「微信遥控不断线」lives in the native View menu. The Windows port had its own two-switch section, which after the merge no longer has a home in the page. Default: follow upstream's layout, keep the Windows wording (there is no lid to close).</p>
+  <div class="grid2">
+    <div class="side"><div class="title">工具</div>
+      <div class="row">Skills 透视</div><div class="row">定时任务 <span class="r muted">2</span></div><div class="row">Agent 用量</div><div class="row">更多…</div>
+      <div class="row"><span class="dot done"></span> 有任务时保持唤醒 <span class="r sw"></span></div>
+    </div>
+    <div class="side"><div class="title">View menu (native)</div>
+      <div class="row">☑ 有任务时保持唤醒</div>
+      <div class="row">☐ 微信遥控不断线</div>
+      <div class="figcap" style="color:#8b949e;margin:.4rem 0 0">Both places read the same state. Green dot = a blocker is active right now (an agent is working).</div>
+    </div>
+  </div>
+  <p class="ask">Options: <b>(a) default</b> · (b) keep both switches in the sidebar on Windows (permanent layout divergence from upstream).</p>
+</div>
+
+<div class="card decision">
+  <h3>D6 · Taskbar badge when a session is waiting for you</h3>
+  <p>Upstream sets a Dock badge with the count. Windows default: a red overlay dot on the taskbar icon while any session waits, plus a taskbar flash when the count goes from 0 to more; cleared when you look. A numeric overlay would need pre-rendered digit images; I would rather not for this release.</p>
+  <div class="taskbar"><span class="tb-icon"><span class="ov"></span></span><span class="tb-icon"></span><span class="tb-icon"></span><span class="muted small" style="margin-left:.4rem">FanBox · 1 session waiting</span></div>
+  <p class="ask">Options: <b>(a) dot + flash</b> · (b) flash only · (c) skip this release.</p>
+</div>
+
+<div class="card decision">
+  <h3>D7 · Wording and language on Windows</h3>
+  <p>New upstream strings mention 废纸篓 (Trash), 访达 (Finder), "this Mac" and ⌘. Default: the same treatment as before — Recycle Bin / File Explorer / "this PC" / Ctrl in both Chinese and English, including the new 「本回合」panel toasts (「已移入回收站」), the first-run guide (upstream's rewrite has no ⌘ at all, adopted as is), the update dialog, and the 「…」menu labels. Article content is never translated.</p>
+</div>
+
+<div class="card decision">
+  <h3>D8 · Release contents</h3>
+  <table>
+    <tr><th>Asset</th><th>Purpose</th></tr>
+    <tr><td><code>FanBox-2.16.1-win-x64.exe</code></td><td>NSIS installer</td></tr>
+    <tr><td><code>FanBox-2.16.1-win-x64-portable.exe</code></td><td>Portable</td></tr>
+  </table>
+  <p>Exactly two assets, as decided. No <code>latest.yml</code>, no blockmap, no <code>SHA256SUMS.txt</code>; electron-builder still writes them into <code>dist/</code> and they are simply not uploaded. SHA-256 values are still recorded in the live log for the download-back check. The update gate stays "both exes must exist with exact names". Not code-signed; the README's SmartScreen note stays and its SHA256SUMS sentence is dropped.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="users">2 · What Windows users will notice in 2.16.1</h2>
+<ul>
+  <li><b>Terminal stays responsive</b> while thumbnails or big directory scans run (2.14: the backend runs in its own process). Task Manager shows a <code>fanbox-server</code> child under FanBox; if it dies it restarts by itself.</li>
+  <li><b>Markdown with many photos no longer freezes the editor</b> (thumbnails in the editor; exports still use full-resolution images).</li>
+  <li><b>指挥台 and precise agent status</b> (D2), <b>本回合 panel</b> merging inbox / replay / snapshots, <b>single-file restore</b>, <b>send selected diff lines to the agent</b>, <b>md diff in reader view</b>, <b>image before/after slider</b>.</li>
+  <li><b>Quit confirmation only when an agent is actually working</b>; stay-awake likewise (D5).</li>
+  <li><b>Snapshot storage is visible and cleanable</b> (usage per project, 清理此项目存档, 清理失效仓库). On Windows sizes are computed by summing file lengths, so they read slightly smaller than macOS's block counts.</li>
+  <li><b>Security:</b> Markdown is sanitized before rendering (upstream's version of the fix first shipped in this fork), a page CSP, and every write action in the desktop app now needs a per-launch token, so another local process cannot drive FanBox's file operations.</li>
+  <li>Smaller sidebar (「更多…」menu), rewritten first-run guide, <code>.jsonl</code> previews, skill-collection repos recognized, ⇧Tab full-text search.</li>
+  <li><b>Upgrade path:</b> installed or portable 2.13.0 shows 「下载更新」for 2.16.1, and 2.16.1 will do the same for later versions (D1: no auto-install on Windows).</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="you">3 · Your part: tests on the Windows PC</h2>
+<p>These are the cases only a physical Windows machine can answer. Same setup as v2.13.0: isolated profile (<code>USERPROFILE</code>/<code>APPDATA</code>/<code>LOCALAPPDATA</code> redirected), VS Build Tools + Spectre libs, Node, Git for Windows. Please record: candidate OID, Windows build, Node / Git / PowerShell / Claude Code / Codex versions, and <b>whether Git Bash is installed</b> (it changes D2). Every item has a pass criterion; a fail or a skipped required case stops the gate. Groups A–F run on the source checkout (Gate C); G runs on the built packages (Gates D/E).</p>
+
+<details open><summary>A · Process model</summary>
+<ul class="check">
+  <li><b>A1</b> Launch from source and later from both packages by double-click in Explorer: Task Manager shows <code>fanbox-server</code> under FanBox; UI loads; no crash in the log.</li>
+  <li><b>A2</b> Kill <code>fanbox-server</code> in Task Manager: it comes back within seconds and the app keeps working. Kill it six times in a row: a localized "backend failed to start" dialog, then the app exits with no orphans.</li>
+  <li><b>A3</b> Close the window (✕ or Alt+F4) with no agent running: no dialog, no leftover <code>fanbox-server</code> or <code>powershell.exe</code>.</li>
+  <li><b>A4</b> Start FanBox from the Start Menu (not from a terminal) with git only on the user PATH: git status works, thumbnails generate, one-click Claude Code starts. (Proves the PATH merge reaches the backend child.)</li>
+  <li><b>A5</b> Start a second FanBox: the port-in-use dialog appears after the retry budget; the first instance is unaffected.</li>
+</ul></details>
+
+<details open><summary>B · Token and security</summary>
+<ul class="check">
+  <li><b>B1</b> In the app: save, rename, Recycle-Bin delete, create file, switch language, save a cron task, 排版 → 导出长图, insert image. All succeed.</li>
+  <li><b>B2</b> From an outside PowerShell, POST to <code>http://127.0.0.1:4567/api/trash</code> with a JSON body: <b>403 bad token</b>.</li>
+  <li><b>B3</b> Malformed JSON to any POST endpoint: 400; nothing in the profile is touched.</li>
+  <li><b>B4</b> Open the XSS fixture Markdown in Read, editor, 排版, WeChat bubble and version history: inert. A legitimate document with <code>C:\…</code> images and a <code>&lt;a target="_blank"&gt;</code> renders images and keeps the target.</li>
+  <li><b>B5</b> HTML preview: scripts run inside the iframe, cannot reach <code>/api</code>; <code>window.open</code> to an http URL goes to the system browser; a <code>file:</code> link does nothing.</li>
+  <li><b>B6</b> Plant <code>git.exe</code> in a project, open an image's before/after view and a diff: the planted binary never runs.</li>
+</ul></details>
+
+<details open><summary>C · Hooks (D2, D3)</summary>
+<ul class="check">
+  <li><b>C1</b> One-click 「启动 Claude Code」: the typed command carries <code>--settings "C:\Users\…\.fanbox\hooks\claude-settings.json"</code> (absolute, quoted); Claude starts cleanly. Repeat with default shell cmd.exe (<code>FANBOX_SHELL</code>) and PowerShell.</li>
+  <li><b>C2</b> The hooks file contains no token; inside the tab, <code>curl.exe "$env:FANBOX_CTL/terminals" -H "x-fanbox-token: $env:FANBOX_CTL_TOKEN"</code> shows <code>hooked:true</code> after the first prompt.</li>
+  <li><b>C3</b> Trigger a permission request: tab dot + glow + chime the instant the prompt appears; 指挥台 lists the session under 等你确认; approve; at turn end it shows 刚完成 and clears on focus.</li>
+  <li><b>C4</b> Let Claude edit a file: 本回合 groups it under the terminal name with the agent icon; 查看改动 and 还原此文件 work; a newly created file goes to the Recycle Bin with 回收站 wording.</li>
+  <li><b>C5</b> Stay-awake dot is green while the agent works and turns off within seconds once it waits at the prompt.</li>
+  <li><b>C6</b> Quit mid-turn: dialog names the agent; cancel keeps everything. Quit while idle at the prompt: no dialog.</li>
+  <li><b>C7</b> Resume a session from the list: the command still carries the hooks flag.</li>
+  <li><b>C8</b> A cron task and an AI 整理 run also become hooked.</li>
+  <li><b>C9</b> Codex: if enabled, a completed turn shows <code>hooked:true</code> and the argv-dump shim shows the notify argument byte-exact. If disabled, Codex starts bare and the old heuristics still work.</li>
+  <li><b>C10</b> With <code>HTTP_PROXY</code> set in the user environment, hook events still arrive.</li>
+  <li><b>C11</b> A manually typed <code>claude</code> behaves as before (heuristics, <code>hooked:false</code>).</li>
+</ul></details>
+
+<details open><summary>D · Editor, images, files</summary>
+<ul class="check">
+  <li><b>D1</b> Markdown with ten large photos: images load via thumbnails; memory stays flat compared with 2.13.0; 排版 export uses full resolution.</li>
+  <li><b>D2</b> Mosaic an image and save: the editor shows the new version immediately.</li>
+  <li><b>D3</b> Without ImageMagick and ffmpeg on PATH: images still render (fallback path).</li>
+  <li><b>D4</b> Open a directory with 200+ images: never more than four <code>magick</code>/<code>ffmpeg</code> processes at once.</li>
+  <li><b>D5</b> A directory with more than 1500 entries shows the paged list with 显示全部.</li>
+  <li><b>D6</b> An agent writing into <code>node_modules</code> under a watched directory produces no inbox entries; a real write to <code>sub\a.ts</code> lights the heat badge on <code>sub</code>, appears in 本回合, and an open editor on that file reloads.</li>
+  <li><b>D7</b> Drag a file from Explorer into the editor: one copy beside the document, canonical path in Markdown, survives Rich/Source/save/reopen.</li>
+</ul></details>
+
+<details open><summary>E · Snapshots on a non-git project</summary>
+<ul class="check">
+  <li><b>E1</b> Start an agent turn: a snapshot exists; the usage panel shows non-zero bytes for the project.</li>
+  <li><b>E2</b> 整回合回滚 while the agent works inside the project is refused; after it stops it succeeds after a fresh backup snapshot.</li>
+  <li><b>E3</b> 单文件还原 restores one file only.</li>
+  <li><b>E4</b> 清理此项目存档 with the path typed with a trailing <code>\</code> succeeds; 清理失效仓库 removes a repo whose project was deleted.</li>
+  <li><b>E5</b> A project with CRLF files: after several turns, rollback is still allowed.</li>
+</ul></details>
+
+<details open><summary>F · UI, shortcuts, English mode</summary>
+<ul class="check">
+  <li><b>F1</b> <kbd>Ctrl+K</kbd> opens search; <kbd>⇧Tab</kbd> toggles 搜内容; footer shows <code>Ctrl+↵</code>.</li>
+  <li><b>F2</b> <kbd>Ctrl+Alt+L</kbd> cycles waiting sessions; with none, the toast says so.</li>
+  <li><b>F3</b> <kbd>Ctrl+Alt+M</kbd> maximizes/restores from the file area and from inside the terminal; <kbd>Ctrl+Shift+M</kbd> inside the terminal reaches Claude Code untouched; the 「…」menu shows the Windows chord.</li>
+  <li><b>F4</b> Fresh profile: the new two-action first-run guide, fully translated in English mode, no ⌘.</li>
+  <li><b>F5</b> English walk-through of sidebar (工具 group, 更多… menu, stay-awake tip), preview 「…」menu, 本回合 panel, 指挥台 rows, update capsule, restore toasts: no Chinese, no ⌘, no Finder / 废纸篓 / "this Mac".</li>
+  <li><b>F6</b> Taskbar dot (D6) appears when a session waits and clears on focus.</li>
+  <li><b>F7</b> Version history renders the changelog (Chinese content, untranslated).</li>
+  <li><b>F8</b> Title-bar overlay aligns with the new 本回合 top-bar button at 100% and 150% scaling; the 工具 group stays visible at a 720 px window height.</li>
+</ul></details>
+
+<details open><summary>G · Packages and updater (Gates D / E)</summary>
+<ul class="check">
+  <li><b>G1</b> NSIS install as a standard user into a path with spaces and CJK; smoke A1–A3, B1, C1–C3, D1; About shows 2.16.1.</li>
+  <li><b>G2</b> In-place upgrade over installed v2.13.0: no duplicate shortcuts or uninstall entries; profile preserved.</li>
+  <li><b>G3</b> Uninstall removes binaries and shortcuts, keeps <code>~/.fanbox</code>.</li>
+  <li><b>G4</b> Portable from Downloads and from another drive, no elevation: same smoke; no shortcuts; the capsule wording is 下载更新 (never 更新) whenever an offer appears.</li>
+  <li><b>G5</b> After publication: installed and portable 2.13.0 offer only 2.16.1, download the exact installer (hash matches the locally built file) and upgrade with live ConPTY; installed 2.16.1 reports up to date, and the main-process log shows no updater error (the electron-updater probe must not run on Windows).</li>
+</ul></details>
+
+<!-- ============================================================ -->
+<h2 id="scope">4 · Goals, success criteria, deliverables, boundaries</h2>
+
+<h3>Goals</h3>
+<ol>
+  <li>A true two-parent merge of v2.16.1 (done: <code>498ba9e</code>) with all Windows behavior re-applied on top of upstream's implementations.</li>
+  <li>Every 2.14–2.16 feature working on Windows with explicit Windows arms: backend child, hooks (Claude; Codex best effort), 本回合 and single-file restore with correct paths, editor thumbnails under the concurrency limit, snapshot usage/cleanup; the update capsule keeps the exact-pair download flow (D1).</li>
+  <li>macOS/Linux code byte-identical to <code>master</code> except the four accepted shared edits (section 6.4).</li>
+  <li>Complete Chinese/English UI on Windows with no Mac wording (D7).</li>
+  <li>Repeatable acceptance campaigns for the hard fixes; existing campaigns updated.</li>
+  <li>One immutable candidate validated on Linux and Windows, promoted to <code>windows</code>, packaged, published with the two D8 assets, and the live update offer verified from 2.13.0.</li>
+</ol>
+
+<h3>Success criteria (release level)</h3>
+<ul>
+  <li><code>master</code> is an ancestor of <code>dev</code>; per-file diffs against <code>master</code> contain only Windows-gated arms, pure additions, or the accepted shared edits; the parity scanner reports no unexplained item.</li>
+  <li>Syntax check clean on all JS; browser-mode server smoke passes (<code>/</code>, <code>/api/skills/builtin</code> = 200, <code>/api/agent/terminals</code> = 501, POST without token accepted in browser mode).</li>
+  <li>On Windows: groups A–F pass on one OID; group G passes on packages built from that OID.</li>
+  <li>The public release carries exactly the two D8 assets; installed 2.13.0 upgrades through the download flow; installed 2.16.1 reports current with no updater error.</li>
+</ul>
+
+<h3>Deliverables</h3>
+<ol>
+  <li>Commits on <code>dev</code> (English messages), final one ending <code>+ release 2.16.1</code>.</li>
+  <li>Code: Windows arms in <code>electron/main.js</code>, <code>server.js</code>, <code>public/app.js</code>, <code>public/i18n-dict.js</code>, <code>win-port-helpers.js</code>; <code>package.json</code> with merged packaging list and <code>dist:win</code> scripts restored.</li>
+  <li>Tests: new <code>experiments/win-v2161-hooks-202609/</code> (Linux contract tests + Windows Playwright-Electron script); updated <code>winport-parity-202607</code> and <code>win-v213-images-202608</code>.</li>
+  <li>Docs: CHANGELOG (upstream 2.14.0–2.16.1 verbatim + a <code>### Windows port</code> subsection under 2.16.1), README fork wrapper for v2.16.1 (download table, hooks note, SHA256SUMS sentence removed), CLAUDE.md updates, this file's live log.</li>
+  <li>Release: <code>windows</code> fast-forwarded to the candidate, tag <code>v2.16.1</code>, GitHub Release with the two exes, gate evidence (OIDs, SHA-256, environment) in the log.</li>
+</ol>
+
+<h3>Boundaries</h3>
+<div class="grid2">
+  <div class="card"><h4>In scope</h4>
+    <ul class="small">
+      <li>Everything in sections 1, 2 and 6 for Windows 10/11 x64.</li>
+      <li>Repair of pre-existing path-separator bugs that the new 本回合 panel exposes (one is a rollback safety guard).</li>
+      <li>Campaign updates, docs, release.</li>
+    </ul>
+  </div>
+  <div class="card"><h4>Out of scope</h4>
+    <ul class="small">
+      <li>ARM64; macOS packaging; Linux changes; dependency upgrades beyond upstream's lockfile.</li>
+      <li>Code signing; portable self-update; Windows Task Scheduler for cron; 权限体检 (macOS TCC) on Windows.</li>
+      <li>Editing the bundled agent skill or the README body below the fork divider (both kept identical to upstream).</li>
+      <li>Redesigning upstream UI (指挥台, 本回合, sidebar) beyond Windows arms.</li>
+    </ul>
+  </div>
+</div>
+
+<h3>Authorization checkpoints</h3>
+<p>Same as v2.13.0. Approval of this plan authorizes nothing by itself. "Begin implementation" covers fetches, safety refs, code, tests, docs and local commits on <code>dev</code> up to a frozen candidate. Each of these needs its own instruction naming the ref/version/OID: fast-forward of <code>windows</code>; any push; packaging; tag creation; tag push; draft release and asset upload; publication. Never force-push; a pushed tag or public release is immutable (fix forward).</p>
+
+<!-- ============================================================ -->
+<h2 id="gates">5 · Gates and phases</h2>
+<div class="flow">
+  <div class="g"><b>A · Integration</b> merge done; Windows arms re-applied; renderer parses; one definition of each key symbol</div>
+  <div class="g"><b>B · Linux/static</b> syntax, server smoke, contract tests, parity scan, no generated drift, clean tree → candidate OID</div>
+  <div class="g you"><b>C · Windows source</b> <span class="tag you">you</span> rebuild, ConPTY, campaigns, groups A–F</div>
+  <div class="g you"><b>D · Packages</b> <span class="tag you">you</span> build from the OID, audit, G1–G4, hashes</div>
+  <div class="g you"><b>E · Publish</b> <span class="tag you">you</span> tag, draft, download-back check, publish, G5</div>
+</div>
+<p>Any code change after the candidate is frozen creates a new candidate and repeats B and C; a rebuild after hashing repeats D.</p>
+
+<table>
+  <tr><th>Phase</th><th>Goal</th><th>Done when</th><th>Owner</th></tr>
+  <tr><td>0 Baseline</td><td>Refs revalidated, safety refs created, <code>npm ci</code> with <code>electron-updater</code></td><td>Log has the baseline block</td><td>Claude</td></tr>
+  <tr><td>1 Re-apply Windows side</td><td>Restore every Windows arm the upstream-side merge dropped (list in 6.2)</td><td>Gate A</td><td>Claude</td></tr>
+  <tr><td>2 Silent defects</td><td>Fix the auto-merged code that is wrong on Windows without any conflict (6.3)</td><td>Contract tests pass</td><td>Claude</td></tr>
+  <tr><td>3 New Windows arms</td><td>Hooks, updater, paths, shortcuts, badge, wording (D1–D7)</td><td>Contract tests pass</td><td>Claude</td></tr>
+  <tr><td>4 Campaigns &amp; docs</td><td>New campaign, updated campaigns, CHANGELOG, README, CLAUDE.md; freeze</td><td>Gate B</td><td>Claude</td></tr>
+  <tr><td>5 Windows source</td><td>Groups A–F</td><td>Gate C</td><td>You</td></tr>
+  <tr><td>6 Promote &amp; package</td><td>ff <code>windows</code>, push, build, audit, G1–G4</td><td>Gate D</td><td>Both (authorized steps)</td></tr>
+  <tr><td>7 Release</td><td>Tag, draft, verify, publish, G5</td><td>Gate E</td><td>Both (authorized steps)</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="eng">6 · Engineering appendix</h2>
+<p class="muted">You said you trust me on this part; it is here so the plan is complete and the log has something to check against.</p>
+
+<h3>6.1 · Architecture after 2.16.1, and where Windows arms go</h3>
+<svg viewBox="0 0 900 300" width="100%" role="img" aria-label="Process diagram">
+  <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="currentColor" opacity=".6"/></marker></defs>
+  <rect class="box" x="20" y="30" width="230" height="110" rx="10"/>
+  <text x="35" y="55" font-weight="600">Electron main</text>
+  <text class="lbl" x="35" y="75">windows · node-pty (ConPTY) · fs.watch</text>
+  <text class="lbl" x="35" y="92">agent facts (termFacts) · updater</text>
+  <text class="lbl" x="35" y="109">win: registry PATH merge → then fork</text>
+  <text class="lbl" x="35" y="126">win: winPtyBusy fallback for un-hooked tabs</text>
+
+  <rect class="box" x="330" y="30" width="230" height="110" rx="10"/>
+  <text x="345" y="55" font-weight="600">fanbox-server (utilityProcess)</text>
+  <text class="lbl" x="345" y="75">server.js: /api/*, thumbnails, snapshots</text>
+  <text class="lbl" x="345" y="92">agent calls proxied back over RPC</text>
+  <text class="lbl" x="345" y="109">win: gitExe()/winSpawnEnv() everywhere,</text>
+  <text class="lbl" x="345" y="126">winDirSizes for usage, run() gate for magick</text>
+
+  <rect class="box" x="640" y="30" width="240" height="110" rx="10"/>
+  <text x="655" y="55" font-weight="600">Renderer (app.js)</text>
+  <text class="lbl" x="655" y="75">token via --fanbox-ctl-token</text>
+  <text class="lbl" x="655" y="92">POST … x-fanbox-token</text>
+  <text class="lbl" x="655" y="109">win: joinPath/splitRel for 本回合,</text>
+  <text class="lbl" x="655" y="126">thumb URLs via localImageAbs</text>
+
+  <rect class="box" x="330" y="200" width="230" height="80" rx="10"/>
+  <text x="345" y="225" font-weight="600">Claude Code in a FanBox tab</text>
+  <text class="lbl" x="345" y="245">env: FANBOX_CTL, _TOKEN, _TERM_ID</text>
+  <text class="lbl" x="345" y="262">win: --settings "C:\…\claude-settings.json"</text>
+
+  <path class="path" d="M250,85 L330,85"/>
+  <text class="lbl" x="262" y="78">env + RPC</text>
+  <path class="path" d="M560,85 L640,85"/>
+  <text class="lbl" x="572" y="78">HTTP</text>
+  <path class="path hot" d="M445,200 C445,170 445,160 445,140"/>
+  <text class="lbl" x="455" y="172">hook: POST /api/agent/event</text>
+  <path class="path hot" d="M330,220 C200,220 140,200 135,140"/>
+  <text class="lbl" x="150" y="262">facts → dot / glow / 指挥台</text>
+  <circle r="4" fill="var(--accent)"><animateMotion dur="2.4s" repeatCount="indefinite" path="M445,200 C445,170 445,160 445,140"/></circle>
+  <circle r="4" fill="var(--accent)"><animateMotion dur="2.4s" begin="1.2s" repeatCount="indefinite" path="M330,220 C200,220 140,200 135,140"/></circle>
+</svg>
+<p class="figcap">Blue dots: the hook event path added in 2.15. On Windows the hook is an HTTP hook entry (D2) so no shell is involved; the token stays in the process environment and is interpolated into a header by Claude Code.</p>
+
+<h3>6.2 · Merge record: what the upstream-side resolution replaced, to be re-applied from <code>b31c17b</code></h3>
+<p>All 38 hunks took <code>master</code>'s side. Non-conflicting Windows hunks (registry PATH merge, ConPTY spawn, <code>winPtyBusy</code>, screenshot watcher, <code>win-port-helpers.js</code>, preview guard, WeChat driver/env, snapshot eligibility, release wizard, etc.) survived. The Windows side of these hunks did not and is re-applied in Phase 1:</p>
+<table>
+  <tr><th>File</th><th>Hunk (upstream now)</th><th>Windows content to re-apply</th><th>Sev.</th></tr>
+  <tr><td rowspan="9"><code>electron/main.js</code></td><td>electron destructure</td><td>add <code>powerSaveBlocker</code> (used 11×, currently a ReferenceError on Windows)</td><td><span class="tag high">high</span></td></tr>
+  <tr><td><code>createWindow</code></td><td>win32 <code>winOpts</code>: <code>titleBarStyle:'hidden'</code>, <code>titleBarOverlay</code>, <code>autoHideMenuBar</code>, <code>show:false</code>; one shared <code>webPreferences</code> incl. <code>additionalArguments</code> token in both branches</td><td><span class="tag high">high</span></td></tr>
+  <tr><td><code>checkUpdate</code> ×3</td><td><code>winAssetOk</code> exact-pair gate; <code>latestAssets = IS_WIN ? [] : null</code>; Windows dialog wording; "no Windows installer yet" branch — keeping upstream's <code>await probeAutoUpdate()</code> before <code>pendingUpdate</code> (the 2.16.1 race fix)</td><td><span class="tag high">high</span></td></tr>
+  <tr><td>electron-updater block</td><td>port comment; add <code>autoUpdater.on('error')</code>; <code>probeAutoUpdate</code> returns <code>false</code> on Windows before any network call (D1)</td><td><span class="tag med">med</span></td></tr>
+  <tr><td><code>activeAgentTerms</code></td><td>Windows arm after the facts check: un-hooked tabs count as active (node-pty's <code>p.process</code> is static on win32); label from <code>f.agent</code> when hooked</td><td><span class="tag high">high</span></td></tr>
+  <tr><td>permissions block / menu comment</td><td>guard <code>permStatus()</code> with <code>if (!IS_MAC)</code>; port's comment</td><td><span class="tag low">low</span></td></tr>
+  <tr><td>View menu</td><td><code>(isMac || IS_WIN)</code> array with the port's <code>stayLabel</code> first item; upstream's WeChat item second</td><td><span class="tag med">med</span></td></tr>
+  <tr><td><code>will-quit</code></td><td><code>trySetDisableSleep(false)</code> unconditional (self-guarded per platform) + upstream's <code>backendProc.kill()</code></td><td><span class="tag med">med</span></td></tr>
+  <tr><td><code>p.onExit</code>, <code>agentList</code></td><td><code>termCwds.delete(id)</code>; win32 cwd fallback and <code>winPtyBusy !== false</code> for un-hooked tabs while keeping upstream's <code>state</code>/<code>hooked</code> fields; mirror in the WeChat lister</td><td><span class="tag high">high</span></td></tr>
+  <tr><td rowspan="5"><code>server.js</code></td><td><code>trashPath</code> win32</td><td>hardened PowerShell arm (path via env, absolute <code>WIN_PS</code>, junction re-stat, timeout, early return)</td><td><span class="tag high">high</span></td></tr>
+  <tr><td><code>releasePrepare</code> POSIX tail</td><td>nothing — upstream's is correct and the fork's Node-side glob was an unreachable golden-rule violation; Windows steps already return earlier</td><td><span class="tag ok">none</span></td></tr>
+  <tr><td><code>execSnap</code></td><td><code>gitExe()</code> guard returning <code>code:-1</code> + <code>env: winSpawnEnv()</code>, keeping upstream's <code>code</code> field, <code>project ? --work-tree : []</code> and <code>cwd: project || SNAP_ROOT</code></td><td><span class="tag high">high</span></td></tr>
+  <tr><td><code>openInOS</code> terminal</td><td>win32 early return: <code>wt -d</code> or <code>cmd /c start "" &lt;abs powershell&gt; -NoExit</code> with <code>cwd</code> (upstream's <code>cmd /K cd /d</code> form fails on quoted paths)</td><td><span class="tag med">med</span></td></tr>
+  <tr><td><code>openDefault</code></td><td>win32 early return: <code>explorer.exe /select,</code> with the 1500 ms success latch; <code>explorer.exe &lt;target&gt;</code> for open (upstream's <code>cmd /c start ""</code> executes names containing <code>&amp;</code>)</td><td><span class="tag high">high</span></td></tr>
+  <tr><td rowspan="8"><code>public/app.js</code></td><td><code>fixLocalImages</code></td><td>win32 arm computing the absolute path (new <code>fanboxWinPath.localImageAbs</code>) then falling through to upstream's thumb / raw decision</td><td><span class="tag high">high</span></td></tr>
+  <tr><td>preview action bar</td><td><code>fileManagerName()</code> / <code>isWindows()</code> labels moved into upstream's <code>#preview-more</code> array</td><td><span class="tag med">med</span></td></tr>
+  <tr><td><code>semanticSig</code></td><td>the fork's inert <code>&lt;template&gt;</code> form (accepted shared edit, 6.4)</td><td><span class="tag low">low</span></td></tr>
+  <tr><td>editor hint</td><td><code>isMacOS() ? '⌘S' : 'Ctrl+S'</code> inside upstream's new string</td><td><span class="tag low">low</span></td></tr>
+  <tr><td>first-run guide, <code>CLAUDE_HOOKS</code>, capsule handlers, changelog render</td><td>upstream kept; Windows arms added for hooks flags (D2/D3) and the download success message (<code>isWindows()</code> wording)</td><td><span class="tag med">med</span></td></tr>
+  <tr><td>Windows <code>powerBar</code></td><td>not re-added; D5 Windows arm inside upstream's <code>powerBar</code></td><td><span class="tag med">med</span></td></tr>
+  <tr><td><code>/fs</code> image fallback</td><td><code>winSep ? '/fs/' : '/fs'</code> rule inside upstream's two-stage thumb → fs fallback</td><td><span class="tag med">med</span></td></tr>
+  <tr><td>second <code>mdHtml</code></td><td>still present (both auto-merged): delete the fork's, keep upstream's with a platform-aware config carrying <code>MD_URI_RE_WIN</code> (+ <code>matrix</code>) so <code>C:\</code> image paths survive sanitizing</td><td><span class="tag high">high</span></td></tr>
+  <tr><td><code>public/i18n-dict.js</code></td><td>3 hunks</td><td>Windows power keys (minus <code>#pw-wechat</code>), <code>FANBOX_UI_MAC</code> forms of 「本地运行 · 数据不出本机」「⤢ 全机」「全机（主目录及以下）」(upstream's "this Mac" currently wins), two Windows stay-awake regexes</td><td><span class="tag med">med</span></td></tr>
+  <tr><td><code>public/index.html</code>, <code>typeset.js</code></td><td>identical to master</td><td>nothing; fork's <code>public/vendor/purify.min.js</code> (3.4.11) to be deleted in favour of upstream's <code>vendor/dompurify/</code> (3.4.8, reproducible by <code>npm run build:hljs</code>)</td><td><span class="tag ok">none</span></td></tr>
+  <tr><td><code>package.json</code></td><td>scripts</td><td>restore <code>dist:win</code> / <code>dist:win:arm64</code> (+ <code>--publish never</code>, so electron-builder never tries to upload); merge the two <code>files</code> arrays into one (JSON currently keeps only the port's node-pty exclusions and drops upstream's docs/assets/src-vendor exclusions); no Windows <code>publish</code> target (D1)</td><td><span class="tag high">high</span></td></tr>
+  <tr><td><code>package-lock.json</code></td><td>identical to master</td><td>nothing</td><td><span class="tag ok">none</span></td></tr>
+</table>
+
+<h3>6.3 · Silent defects: auto-merged upstream code that is wrong on Windows</h3>
+<table>
+  <tr><th>Where</th><th>Problem</th><th>Fix (Windows-gated)</th></tr>
+  <tr><td><code>server.js baseBlob()</code> (new <code>/api/base-file</code>)</td><td>spawns bare <code>git</code> with <code>cwd</code> = browsed directory: re-opens the planted-<code>git.exe</code> hole</td><td><code>gitExe()</code> guard + <code>winSpawnEnv()</code>, keep <code>encoding:'buffer'</code></td></tr>
+  <tr><td><code>server.js snapUsage()</code></td><td><code>du -sk</code> does not exist → every size 0</td><td>win32 arm via existing <code>winDirSizes(SNAP_ROOT)</code></td></tr>
+  <tr><td><code>server.js snapClean()</code></td><td>POSIX-only trailing-slash strip → "这个目录还没有存档" for <code>C:\proj\</code></td><td>same win32 regex as <code>snapshot()</code></td></tr>
+  <tr><td><code>server.js snapReapIfEmpty/snapClean</code></td><td><code>fsp.rm</code> races the un-awaited <code>git gc</code>; Windows file locks</td><td><code>maxRetries/retryDelay</code> behind a platform ternary (accepted shared line)</td></tr>
+  <tr><td><code>server.js snapEnsureRepo</code></td><td>new porcelain-clean rollback gate can be tripped by <code>core.autocrlf</code></td><td>D8: set <code>core.autocrlf=false</code>, <code>core.filemode=false</code> in shadow repos on win32</td></tr>
+  <tr><td><code>server.js generateThumb / HEIC</code> win32</td><td>bypass upstream's new 4-way <code>run()</code> gate → process storm on big image dirs</td><td><code>run(cmd, args, opts)</code> optional third parameter (accepted shared edit); Windows branch routed through it</td></tr>
+  <tr><td><code>main.js watchNoisy()</code>, <code>app.js isNoisyChange</code></td><td>split on <code>/</code>; Windows <code>fs.watch</code> gives backslashes → node_modules noise filter inert</td><td>split on <code>/[\\/]/</code></td></tr>
+  <tr><td><code>app.js recordChange / attributeChange / agentBusyIn / inProject / external-edit reload / heat badge</code></td><td><code>dir + '/' + filename</code> and <code>startsWith(project + '/')</code>: on Windows the rollback safety guard never fires, editors do not reload, sub-directory heat never lights, hook attribution is dropped</td><td><code>joinPath</code>/<code>splitRel</code> helpers branching on <code>state.sep</code></td></tr>
+  <tr><td><code>main.js startBackendServer</code></td><td>child env is a snapshot at fork time; ordering vs the registry PATH merge is currently right but unmarked; <code>ELECTRON_RUN_AS_NODE</code> could leak in; <code>stdio:'inherit'</code> in a console-less GUI</td><td>comment the ordering; delete <code>ELECTRON_RUN_AS_NODE</code> from the fork env; test A1, consider <code>stdio:'ignore'</code> on win32</td></tr>
+  <tr><td><code>main.js win:badge</code></td><td><code>app.dock</code> only</td><td>D6</td></tr>
+  <tr><td><code>main.js probeAutoUpdate</code></td><td>would probe GitHub for <code>latest.yml</code> on every check and find nothing; no <code>'error'</code> listener on <code>autoUpdater</code> (an emitted error with no listener throws in main)</td><td>D1: <code>if (IS_WIN) return false</code> first thing; error listener</td></tr>
+  <tr><td><code>app.js</code> ⌘⇧M handler + xterm key handler</td><td><code>metaKey</code>-only; xterm lets <kbd>Ctrl+Shift+M</kbd> escape on Windows → chord reaches nothing</td><td>D4, same predicate in both handlers</td></tr>
+  <tr><td><code>app.js</code> restore toasts, menu labels, dict values</td><td>废纸篓 hard-coded; 「⌘⇧M」labels; English values with ⌘S/⌘F</td><td>D7 via <code>trashName()</code>, <code>modKey()</code>, <code>FANBOX_UI_MAC</code></td></tr>
+</table>
+
+<h3>6.4 · Load-bearing constraints</h3>
+<ul class="small">
+  <li><b>Golden rule.</b> macOS/Linux branches and literals stay byte-identical to <code>master</code>. Windows behavior only inside <code>PLATFORM === 'win32'</code> / <code>IS_WIN</code> / <code>isWindows()</code> / <code>state.sep === '\\'</code> arms, Windows-only helpers, or new dictionary keys. Accepted shared-text edits this round, each classified in <code>verify.js</code> and listed in the changelog: (1) <code>autoUpdater.on('error', …)</code>; (2) inert-<code>&lt;template&gt;</code> <code>semanticSig()</code>; (3) platform-ternary <code>fsp.rm</code> retry options; (4) optional third parameter on <code>run()</code>. Anything else shared is a scope change.</li>
+  <li><code>server.js</code>: Node built-ins only, never requires <code>electron/</code>; <code>win-port-helpers.js</code> requires only <code>path</code>; <code>parseWinProxyServer</code> twins in sync (upstream did not touch them).</li>
+  <li>Never build cmd/PowerShell strings from user data; argv spawning; <code>gitExe()</code> + <code>winSpawnEnv()</code> for every git spawn; Windows busy tri-state keeps null = busy; sandboxed preload keeps using <code>sendSync</code> IPC.</li>
+  <li>The hooks files never contain the token; it lives only in process env and <code>additionalArguments</code>. Hook flags are appended only if the file exists (a missing <code>--settings</code> file makes <code>claude</code> exit).</li>
+  <li>New UI strings are Chinese in <code>app.js</code> with dictionary entries; Windows wording via <code>FANBOX_UI_MAC</code>, <code>fileManagerName()</code>, <code>trashName()</code>, <code>modKey()</code>.</li>
+  <li>Vendor: only upstream's <code>vendor/dompurify/purify.min.js</code>; Milkdown rebuilt from <code>src-vendor/</code> only if <code>milkdown-entry.js</code> changes.</li>
+  <li>Scanning <code>public/app.js</code> for markers or symbols must use <code>LC_ALL=C command grep -a</code> (the shell's <code>grep</code> is a function wrapper and the file contains NUL bytes in string literals; a plain grep reported the file clean while it had 12 hunks).</li>
+</ul>
+
+<h3>6.5 · Decision details for D1–D3</h3>
+<details><summary>D1 · updater on Windows (download flow only)</summary>
+<ul class="small">
+  <li><code>probeAutoUpdate()</code>: <code>if (IS_WIN) return false;</code> before <code>checkForUpdates()</code>, so no GitHub probe for a <code>latest.yml</code> that does not exist; <code>pendingUpdate.auto</code> is always <code>false</code> → the capsule shows 下载更新.</li>
+  <li><code>autoUpdater.on('error', () =&gt; {})</code> registered unconditionally (accepted shared line).</li>
+  <li>Upstream's 2.16.1 ordering (<code>latestAssets</code>, then <code>await probeAutoUpdate()</code>, then <code>pendingUpdate</code>) is kept; the fork's <code>winAssetOk</code> exact-pair gate, <code>latestAssets = IS_WIN ? [] : null</code>, and the "no Windows installer yet" dialog branch are re-applied around it.</li>
+  <li><code>update:install</code> / <code>update:restart</code> return <code>{ok:false, error:'no-auto'}</code> on Windows as upstream already does when <code>auto</code> is false; nothing else changes.</li>
+  <li>No <code>win.publish</code> config; <code>dist:win</code> gets <code>--publish never</code> only as a guard. <code>buildWinReleaseSteps</code> keeps uploading exactly the two exes; <code>dist/latest.yml</code> and the blockmap are ignored.</li>
+  <li>Revisiting one-click install later needs: publish <code>latest.yml</code> + blockmap, a Windows <code>publish</code> target, and a Windows arm in <code>probeAutoUpdate</code> filtering for <code>-win-x64.exe</code>; the download path is untouched by that.</li>
+</ul></details>
+<details><summary>D2 · Claude Code hook file on Windows</summary>
+<pre><code>{ "hooks": { "SessionStart": [ { "matcher": "*", "hooks": [ {
+  "type": "http",
+  "url": "http://127.0.0.1:4567/api/agent/event",
+  "headers": { "x-fanbox-token": "$FANBOX_CTL_TOKEN", "x-fanbox-term": "$FANBOX_TERM_ID" },
+  "allowedEnvVars": ["FANBOX_CTL_TOKEN", "FANBOX_TERM_ID"],
+  "async": true, "timeout": 5 } ] } ], … same events/matchers as upstream … } }</code></pre>
+<ul class="small">
+  <li>Verified against the Claude Code hooks documentation: HTTP hooks POST the same JSON as command hooks, header values interpolate <code>$VAR</code> only for names in <code>allowedEnvVars</code>; on Windows, command hooks run under Git Bash <code>sh -c</code> when installed, else PowerShell.</li>
+  <li>Windows PTY env additionally gets <code>NO_PROXY=127.0.0.1,localhost</code> (appended) so a user proxy cannot capture the loopback call.</li>
+  <li>Launch flag from the renderer and from <code>claudeHooksFlag()</code> uses the absolute profile path in double quotes (works in PowerShell and cmd.exe), not <code>$HOME</code>.</li>
+  <li>Fallback if the installed Claude Code rejects <code>http</code>: upstream's shell-form command with <code>curl.exe</code> spelled explicitly (Git Bash present).</li>
+  <li><code>termFacts</code> wins over <code>winPtyBusy</code> in <code>agentList</code>, <code>activeAgentTerms</code> and the WeChat lister; <code>agentWait</code> may also consult facts (optional).</li>
+</ul></details>
+<details><summary>D3 · Codex notify on Windows</summary>
+<ul class="small">
+  <li><code>codex-notify.js</code>: read the last argv as JSON, POST via Node <code>http</code> with the two headers, then <code>spawn</code> the user's original <code>notify</code> program (parsed from <code>~/.codex/config.toml</code> like upstream) with the same args.</li>
+  <li>Flag: <code>-c 'notify=["C:/…/node.exe","C:/…/codex-notify.js"]'</code> with forward slashes; <code>node.exe</code> from <code>winFindExe('node')</code>. Emitted only when both exist.</li>
+  <li>Gate: the phase3f argv-dump shim must show the argument byte-exact through the <code>codex.cmd</code> launcher. Otherwise the Windows arm returns <code>''</code>.</li>
+</ul></details>
+
+<h3>6.6 · Campaigns</h3>
+<ul class="small">
+  <li><b>New</b> <code>experiments/win-v2161-hooks-202609/</code>: <code>contract.test.js</code> (Linux): hook file shape (http type, header interpolation, no token literal), flag builders for both shells, <code>joinPath</code>/<code>splitRel</code>, <code>execSnap</code> code contract via <code>FANBOX_HELPERS_ONLY</code>, <code>snapClean</code> normalization, updater asset filter, source assertions (<code>baseBlob</code> uses <code>gitExe()</code>; Windows thumbs go through <code>run()</code>; one <code>mdHtml</code>; one <code>files</code> key). <code>playwright-electron.js</code> (Windows): fake-claude shim posting the same events and asserting renderer state; Codex argv dump.</li>
+  <li><b>Updated</b> <code>winport-parity-202607</code>: <code>verify.js</code> classifications (PR #60 deviation retired; four accepted edits added); phase3h fixtures (old version 2.13.0, expected offer 2.16.1, and "probe never called on win32"); phase3i for the converged sanitizer; phase3j base-file planted git; phase3d spawn-count ≤ 4.</li>
+  <li><b>Updated</b> <code>win-v213-images-202608</code>: <code>localImageAbs</code> and thumbnail URLs.</li>
+</ul>
+
+<h3>6.7 · Gate B checklist (Linux)</h3>
+<ul class="check small">
+  <li><code>npm ci</code>; <code>node --check</code> on every JS file; <code>git diff --check</code></li>
+  <li>Server smoke: <code>FANBOX_NO_OPEN=1 FANBOX_PORT=45991 node server.js</code> → <code>/</code>, <code>/api/skills/builtin</code> 200; <code>/api/agent/terminals</code> 501; POST without token accepted</li>
+  <li>All Linux contract tests; <code>verify.js</code> with every item classified; <code>preview-guard.test.js</code></li>
+  <li><code>npm run build:hljs</code> (and Milkdown if touched) with no drift</li>
+  <li>README body and <code>skills/fanbox-agent/SKILL.md</code> identical to <code>master</code>; <code>[Unreleased]</code> empty; one <code>files</code> key; no <code>onerror=</code> in index.html; one <code>mdHtml</code>/<code>powerBar</code></li>
+  <li>Clean tree on the frozen OID; final commit subject ends <code>+ release 2.16.1</code></li>
+</ul>
+
+<h3>6.8 · Rollback and iteration</h3>
+<p class="small">Unexpected refs or topology stop the gate. After local commits, failed work stays on a diagnostic branch; resets only with authorization. Any change after freeze is a new candidate (B and C again); any rebuild after hashing repeats D. Pushed tags and public releases are immutable: fix forward. Keep the verified v2.13.0 installer and portable bytes for the upgrade fixtures. Deferrable without failing the release: D3 Codex, D6 badge, <code>agentWait</code> facts, DOMPurify version bump (upstream's call).</p>
+
+<!-- ============================================================ -->
+<h2 id="log">7 · Live log</h2>
+<h4>Status</h4>
+<p><b>MERGED, PORT NOT STARTED</b> — 2026-09-04. Awaiting review of section 1 and the "begin implementation" instruction.</p>
+<h4>Baseline</h4>
+<table class="small">
+  <tr><th>Ref</th><th>OID</th></tr>
+  <tr><td><code>dev</code> after merge</td><td><code>498ba9e</code> (parents <code>b31c17b</code>, <code>0394dae</code>)</td></tr>
+  <tr><td><code>windows</code>, <code>github/windows</code></td><td><code>b31c17b</code> (v2.13.0 line)</td></tr>
+  <tr><td><code>master</code>, <code>github/master</code>, upstream v2.16.1</td><td><code>0394dae</code></td></tr>
+  <tr><td>merge base</td><td><code>ca204a2</code> (v2.13.0)</td></tr>
+  <tr><td>fork tag <code>v2.13.0</code></td><td><code>1038dd4</code>; release published 2026-08-22 with the exact pair</td></tr>
+  <tr><td>upstream latest release</td><td>v2.16.1: dmg, zip, blockmap, <code>latest-mac.yml</code></td></tr>
+</table>
+<p class="small">Safety refs: not yet created. Remotes: <code>github</code> = Emberwhirl/fanbox, <code>upstream</code> = alchaincyf/fanbox. Toolchain here: Node 24.15, npm 11.12, Electron 33.4.11; <code>electron-updater</code> not yet installed.</p>
+<h4>Deviations</h4>
+<p class="small">(none yet)</p>
+<h4>Gate results</h4>
+<table class="small"><tr><th>Gate</th><th>Date</th><th>OID</th><th>Result</th></tr>
+<tr><td>A</td><td></td><td></td><td></td></tr><tr><td>B</td><td></td><td></td><td></td></tr><tr><td>C</td><td></td><td></td><td></td></tr><tr><td>D</td><td></td><td></td><td></td></tr><tr><td>E1</td><td></td><td></td><td></td></tr><tr><td>E2</td><td></td><td></td><td></td></tr></table>
+<h4>Work log</h4>
+<ul class="small">
+  <li>2026-09-04 — Reviewed the in-progress merge (38 hunks / 8 files), the upstream delta 2.13.0 → 2.16.1 and the Windows delta; verified Claude Code hook execution on Windows against the official docs; confirmed fork and upstream release states.</li>
+  <li>2026-09-04 — Decision D1 settled by the user: release carries only the two exes (no <code>latest.yml</code>, no blockmap, no <code>SHA256SUMS.txt</code>); electron-updater therefore stays inert on Windows and the download flow remains the only update path. Test G5 (local feed) removed; G6 renumbered to G5.</li>
+  <li>2026-09-04 — Resolved all 38 hunks upstream-side with <code>git merge-file --theirs</code> per file (non-conflicting Windows hunks kept), <code>node --check</code> clean on all JS, committed <code>498ba9e</code>. Known post-merge state: <code>powerSaveBlocker</code> not imported, <code>dist:win</code> scripts absent, duplicate <code>files</code> key, two <code>mdHtml</code>, <code>execSnap</code>/<code>baseBlob</code> spawn bare <code>git</code> — all listed in 6.2/6.3. Wrote this plan; the Markdown draft was deleted.</li>
+</ul>
+
+</body>
+</html>
