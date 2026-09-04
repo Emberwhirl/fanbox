@@ -5,7 +5,7 @@
  * 复用零依赖后端 server.js（文件能力），叠加 node-pty 内嵌终端，
  * 让 TUI coding agent（Claude Code / Codex / Aider…）在界面里直接跑起来。
  */
-const { app, BrowserWindow, ipcMain, shell, nativeImage, Menu, clipboard, dialog, net, session, systemPreferences, utilityProcess } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, nativeImage, Menu, clipboard, dialog, net, session, systemPreferences, utilityProcess, powerSaveBlocker } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -54,6 +54,12 @@ function writeHookFiles() {
   try {
     const dir = HOOKS_DIR();
     fs.mkdirSync(dir, { recursive: true });
+    if (IS_WIN) {
+      // D2: HTTP hook — no shell, token only via env/header interpolation
+      fs.writeFileSync(path.join(dir, 'claude-settings.json'), JSON.stringify(winHelpers.claudeHttpHookSettings(PORT), null, 2) + '\n');
+      fs.writeFileSync(path.join(dir, 'codex-notify.js'), winHelpers.buildCodexNotifyJs());
+      return;
+    }
     // async：hook 在后台跑、不等返回，绝不拖慢 agent；timeout 5s 兜底
     const on = (matcher) => [{ matcher, hooks: [{ type: 'command', command: `${HOOK_CURL} @- >/dev/null 2>&1 || true`, async: true, timeout: 5 }] }];
     const hooks = {};
@@ -88,10 +94,15 @@ function codexUserNotify() {
 let backendProc = null;
 let backendRestarts = 0;
 function startBackendServer() {
+  // Ordering: Windows registry PATH merge in whenReady runs before this fork, so the
+  // child env snapshot already includes User+Machine Path. Strip ELECTRON_RUN_AS_NODE
+  // so a leaked flag cannot make the utilityProcess behave as a bare Node.
+  const env = { ...process.env, FANBOX_NO_OPEN: '1', FANBOX_PORT: String(PORT), FANBOX_AGENT_TOKEN: AGENT_TOKEN };
+  delete env.ELECTRON_RUN_AS_NODE;
   backendProc = utilityProcess.fork(path.join(__dirname, 'server-child.js'), [], {
     serviceName: 'fanbox-server',
-    stdio: 'inherit', // 后端日志照旧进 app 的终端输出
-    env: { ...process.env, FANBOX_NO_OPEN: '1', FANBOX_PORT: String(PORT), FANBOX_AGENT_TOKEN: AGENT_TOKEN },
+    stdio: IS_WIN ? 'ignore' : 'inherit', // 后端日志照旧进 app 的终端输出；win GUI 无控制台
+    env,
   });
   const child = backendProc;
   // 活过 5 秒 = 这次启动是成功的，重启计数清零；否则偶发崩溃隔几天攒满 5 次会误判「起不来」
@@ -134,20 +145,36 @@ function saveBounds() {
 
 function createWindow() {
   const b = loadBounds();
-  win = new BrowserWindow({
-    width: b.width, height: b.height, x: b.x, y: b.y,
-    minWidth: 920, minHeight: 600,
-    titleBarStyle: 'hiddenInset',
-    backgroundColor: '#0b0c0a',
-    vibrancy: 'sidebar',
-    visualEffectState: 'active',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      additionalArguments: [`--fanbox-ctl-token=${AGENT_TOKEN}`], // 渲染层写接口的门票，preload 读 argv 暴露为 fanboxEnv.ctlToken
-    },
-  });
+  const webPreferences = {
+    preload: path.join(__dirname, 'preload.js'),
+    contextIsolation: true,
+    nodeIntegration: false,
+    additionalArguments: [`--fanbox-ctl-token=${AGENT_TOKEN}`], // 渲染层写接口的门票，preload 读 argv 暴露为 fanboxEnv.ctlToken
+  };
+  let winOpts;
+  if (IS_WIN) {
+    winOpts = {
+      width: b.width, height: b.height, x: b.x, y: b.y,
+      minWidth: 920, minHeight: 600,
+      titleBarStyle: 'hidden',
+      titleBarOverlay: { color: '#0b0c0a', symbolColor: '#c8c8c8', height: 36 },
+      autoHideMenuBar: true,
+      backgroundColor: '#0b0c0a',
+      show: false,
+      webPreferences,
+    };
+  } else {
+    winOpts = {
+      width: b.width, height: b.height, x: b.x, y: b.y,
+      minWidth: 920, minHeight: 600,
+      titleBarStyle: 'hiddenInset',
+      backgroundColor: '#0b0c0a',
+      vibrancy: 'sidebar',
+      visualEffectState: 'active',
+      webPreferences,
+    };
+  }
+  win = new BrowserWindow(winOpts);
   // 拖动/缩放后防抖记忆，关窗再存一次兜底
   let bt = null;
   const remember = () => { clearTimeout(bt); bt = setTimeout(saveBounds, 400); };
@@ -383,8 +410,11 @@ async function checkUpdate(opts) {
   }
   updRetry = 0;
   const newer = cmpVer(info.tag, app.getVersion()) > 0;
-  if (newer) {
-    latestAssets = Array.isArray(info.assets) ? info.assets : null;
+  // Windows：必须拿到已核验的精确双文件名才提示。API 缺一/模糊名/错架构 → []；HTML 兜底探测失败 → []。
+  // 不再把 assets:null 当成「未知、放行」。macOS 保持原样（HTML 兜底仍可为 null）。
+  const winAssetOk = !IS_WIN || hasWinInstallerAsset(info.assets);
+  if (newer && winAssetOk) {
+    latestAssets = Array.isArray(info.assets) ? info.assets : (IS_WIN ? [] : null);
     // 探测完再落 pendingUpdate：渲染层启动时会主动 get() 一次，探测中途给它 auto:false 会先弹出 dmg 胶囊，
     // 随后真正的推送因为「胶囊已存在」被跳过，用户就见不到「更新」按钮
     const auto = await probeAutoUpdate();
@@ -393,18 +423,39 @@ async function checkUpdate(opts) {
   }
   if (manual) {
     const owner = win && !win.isDestroyed() ? win : undefined;
-    if (newer) {
+    if (newer && winAssetOk) {
       const auto = pendingUpdate.auto;
-      const c = dialog.showMessageBoxSync(owner, {
-        type: 'info', buttons: [auto ? M('更新', 'Update') : M('去下载', 'Download'), M('取消', 'Cancel')], defaultId: 0, cancelId: 1,
-        message: M(`发现新版本 v${pendingUpdate.version}`, `New version v${pendingUpdate.version} available`),
-        detail: auto
-          ? M(`当前版本 v${app.getVersion()}。点「更新」在后台下载，下完重启一次就换好了。`, `You are on v${app.getVersion()}. "Update" downloads in the background; restart once to finish.`)
-          : M(`当前版本 v${app.getVersion()}。点「去下载」打开发布页，下载后替换 /Applications 里的旧版即可。`, `You are on v${app.getVersion()}. "Download" opens the release page; replace the old app in /Applications.`),
+      if (IS_WIN) {
+        const c = dialog.showMessageBoxSync(owner, {
+          type: 'info', buttons: [M('去下载', 'Download'), M('取消', 'Cancel')], defaultId: 0, cancelId: 1,
+          message: M(`发现新版本 v${pendingUpdate.version}`, `New version v${pendingUpdate.version} available`),
+          detail: M(
+            `当前版本 v${app.getVersion()}。点「去下载」打开发布页，下载安装包覆盖安装即可。`,
+            `You are on v${app.getVersion()}. "Download" opens the release page; install the new package over the old one.`,
+          ),
+        });
+        if (c === 0) shell.openExternal(pendingUpdate.url);
+      } else {
+        const c = dialog.showMessageBoxSync(owner, {
+          type: 'info', buttons: [auto ? M('更新', 'Update') : M('去下载', 'Download'), M('取消', 'Cancel')], defaultId: 0, cancelId: 1,
+          message: M(`发现新版本 v${pendingUpdate.version}`, `New version v${pendingUpdate.version} available`),
+          detail: auto
+            ? M(`当前版本 v${app.getVersion()}。点「更新」在后台下载，下完重启一次就换好了。`, `You are on v${app.getVersion()}. "Update" downloads in the background; restart once to finish.`)
+            : M(`当前版本 v${app.getVersion()}。点「去下载」打开发布页，下载后替换 /Applications 里的旧版即可。`, `You are on v${app.getVersion()}. "Download" opens the release page; replace the old app in /Applications.`),
+        });
+        // 自动更新：让渲染层弹出胶囊并直接开始下载（manual 绕过「这个版本不再提醒」）
+        if (c === 0 && auto && win && !win.isDestroyed()) win.webContents.send('update:available', { ...pendingUpdate, manual: true, start: true });
+        else if (c === 0) shell.openExternal(pendingUpdate.url);
+      }
+    } else if (newer && !winAssetOk) {
+      dialog.showMessageBoxSync(owner, {
+        type: 'info', buttons: [M('好', 'OK')],
+        message: M('还没有 Windows 安装包', 'No Windows installer yet'),
+        detail: M(
+          `上游已发 v${String(info.tag).replace(/^v/, '')}，但本仓库对应 Release 里还没有 Windows 安装包（.exe），稍后再查。`,
+          `v${String(info.tag).replace(/^v/, '')} is out, but this repo's release has no Windows installer (.exe) yet. Check again later.`,
+        ),
       });
-      // 自动更新：让渲染层弹出胶囊并直接开始下载（manual 绕过「这个版本不再提醒」）
-      if (c === 0 && auto && win && !win.isDestroyed()) win.webContents.send('update:available', { ...pendingUpdate, manual: true, start: true });
-      else if (c === 0) shell.openExternal(pendingUpdate.url);
     } else {
       dialog.showMessageBoxSync(owner, {
         type: 'info', buttons: [M('好', 'OK')], message: M('已是最新版本', 'You are up to date'),
@@ -430,9 +481,12 @@ try {
   if (process.env.FANBOX_UPDATE_FEED) autoUpdater.setFeedURL({ provider: 'generic', url: process.env.FANBOX_UPDATE_FEED });
   autoUpdater.on('download-progress', (p) => sendUpd({ state: 'downloading', pct: Math.floor(p.percent || 0) }));
   autoUpdater.on('update-downloaded', () => { updReady = true; sendUpd({ state: 'ready' }); });
+  autoUpdater.on('error', () => {});
 } catch { /* 没装 electron-updater 就走 dmg */ }
 // 这个 Release 能不能自动装：拿得到 yml，且有当前架构能用的 zip（Intel 机器上 arm64 包不算，electron-updater 也会排除它）
+// D1: Windows 不走 electron-updater（release 不带 latest.yml）；探测在任何网络请求前返回 false
 async function probeAutoUpdate() {
+  if (winHelpers.shouldSkipAutoUpdateProbe(process.platform)) return false;
   if (!autoUpdater || !app.isPackaged) return false;
   try {
     const r = await autoUpdater.checkForUpdates();
@@ -546,7 +600,26 @@ ipcMain.handle('win:focus', () => {
 });
 
 // Dock 角标：渲染层的指挥台算出「几个会话在等你」，窗口被遮住/最小化时还能从 Dock 一眼看到。空串即清空
+// D6 Windows: red overlay dot + flash when count goes 0→N; clear when the renderer sends empty
+const WIN_BADGE_DOT = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAQklEQVR42mNgGLTggZVVPRCfguJ6UjX+x4HrKdFM2BAiNIMxJbbjdgU0sIg14BRNDKDMCxQHIlWikeKERJWkTHcAAEFH+ql+WQBCAAAAAElFTkSuQmCC';
+let winBadgeOn = false;
 ipcMain.handle('win:badge', (e, { text }) => {
+  if (IS_WIN) {
+    if (!win || win.isDestroyed()) return;
+    const on = !!(text && String(text).length);
+    try {
+      if (on) {
+        const overlay = nativeImage.createFromDataURL(WIN_BADGE_DOT);
+        win.setOverlayIcon(overlay, String(text));
+        if (!winBadgeOn) win.flashFrame(true);
+      } else {
+        win.setOverlayIcon(null, '');
+        win.flashFrame(false);
+      }
+    } catch { /* overlay unsupported */ }
+    winBadgeOn = on;
+    return;
+  }
   if (process.platform !== 'darwin' || !app.dock) return;
   try { app.dock.setBadge(String(text || '')); } catch { /* */ }
 });
@@ -594,12 +667,18 @@ function activeAgentTerms() {
   for (const [id, p] of terminals) {
     // 有官方 hook 事实的终端只认它说的：claude 空闲等输入时前台进程仍是 claude，旧判据会一直「忙」不让 Mac 睡
     const f = termFacts.get(id);
+    const proc = (p && p.process) || '';
     if (f) {
       // 等审批也算干活中——任务在半途，杀掉就是半截；等输入/已完成的空闲 agent 不算
-      if (f.state === 'working' || f.state === 'needs_permission') out.push({ id, label: f.agent || (p && p.process) || id });
+      if (f.state === 'working' || f.state === 'needs_permission') out.push({ id, label: f.agent || proc || id });
       continue;
     }
-    const proc = (p && p.process) || '';
+    // Windows: p.process is static (always the shell). Un-hooked tabs count as active
+    // (unknown = busy) so quit/sleep never barge into a running program.
+    if (IS_WIN) {
+      out.push({ id, label: proc || id });
+      continue;
+    }
     if (proc && !BARE_SHELL.test(proc)) out.push({ id, label: proc });
   }
   return out;
@@ -772,6 +851,7 @@ ipcMain.handle('power:setLid', async (e, { on } = {}) => {
 // 这里主动把真实状态问出来，并给出唯一有效的那条出路：删掉记录重新授权。
 const PERM_SERVICES = ['ScreenCapture', 'Accessibility', 'AppleEvents'];
 function permStatus() {
+  if (!IS_MAC) return { screen: false, a11y: false };
   return {
     screen: systemPreferences.getMediaAccessStatus('screen') === 'granted',
     a11y: systemPreferences.isTrustedAccessibilityClient(false), // false = 只查询，不弹系统提示
@@ -864,10 +944,13 @@ function buildMenu() {
       { role: 'reload', label: M('重新加载', 'Reload') }, { role: 'toggleDevTools', label: M('开发者工具', 'Developer Tools') },
       { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' },
       { type: 'separator' }, { role: 'togglefullscreen', label: M('全屏', 'Full Screen') },
-      ...(isMac ? [{ type: 'separator' }, {
+      ...(isMac || IS_WIN ? [{ type: 'separator' }, {
         // 合盖继续干活：仅在检测到 agent 正在干活时真正生效（智能模式）；勾选状态反映用户意图。
         // 侧栏也有这个开关（高频），两边读同一份 power:state、改完都广播 power:changed，勾选不会打架
-        label: lidActive ? M('合盖继续干活（生效中）', 'Keep working with lid closed (active)') : M('合盖继续干活', 'Keep working with lid closed'),
+        // Windows: stayLabel（无合盖措辞）；macOS keeps master's lid strings
+        label: isMac
+          ? (lidActive ? M('合盖继续干活（生效中）', 'Keep working with lid closed (active)') : M('合盖继续干活', 'Keep working with lid closed'))
+          : stayLabel,
         type: 'checkbox', checked: lidIntent,
         click: (item) => { setLidIntent(item.checked); },
       }, {
@@ -920,7 +1003,7 @@ app.on('window-all-closed', () => {
 });
 // 退出兜底：无论怎么退（⌘Q、崩溃前的正常退出），都恢复系统休眠，绝不留禁休眠的烂摊子
 app.on('will-quit', () => {
-  if (process.platform === 'darwin') trySetDisableSleep(false);
+  trySetDisableSleep(false); // self-guarded per platform (mac pmset / win powerSaveBlocker / else no-op)
   try { if (backendProc) backendProc.kill(); } catch { /* 已死 */ }
 });
 
@@ -1037,6 +1120,7 @@ ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme, shell }) => {
     // 见那边注释）。用户的终端不该被我们改掉原生语义：这里从 PTY 的 env 里删掉，
     // 用户在自己 shell 里跑裸命令时行为与系统一致。
     delete env.NoDefaultCurrentDirectoryInExePath;
+    Object.assign(env, winHelpers.appendNoProxy(env));
   }
   let p;
   try {
@@ -1074,6 +1158,7 @@ ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme, shell }) => {
     termBufs.delete(id);
     termLastOut.delete(id);
     termFacts.delete(id);
+    termCwds.delete(id);
     refreshLidGuard(); // 最后一个终端退出即恢复休眠
     recStop(id);
     if (win && !win.isDestroyed()) win.webContents.send('pty:exit', { id, exitCode });
@@ -1222,7 +1307,20 @@ winpathSync('fromMarkdownDest', (p) => winHelpers.fromMarkdownDest(p));
 winpathSync('normalizeForMarkdown', (p) => winHelpers.normalizeForMarkdown(p));
 winpathSync('displaySrc', (p) => winHelpers.winDisplaySrc(p));
 winpathSync('localImageSrc', (raw, dir) => winHelpers.winLocalImageSrc(raw, dir));
+winpathSync('localImageAbs', (raw, dir) => winHelpers.localImageAbs(raw, dir));
 winpathSync('isForbiddenPersistSrc', (p) => winHelpers.isForbiddenPersistSrc(p));
+ipcMain.on('env:nodeExe', (e) => {
+  try {
+    if (!IS_WIN) { e.returnValue = ''; return; }
+    const dirs = String(process.env.Path || process.env.PATH || '').split(';').map((s) => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+    let found = '';
+    for (const d of dirs) {
+      const f = path.join(d, 'node.exe');
+      try { if (fs.existsSync(f)) { found = f; break; } } catch { /* */ }
+    }
+    e.returnValue = found;
+  } catch { e.returnValue = ''; }
+});
 
 ipcMain.handle('drop:pick-images', async (e, { defaultPath } = {}) => {
   try {
@@ -1258,12 +1356,16 @@ async function agentList() {
   const arr = [];
   for (const [id, p] of terminals) {
     const proc = (p && p.process) || '';
-    const cwd = await termCwdByPid(p && p.pid);
+    let cwd = await termCwdByPid(p && p.pid);
+    if (IS_WIN && !cwd) cwd = termCwds.get(id) || '';
     const f = termFacts.get(id); // hooked 终端的忙闲/状态来自 agent 自己的事件，比看前台进程准
+    let busy;
+    if (f) busy = f.state === 'working';
+    else if (IS_WIN) busy = (await winPtyBusy(p && p.pid)) !== false;
+    else busy = !!proc && !BARE_SHELL_RE.test(proc);
     arr.push({
       id, cwd, name: cwd ? path.basename(cwd) : '', proc,
-      busy: f ? f.state === 'working' : !!proc && !BARE_SHELL_RE.test(proc),
-      state: f ? f.state : null, hooked: !!f,
+      busy, state: f ? f.state : null, hooked: !!f,
       tail: (termTails.get(id) || '').slice(-500),
     });
   }
@@ -1705,10 +1807,12 @@ function ensureWechat() {
         let cwd = await termCwdByPid(p && p.pid);
         if (IS_WIN && !cwd) cwd = termCwds.get(id) || '';
         // Windows 的 proc 是静态值，正则永远判「忙」→ 改用子进程探测；未知(null)按忙，别遥控打断正跑的活
-        const busy = IS_WIN
-          ? ((await winPtyBusy(p && p.pid)) !== false)
-          : !!proc && !BARE_SHELL_RE.test(proc); // 前台不是裸 shell = 正跑着东西
-        arr.push({ id, cwd, name: cwd ? path.basename(cwd) : '', proc, busy, tail: termTails.get(id) || '' });
+        const f = termFacts.get(id);
+        let busy;
+        if (f) busy = f.state === 'working';
+        else if (IS_WIN) busy = (await winPtyBusy(p && p.pid)) !== false;
+        else busy = !!proc && !BARE_SHELL_RE.test(proc); // 前台不是裸 shell = 正跑着东西
+        arr.push({ id, cwd, name: cwd ? path.basename(cwd) : '', proc, busy, state: f ? f.state : null, hooked: !!f, tail: termTails.get(id) || '' });
       }
       return arr;
     },
@@ -1775,7 +1879,7 @@ const watchers = new Map(); // dir -> FSWatcher
 // recordChange 等语义层，这边挡量），改一处记得同步另一处。
 const WATCH_IGNORE = new Set(['.git', 'node_modules', '.next', 'dist', 'build', '.cache', '.venv', 'venv', '__pycache__', '.DS_Store', 'target', '.turbo', '.expo', 'Library', 'Caches', '.Trash', 'CloudStorage', '.cocoapods', 'DerivedData']);
 function watchNoisy(filename) {
-  const segs = String(filename).split('/');
+  const segs = String(filename).split(/[\\/]/);
   if (segs.some((s) => WATCH_IGNORE.has(s) || s.startsWith('.'))) return true;
   const name = segs[segs.length - 1];
   return !name || name.endsWith('~') || name.endsWith('.swp')

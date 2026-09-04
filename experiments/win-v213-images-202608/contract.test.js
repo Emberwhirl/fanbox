@@ -117,6 +117,16 @@ console.log('# serializer encode/decode');
   check(again.ok && again.dest === driveKeep.dest, 'normalizeForMarkdown is idempotent on canonical');
 }
 
+console.log('# localImageAbs (v2.16.1 thumb/raw decision)');
+{
+  check(H.localImageAbs('cover.png', 'C:\\proj\\docs') === 'C:\\proj\\docs\\cover.png',
+    'relative image folds onto document dir');
+  const abs = H.localImageAbs('C:\\Users\\a\\pic.png', 'C:\\proj');
+  check(/^[A-Za-z]:\\Users\\a\\pic\.png$/i.test(abs), 'absolute drive path kept', abs);
+  const thumbish = H.winLocalImageSrc('C:\\Users\\a\\pic.png', 'C:\\proj');
+  check(thumbish.indexOf('/api/raw?path=') === 0, 'display URL is /api/raw not a short-circuit displaySrc', thumbish);
+}
+
 console.log('# display src (one decode)');
 {
   const enc = H.toMarkdownDest('C:\\图\\a.png').dest;
@@ -301,8 +311,9 @@ console.log('# HTML fallback never bypasses');
   check(!/typeset-host/.test(app) && !/seg\('typeset'/.test(app), 'persistent Typeset tab/host gone from app.js');
   check(/isMacOS\(\) \? '⌘S' : 'Ctrl\+S'/.test(app), 'non-Windows ⌘S / Windows Ctrl+S');
   check(/!isWindows\(\) && !localStorage\.getItem\('fb_term_optionhint'\)/.test(app), 'Option/iTerm hint suppressed on Windows');
-  check(/localImageSrc\(raw,\s*base\)/.test(app) && !/displaySrc\(raw\)/.test(app),
-    'fixLocalImages uses localImageSrc(raw, base), not displaySrc(raw) short-circuit');
+  check(/fanboxWinPath\.localImageAbs/.test(app) && /rel\.startsWith\('\/'\) \? rel : normPath/.test(app),
+    'fixLocalImages: Windows localImageAbs then thumb/raw; POSIX keeps master abs join');
+  check(!/displaySrc\(raw\)/.test(app), 'no displaySrc short-circuit in app.js');
   check(/function gitExe\(\)[\s\S]*resolveGitExe\(PLATFORM/.test(inspectSrc)
     && /if \(!git\)/.test(inspectSrc.slice(inspectSrc.indexOf('function execGit'), inspectSrc.indexOf('function gitRoot'))),
     'execGit skips spawn when gitExe() is null');
@@ -311,8 +322,9 @@ console.log('# HTML fallback never bypasses');
   check(!/require\(['"]\.\.\/win-port-helpers['"]\)/.test(preloadSrc),
     'preload does not require win-port-helpers (Electron 20+ sandbox)');
   check(/sendSync\('winpath:toMarkdownDest'/.test(preloadSrc)
-    && /sendSync\('winpath:localImageSrc'/.test(preloadSrc),
-    'fanboxWinPath uses sendSync IPC into main');
+    && /sendSync\('winpath:localImageSrc'/.test(preloadSrc)
+    && /sendSync\('winpath:localImageAbs'/.test(preloadSrc),
+    'fanboxWinPath uses sendSync IPC into main (incl. localImageAbs)');
   const mainSrc = fs.readFileSync(path.join(ROOT, 'electron/main.js'), 'utf8');
   check(/ipcMain\.on\('winpath:' \+ name/.test(mainSrc) && /winHelpers\.toMarkdownDest/.test(mainSrc),
     'main answers winpath:* from shipped helpers');

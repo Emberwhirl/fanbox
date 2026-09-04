@@ -61,6 +61,7 @@ contextBridge.exposeInMainWorld('fanboxWinPath', {
   normalizeForMarkdown: (p) => ipcRenderer.sendSync('winpath:normalizeForMarkdown', p),
   displaySrc: (p) => ipcRenderer.sendSync('winpath:displaySrc', p),
   localImageSrc: (raw, dir) => ipcRenderer.sendSync('winpath:localImageSrc', raw, dir),
+  localImageAbs: (raw, dir) => ipcRenderer.sendSync('winpath:localImageAbs', raw, dir),
   isForbiddenPersistSrc: (p) => ipcRenderer.sendSync('winpath:isForbiddenPersistSrc', p),
 });
 
@@ -97,6 +98,8 @@ contextBridge.exposeInMainWorld('fanboxAgentCtl', {
 contextBridge.exposeInMainWorld('fanboxEnv', {
   isDesktopApp: true,
   platform: process.platform,
+  home: process.env.USERPROFILE || process.env.HOME || '',
+  nodeExe: process.platform === 'win32' ? (ipcRenderer.sendSync('env:nodeExe') || '') : '',
   // 写类 /api/* 的门票：主进程经 additionalArguments 递进来。preload 只在主框架跑，预览 iframe（跨源）拿不到
   ctlToken: (process.argv.find((a) => a.startsWith('--fanbox-ctl-token=')) || '').slice('--fanbox-ctl-token='.length),
 });

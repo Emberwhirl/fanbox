@@ -28,6 +28,7 @@ const TRAP = FAKE_HOME + '\\fanbox-test-fixtures\\trap-repo';
   const { app, win } = await launch({}, { port: '4760' });
 
   // ---- B4: /api/git against the hostile cwd must not run the planted binary ----
+  // v2.16.1: /api/base-file (baseBlob) and snapshots (execSnap) also use gitExe()+winSpawnEnv().
   const git = await win.evaluate((p) => api('/api/git?path=' + encodeURIComponent(p)), TRAP);
   const planted = fs.existsSync(marker);
   check(!planted, 'B4: planted git.cmd NOT executed by /api/git', planted ? 'MARKER WRITTEN — guard inert' : 'no marker');

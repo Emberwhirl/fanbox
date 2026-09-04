@@ -1,4 +1,5 @@
 // Phase 3d — D6 thumbnail chain: magick → ffmpeg → give up (never bare `convert`).
+// v2.16.1: Windows magick/ffmpeg go through server.js run() (RUN_MAX=4), not a private runExe.
 const { launch, closeApp, check, done, FAKE_HOME } = require('./launch');
 
 setTimeout(() => { console.error('FAIL: watchdog timeout'); process.exit(2); }, 480000);

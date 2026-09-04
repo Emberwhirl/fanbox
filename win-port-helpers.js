@@ -305,6 +305,174 @@ function notesLeakInCmd(cmd, notes) {
   return String(cmd).includes(t);
 }
 
+// Resolve a Markdown image src to a native Windows absolute path (not a URL).
+// Drive / UNC / already-canonical dest: decode once. Relative: fold onto docDir.
+function localImageAbs(rawSrc, docDir) {
+  const raw = String(rawSrc || '').split('#')[0].split('?')[0];
+  let rel = raw;
+  try { rel = decodeURIComponent(raw); } catch { /* already native */ }
+  if (isCanonicalMarkdownDest(raw) || isCanonicalMarkdownDest(rel)
+      || isNativeWinAbs(rel) || /^[A-Za-z]:[\\/]/.test(rel) || rel.startsWith('\\\\')) {
+    return rel.replace(/\//g, '\\');
+  }
+  const stack = String(docDir || '').split(/[\\/]/).filter(Boolean);
+  for (const seg of rel.split(/[\\/]/)) {
+    if (seg === '..') stack.pop();
+    else if (seg && seg !== '.') stack.push(seg);
+  }
+  if (stack.length && /^[A-Za-z]:$/.test(stack[0])) return stack[0] + '\\' + stack.slice(1).join('\\');
+  if (rel.startsWith('\\\\')) return '\\\\' + stack.join('\\');
+  return stack.join('\\');
+}
+
+function joinPath(dir, filename, sep) {
+  const s = sep || '/';
+  if (s === '\\') {
+    const d = String(dir || '').replace(/[\\/]+$/, '');
+    const f = String(filename || '').replace(/^[\\/]+/, '').replace(/\//g, '\\');
+    return d + '\\' + f;
+  }
+  return String(dir).replace(/\/$/, '') + '/' + filename;
+}
+
+function splitRel(full, dir, sep) {
+  const s = sep || '/';
+  if (s === '\\') {
+    const d = String(dir || '').replace(/[\\/]+$/, '');
+    const f = String(full || '');
+    const dl = d.toLowerCase();
+    const fl = f.toLowerCase();
+    if (fl === dl) return '';
+    if (fl.startsWith((d + '\\').toLowerCase()) || fl.startsWith((d + '/').toLowerCase())) {
+      return f.slice(d.length).replace(/^[\\/]+/, '');
+    }
+    const i = Math.max(f.lastIndexOf('\\'), f.lastIndexOf('/'));
+    return i >= 0 ? f.slice(i + 1) : f;
+  }
+  const d = String(dir).replace(/\/$/, '');
+  if (String(full).startsWith(d + '/')) return String(full).slice(d.length + 1);
+  return String(full);
+}
+
+function pathInDir(full, dir, sep) {
+  const s = sep || '/';
+  if (s === '\\') {
+    const d = String(dir || '').replace(/[\\/]+$/, '');
+    const f = String(full || '');
+    const dl = d.toLowerCase();
+    const fl = f.toLowerCase();
+    return fl === dl || fl.startsWith(dl + '\\') || fl.startsWith(dl + '/');
+  }
+  const d = String(dir).replace(/\/$/, '');
+  return full === d || String(full).startsWith(d + '/');
+}
+
+function stripTrailingSeps(p, win) {
+  return String(p).replace(win ? /[\\/]+$/ : /\/+$/, '');
+}
+
+function claudeHttpHookSettings(port) {
+  const p = Number(port) || 4567;
+  const hook = {
+    type: 'http',
+    url: 'http://127.0.0.1:' + p + '/api/agent/event',
+    headers: { 'x-fanbox-token': '$FANBOX_CTL_TOKEN', 'x-fanbox-term': '$FANBOX_TERM_ID' },
+    allowedEnvVars: ['FANBOX_CTL_TOKEN', 'FANBOX_TERM_ID'],
+    async: true,
+    timeout: 5,
+  };
+  const on = (matcher) => [{ matcher: matcher, hooks: [Object.assign({}, hook)] }];
+  const hooks = {};
+  for (const ev of ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'Notification', 'Stop', 'SubagentStop', 'SessionEnd']) {
+    hooks[ev] = on('*');
+  }
+  hooks.PostToolUse = on('Edit|Write|MultiEdit|NotebookEdit|Bash');
+  return { hooks: hooks };
+}
+
+function claudeSettingsFlag(settingsPath) {
+  if (!settingsPath) return '';
+  return ' --settings "' + String(settingsPath) + '"';
+}
+
+function codexNotifyFlag(nodeExe, scriptPath) {
+  if (!nodeExe || !scriptPath) return '';
+  const n = String(nodeExe).replace(/\\/g, '/');
+  const s = String(scriptPath).replace(/\\/g, '/');
+  return ' -c \'notify=["' + n + '","' + s + '"]\'';
+}
+
+function shouldSkipAutoUpdateProbe(platform) {
+  return platform === 'win32';
+}
+
+function appendNoProxy(env) {
+  const extra = '127.0.0.1,localhost';
+  const out = Object.assign({}, env || {});
+  const cur = out.NO_PROXY || out.no_proxy || '';
+  if (!cur) {
+    out.NO_PROXY = extra;
+    return out;
+  }
+  let next = String(cur);
+  if (!/(^|,)\s*127\.0\.0\.1\s*(,|$)/i.test(next)) next += ',127.0.0.1';
+  if (!/(^|,)\s*localhost\s*(,|$)/i.test(next)) next += ',localhost';
+  if (out.NO_PROXY != null) out.NO_PROXY = next;
+  if (out.no_proxy != null) out.no_proxy = next;
+  if (out.NO_PROXY == null) out.NO_PROXY = next;
+  return out;
+}
+
+function buildCodexNotifyJs() {
+  return [
+    "'use strict';",
+    "const http = require('http');",
+    "const { spawn } = require('child_process');",
+    "const fs = require('fs');",
+    "const os = require('os');",
+    "const path = require('path');",
+    "const last = process.argv[process.argv.length - 1] || '';",
+    "function origNotify() {",
+    "  try {",
+    "    const m = fs.readFileSync(path.join(os.homedir(), '.codex', 'config.toml'), 'utf8').match(/^notify\\s*=\\s*\\[([^\\]]*)\\]/m);",
+    "    return m ? [...m[1].matchAll(/\"((?:\\\\.|[^\"\\\\])*)\"/g)].map((x) => x[1].replace(/\\\\([\"\\\\])/g, '$1')) : [];",
+    "  } catch { return []; }",
+    "}",
+    "function postThen(cb) {",
+    "  const ctl = process.env.FANBOX_CTL;",
+    "  const token = process.env.FANBOX_CTL_TOKEN;",
+    "  const term = process.env.FANBOX_TERM_ID || '';",
+    "  if (!ctl || !token) return cb();",
+    "  let u;",
+    "  try { u = new URL(ctl.replace(/\\/?$/, '/event')); } catch { return cb(); }",
+    "  const body = Buffer.from(String(last), 'utf8');",
+    "  const req = http.request({",
+    "    hostname: u.hostname, port: u.port || 80, path: u.pathname + (u.search || ''),",
+    "    method: 'POST',",
+    "    headers: {",
+    "      'content-type': 'application/json',",
+    "      'content-length': body.length,",
+    "      'x-fanbox-token': token,",
+    "      'x-fanbox-term': term,",
+    "    },",
+    "    timeout: 3000,",
+    "  }, (res) => { res.resume(); cb(); });",
+    "  req.on('error', () => cb());",
+    "  req.on('timeout', () => { try { req.destroy(); } catch { /* */ } cb(); });",
+    "  req.end(body);",
+    "}",
+    "function runOrig() {",
+    "  const orig = origNotify();",
+    "  if (!orig.length) { process.exit(0); return; }",
+    "  const child = spawn(orig[0], orig.slice(1).concat(process.argv.slice(2)), { stdio: 'inherit', windowsHide: true });",
+    "  child.on('exit', (c) => process.exit(c || 0));",
+    "  child.on('error', () => process.exit(0));",
+    "}",
+    "postThen(runOrig);",
+    "",
+  ].join('\n');
+}
+
 module.exports = {
   uniqueDest,
   winNorm,
@@ -323,6 +491,7 @@ module.exports = {
   normalizeForMarkdown,
   winDisplaySrc,
   winLocalImageSrc,
+  localImageAbs,
   posixDisplaySrc,
   normalizeVersion,
   exactWinAssetNames,
@@ -334,4 +503,14 @@ module.exports = {
   buildWinReleaseSteps,
   foldPwsh,
   notesLeakInCmd,
+  joinPath,
+  splitRel,
+  pathInDir,
+  stripTrailingSeps,
+  claudeHttpHookSettings,
+  claudeSettingsFlag,
+  codexNotifyFlag,
+  shouldSkipAutoUpdateProbe,
+  appendNoProxy,
+  buildCodexNotifyJs,
 };

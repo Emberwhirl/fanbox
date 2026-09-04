@@ -20,10 +20,13 @@ if (!window.ClipboardAddon) window.__noClipboard = 1;
 // 的上下文里。所以 marked 的输出必须先过 DOMPurify。任务清单的 <input type=checkbox disabled checked>、<details>/<summary>、
 // <img width>、表格、代码块的 language-* class、data-* 都在 DOMPurify 默认白名单里，只补它默认不给的 target（手写 <a target=_blank> 常见）。
 const MD_PURIFY = { ADD_ATTR: ['target'] };
+// win：Markdown 里的绝对路径配图写作 `![图](C:\图\封面.png)`，DOMPurify 默认把 `c:` 当未知协议剥掉 src。
+const MD_URI_RE_WIN = /^(?:[a-z]:(?:[\\/]|%5c)|(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i;
 function mdHtml(md, opts) {
   const src = String(md || '');
   if (!window.marked || window.__noMarked || !window.DOMPurify) return escapeHtml(src); // 缺任一环都退回纯文本，绝不裸放 HTML
-  return window.DOMPurify.sanitize(window.marked.parse(src, opts), MD_PURIFY);
+  const cfg = isWindows() ? Object.assign({}, MD_PURIFY, { ALLOWED_URI_REGEXP: MD_URI_RE_WIN }) : MD_PURIFY;
+  return window.DOMPurify.sanitize(window.marked.parse(src, opts), cfg);
 }
 
 // ---------- SVG 图标系统（替代 emoji，统一矢量审美） ----------
@@ -246,6 +249,36 @@ function modKey() { return isMacOS() ? '⌘' : 'Ctrl+'; }
 // toasts/labels (export, etc.) and non-darwin arms. Windows = 资源管理器, else 文件管理器/访达.
 function fileManagerName() { return isMacOS() ? '访达' : isWindows() ? '资源管理器' : '文件管理器'; }
 function trashName() { return isWindows() ? '回收站' : '废纸篓'; }
+function joinPath(dir, filename) {
+  if (state.sep === '\\') {
+    const d = String(dir || '').replace(/[\\/]+$/, '');
+    const f = String(filename || '').replace(/^[\\/]+/, '').replace(/\//g, '\\');
+    return d + '\\' + f;
+  }
+  return dir.replace(/\/$/, '') + '/' + filename;
+}
+function splitRel(full, dir) {
+  if (state.sep === '\\') {
+    const d = String(dir || '').replace(/[\\/]+$/, '');
+    const f = String(full || '');
+    const dl = d.toLowerCase(), fl = f.toLowerCase();
+    if (fl === dl) return '';
+    if (fl.startsWith(dl + '\\') || fl.startsWith(dl + '/')) return f.slice(d.length).replace(/^[\\/]+/, '');
+    const i = Math.max(f.lastIndexOf('\\'), f.lastIndexOf('/'));
+    return i >= 0 ? f.slice(i + 1) : f;
+  }
+  return full.slice(String(dir).replace(/\/$/, '').length + 1);
+}
+function pathInDir(full, dir) {
+  if (state.sep === '\\') {
+    const d = String(dir || '').replace(/[\\/]+$/, '');
+    const f = String(full || '');
+    const dl = d.toLowerCase(), fl = f.toLowerCase();
+    return fl === dl || fl.startsWith(dl + '\\') || fl.startsWith(dl + '/');
+  }
+  const d = String(dir).replace(/\/$/, '');
+  return full === d || String(full).startsWith(d + '/');
+}
 function applyPlatformChrome() {
   // Win-only chrome rewrite (D8): ⌘→Ctrl and win32 title-bar class. POSIX leaves DOM alone.
   if (!isWindows()) return;
@@ -317,25 +350,6 @@ function toast(msg, isErr) {
 }
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
-// Markdown 渲染统一入口：marked 解析出的 HTML 必须经 DOMPurify 过滤后再写入 innerHTML。
-// 当前运行于主渲染进程，preload 暴露的 fanboxPty/fanboxFs/fanboxAgentCtl 等 IPC 桥接对象均挂载在同一个 window 上。
-// 因此，一段注入的 img onerror 脚本拥有的是打开终端、执行命令、读写文件的高危权限，而非普通 Web 网页的沙箱权限。
-// 恶意 Markdown 的攻击来源十分隐蔽：例如 Agent 抓取外部内容并写入项目内的 .md 文件，用户打开或预览时即会触发攻击。
-// 当 DOMPurify 缺失或加载失败时，必须触发 fail closed 逻辑，即回退为纯文本转义。安全组件不能在自身失效时选择默认放行。
-// win 追加：Markdown 里的绝对路径配图写作 `![图](C:\图\封面.png)`，DOMPurify 默认把 `c:`
-// 当成未知协议、整条剥掉 src——图片还没轮到 fixLocalImages 改写成 /api/raw 就已经没了，
-// 于是「绝对路径的本地配图」在 Windows 上一律裂图。这里只放行盘符前缀：它在 http 源里本就
-// 加载不了，随后必被改写成 /api/raw，不构成可执行面；javascript:/data: 等仍按默认拦截。
-// 反斜杠要连 %5C 一起认：marked 会对链接目标做 encodeURI，`C:\图` 到这里已经是 `C:%5C图`。
-// POSIX 的 `/图/封面.png` 本就在 DOMPurify 默认白名单内，保持默认、不传这个参数。
-const MD_URI_RE_WIN = /^(?:[a-z]:(?:[\\/]|%5c)|(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i;
-function mdHtml(md, opts) {
-  const raw = String(md || '');
-  if (!window.marked || window.__noMarked) return '<pre>' + escapeHtml(raw) + '</pre>';
-  if (!window.DOMPurify) return '<pre>' + escapeHtml(raw) + '</pre>';
-  const html = opts ? window.marked.parse(raw, opts) : window.marked.parse(raw);
-  return window.DOMPurify.sanitize(html, isWindows() ? { ALLOWED_URI_REGEXP: MD_URI_RE_WIN } : undefined);
 }
 
 // ---------- 未保存守卫 ----------
@@ -865,7 +879,14 @@ function fixLocalImages(root, srcPath, dispW) {
     if (!raw || /^(https?:|data:|blob:|\/api\/|\/fs\/)/i.test(raw)) return;
     let rel = raw.split('#')[0].split('?')[0];
     try { rel = decodeURIComponent(rel); } catch { /* 本来就没编码 */ }
-    const abs = rel.startsWith('/') ? rel : normPath(base + '/' + rel);
+    let abs;
+    if (isWindows()) {
+      abs = (window.fanboxWinPath && window.fanboxWinPath.localImageAbs)
+        ? window.fanboxWinPath.localImageAbs(rel, base)
+        : rel;
+    } else {
+      abs = rel.startsWith('/') ? rel : normPath(base + '/' + rel);
+    }
     im.setAttribute('src', dispW && canThumb(abs) ? thumbUrl(abs, dispW) : '/api/raw?path=' + encodeURIComponent(abs));
   });
 }
@@ -1042,9 +1063,9 @@ function renderPreviewActions(e) {
   const more = [
     ...(e.kind === 'text' ? [{ label: '查看改动（HEAD vs 当前）', fn: () => showDiff(e) }] : []),
     { label: '在编辑器打开', fn: () => openWith(e.path, 'editor') },
-    { label: '在访达显示', fn: () => openWith(e.path, 'reveal') },
+    { label: `在${fileManagerName()}显示`, fn: () => openWith(e.path, 'reveal') },
     ...(e.kind === 'image' && clip ? [{ label: '复制图片（可粘贴到其它应用）', fn: () => copyImage(e.path) }] : []),
-    ...(clip ? [{ label: '复制文件（访达里可粘贴）', fn: () => copyFile(e.path) }] : []),
+    ...(clip ? [{ label: `复制文件（${fileManagerName()}里可粘贴）`, fn: () => copyFile(e.path) }] : []),
     { label: '复制路径', fn: () => copyPath(e.path) },
   ];
   const acts = [
@@ -1682,8 +1703,9 @@ async function mdEditor(e, data, mode = 'rich') {
   // 两项都一致才算无损。只比文字会漏掉「图没了」，只比 HTML 会被排版差异带偏。
   // marked 不可用时退回严格比对（保守禁掉富文本，绝不误放行有损）。
   const semanticSig = (md) => {
-    const d = document.createElement('div');
-    d.innerHTML = mdHtml(md); // 离屏 div 一样会加载 <img> 并触发 onerror，同样得过净化
+    const t = document.createElement('template');
+    t.innerHTML = mdHtml(md); // <template> 不加载 <img>，避免离屏 onerror；仍过净化
+    const d = t.content;
     const text = (d.textContent || '').replace(/\s+/g, ' ').trim();
     const bones = [];
     d.querySelectorAll('*').forEach((el) => {
@@ -1815,7 +1837,7 @@ async function mdEditor(e, data, mode = 'rich') {
     const seg = (id, label, on) =>
       `<button class="seg-btn${m === id ? ' active' : ''}" data-m="${id}"${on ? '' : ' disabled title="此文件含富文本无法无损保存的语法，改请用源码"'}>${label}</button>`;
     const hint = m === 'read' ? (forceCode ? '此文件用源码模式编辑' : '只读 · 要改请点富文本或源码')
-      : '自动保存 · ⌘S 立即保存';
+      : '自动保存 · ' + (isMacOS() ? '⌘S' : 'Ctrl+S') + ' 立即保存';
     // 插入图片：source/rich 都能用，唯独只读（有损文件的兜底阅读态）没意义，不给按钮添乱
     const insImgBtn = m !== 'read' ? `<button id="ed-insimg-btn" class="ghost-btn" type="button">+ ${edStr('插入图片')}</button>` : '';
     body.innerHTML =
@@ -2148,7 +2170,11 @@ async function memoryPanel(dirPath) {
   body.querySelectorAll('.mem-resume').forEach((b) => {
     b.onclick = () => {
       const s = d.sessions[Number(b.dataset.i)];
-      const tpl = sessCfg(s.agent).resumeCmd || 'claude --dangerously-skip-permissions --resume {id}';
+      let tpl = sessCfg(s.agent).resumeCmd || 'claude --dangerously-skip-permissions --resume {id}';
+      if (isWindows() && window.fanboxEnv) {
+        if (s.agent === 'claude') tpl = 'claude --dangerously-skip-permissions' + winClaudeHooksFlag() + ' --resume {id}';
+        else if (s.agent === 'codex') tpl = 'codex' + winCodexHooksFlag() + ' resume {id}';
+      }
       const cmd = tpl.replace('{id}', s.id);
       close();
       term.runInDir(dirPath, cmd, '已在终端续上会话');
@@ -3030,6 +3056,18 @@ const AGENT_REGISTRY = [
   { id: 'qoder', label: 'Qoder CLI', cmd: 'qodercli', bin: 'qodercli', install: 'curl -fsSL https://qoder.com/install | bash' },
 ];
 // 按平台解析 agent 启动命令（终端里可敲的那种）
+function winClaudeHooksFlag() {
+  const home = ((window.fanboxEnv && window.fanboxEnv.home) || state.home || '').replace(/[\\/]+$/, '');
+  if (!home) return '';
+  return ' --settings "' + home + '\\.fanbox\\hooks\\claude-settings.json"';
+}
+function winCodexHooksFlag() {
+  const home = ((window.fanboxEnv && window.fanboxEnv.home) || state.home || '').replace(/[\\/]+$/, '');
+  const node = window.fanboxEnv && window.fanboxEnv.nodeExe;
+  const js = home ? (home + '\\.fanbox\\hooks\\codex-notify.js') : '';
+  if (!node || !js) return '';
+  return " -c 'notify=[\"" + String(node).replace(/\\/g, '/') + '","' + js.replace(/\\/g, '/') + "\"]'";
+}
 function agentLaunchCmd(a) {
   if (!a) return '';
   if (a.app) {
@@ -3037,6 +3075,10 @@ function agentLaunchCmd(a) {
     // 解析，找不到 LOCALAPPDATA\Programs 里的安装；shell 若是 cmd 连 Start-Process 都不认识
     if (isMacOS()) return `open -a ${a.app}`;
     return a.cmd;
+  }
+  if (isWindows() && window.fanboxEnv) {
+    if (a.id === 'claude') return 'claude --dangerously-skip-permissions' + winClaudeHooksFlag();
+    if (a.id === 'codex') return 'codex' + winCodexHooksFlag();
   }
   return a.cmd;
 }
@@ -3242,7 +3284,7 @@ function bindEvents() {
   // 终端「…」：低频工具按当前状态给动词，菜单项自己说明会发生什么
   $('#term-more').onclick = (ev) => (ev.stopPropagation(), popupMenuAt(ev.currentTarget, [
     { label: follow.on ? '停止文件跟随' : '开启文件跟随', fn: () => setFileFollow(!follow.on) },
-    { label: term.maximized ? '还原终端（⌘⇧M）' : '终端铺满（⌘⇧M）', fn: () => term.toggleMax() },
+    { label: term.maximized ? (isWindows() ? '还原终端（Ctrl+Alt+M）' : '还原终端（⌘⇧M）') : (isWindows() ? '终端铺满（Ctrl+Alt+M）' : '终端铺满（⌘⇧M）'), fn: () => term.toggleMax() },
     { label: term.dock === 'bottom' ? '布局改为左右' : '布局改为上下', fn: () => term.setDock(term.dock === 'bottom' ? 'right' : 'bottom') },
     { label: state.muted ? '开启提示音' : '关闭提示音', fn: () => { state.muted = !state.muted; localStorage.setItem('fb_muted', state.muted ? '1' : '0'); if (!state.muted) playChime('tick'); } },
     { label: '终端录像', fn: () => player.open() },
@@ -3378,8 +3420,9 @@ function bindEvents() {
     const cmdkOpen = !$('#cmdk').classList.contains('hidden');
     const lbOpen = !!document.querySelector('.lightbox');
     if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); cmdkOpen ? cmdk.close() : cmdk.open(); return; }
-    // ⌘⇧M 终端铺满/还原（只认 ⌘，Ctrl 组合留给终端里的 TUI）；终端收着时先打开再铺满
-    if (e.metaKey && e.shiftKey && (e.key === 'm' || e.key === 'M')) {
+    // ⌘⇧M 终端铺满/还原（只认 ⌘，Ctrl 组合留给终端里的 TUI）；Windows 用 Ctrl+Alt+M。终端收着时先打开再铺满
+    if (isWindows() ? (e.ctrlKey && e.altKey && !e.shiftKey && !e.metaKey && (e.key === 'm' || e.key === 'M' || e.code === 'KeyM'))
+      : (e.metaKey && e.shiftKey && (e.key === 'm' || e.key === 'M'))) {
       if (!term.available()) return; // 浏览器版没有内嵌终端
       e.preventDefault();
       if ($('#terminal-panel').classList.contains('hidden')) { term.open(); term.toggleMax(true); }
@@ -3431,8 +3474,12 @@ const powerBar = {
   async init() {
     if (!window.fanboxPower) return; // 浏览器版 / 老 preload：整行不显示
     const st = await window.fanboxPower.state().catch(() => null);
-    if (!st || st.platform !== 'darwin') return; // 禁休眠靠 pmset，仅 macOS
+    if (!st || (st.platform !== 'darwin' && st.platform !== 'win32')) return; // macOS pmset；Windows powerSaveBlocker
     this.st = st;
+    if (st.platform === 'win32') {
+      const lidLab = $('#pw-lid') && $('#pw-lid').querySelector('.pw-label');
+      if (lidLab) lidLab.textContent = '有任务时保持唤醒';
+    }
     $('#pw-lid').classList.remove('hidden');
     $('#pw-lid').onclick = () => this.flip();
     sideHoverCard($('#pw-lid'), () => this.tip());
@@ -3443,7 +3490,10 @@ const powerBar = {
     const on = !(this.st && this.st.lid);
     const r = await window.fanboxPower.setLid(on).catch(() => null);
     if (r) { this.st = r; this.sync(); }
-    if (r && r.ok) toast(r.on ? '已开启 · agent 干活时合盖不休眠' : '已关闭 · 合盖照常休眠');
+    const winPlat = this.st && this.st.platform === 'win32';
+    if (r && r.ok) toast(r.on
+      ? (winPlat ? '已开启 · 有终端时尽量不睡眠' : '已开启 · agent 干活时合盖不休眠')
+      : (winPlat ? '已关闭 · 恢复正常休眠' : '已关闭 · 合盖照常休眠'));
     else if (r && r.error && r.error !== 'cancelled' && r.error !== 'setup-cancelled') toast('开启失败：' + r.error, true);
   },
   sync() {
@@ -3453,11 +3503,22 @@ const powerBar = {
   },
   tip() {
     const st = this.st || {};
+    const winPlat = st.platform === 'win32';
     let now;
-    if (!st.lid) now = '现在：未开启，合盖照常休眠';
-    else if (st.lidHolding) now = `现在：${st.terms} 个终端开着，agent 正在干活 → 生效中，合盖也不休眠`;
-    else if (st.terms > 0) now = `现在：${st.terms} 个终端开着但都空闲 → 合盖照常休眠`;
-    else now = '现在：没有终端会话 → 合盖照常休眠';
+    if (!st.lid) now = winPlat ? '现在：未开启，系统照常休眠' : '现在：未开启，合盖照常休眠';
+    else if (st.lidHolding) now = winPlat
+      ? `现在：${st.terms} 个终端开着，agent 正在干活 → 生效中，尽量不睡眠`
+      : `现在：${st.terms} 个终端开着，agent 正在干活 → 生效中，合盖也不休眠`;
+    else if (st.terms > 0) now = winPlat
+      ? `现在：${st.terms} 个终端开着但都空闲 → 系统照常休眠`
+      : `现在：${st.terms} 个终端开着但都空闲 → 合盖照常休眠`;
+    else now = winPlat ? '现在：没有终端会话 → 系统照常休眠' : '现在：没有终端会话 → 合盖照常休眠';
+    if (winPlat) {
+      return `<b>有任务时保持唤醒</b>
+      <p>开启后：只要检测到有 agent 正在干活，Windows 会尽量不进入睡眠，任务接着跑；所有终端都空闲约两分钟后，自动恢复正常休眠。笔记本合盖是否睡眠仍看「电源选项 → 合上盖子的操作」。</p>
+      <p class="tip-note">持续耗电发热，建议接电源并把合盖设为「不采取任何操作」。无需管理员密码（powerSaveBlocker）。</p>
+      <p class="tip-state">${escapeHtml(now)}</p>`;
+    }
     return `<b>合盖继续干活</b>
       <p>翻箱盯着每个终端窗口的工作状态。开启后：只要检测到有 agent 正在干活，合上盖子 Mac 也不休眠，任务接着跑；所有终端都空闲约两分钟后，自动恢复正常休眠——不会让 Mac 一直不睡。</p>
       <p class="tip-note">合盖跑任务持续耗电发热，建议接电源。首次开启需输一次管理员密码（装一条仅限电源设置的免密规则）。</p>
@@ -4236,7 +4297,7 @@ const term = {
         return false;
       }
       if (cmd && e.altKey && e.code === 'KeyL') return false; // ⌘⌥L 跳「下一个在等你的」：不给 xterm，冒泡到全局快捷键
-    if (cmd && e.shiftKey && e.code === 'KeyM') return false; // ⌘⇧M 终端铺满/还原：同上，冒泡到全局快捷键（PR #53）
+    if (isWindows() ? (e.ctrlKey && e.altKey && e.code === 'KeyM') : (cmd && e.shiftKey && e.code === 'KeyM')) return false; // ⌘⇧M / Ctrl+Alt+M 终端铺满：冒泡到全局快捷键（PR #53）；Windows 不拦 Ctrl+Shift+M
       return true;
     });
 
@@ -5181,7 +5242,7 @@ const crepe = {
 const CHANGE_IGNORE = new Set(['.git', 'node_modules', '.next', 'dist', 'build', '.cache', '.venv', 'venv', '__pycache__', '.DS_Store', 'target', '.turbo', '.expo', 'Library', 'Caches', '.Trash', 'CloudStorage', '.cocoapods', 'DerivedData']);
 // 这次变更是不是该被忽略的系统/构建噪声（高亮、刷新、收件箱共用一套判断）
 function isNoisyChange(filename) {
-  const segs = String(filename).split('/');
+  const segs = String(filename).split(/[\\/]/);
   // 隐藏文件/目录一律算噪声：agent 写 .git、各种 .config 时用户什么都没的看（.DS_Store/.com.apple. 也被这条覆盖）
   if (segs.some((s) => CHANGE_IGNORE.has(s) || s.startsWith('.'))) return true;
   const name = segs[segs.length - 1];
@@ -5190,9 +5251,9 @@ function isNoisyChange(filename) {
 }
 function recordChange(dir, filename) {
   if (isNoisyChange(filename)) return; // 过滤构建/依赖/系统噪声
-  const segs = filename.split('/');
+  const segs = String(filename).split(/[\\/]/);
   const name = segs[segs.length - 1];
-  const full = dir.replace(/\/$/, '') + '/' + filename;
+  const full = joinPath(dir, filename);
   const now = Date.now();
   state.changeTimeline.push({ path: full, name, ts: now }); // 每次写入都记一笔，供会话回放
   if (state.changeTimeline.length > 3000) state.changeTimeline.shift();
@@ -5208,9 +5269,9 @@ function recordChange(dir, filename) {
 // agent 官方 hook 报来的文件改动（PostToolUse Edit/Write）：进同一个收件箱并归属到终端/agent。
 // 监听范围外（别的目录）的改动只有这条路进得来；监听范围内的多半随后还会被监听器报一次，靠 hookTs 去重
 function attributeChange(full, termId, agent) {
-  const cwd = state.cwd && full.startsWith(state.cwd.replace(/\/$/, '') + '/') ? state.cwd.replace(/\/$/, '') : '';
-  const dir = cwd || full.slice(0, full.lastIndexOf('/'));
-  const rel = full.slice(dir.length + 1);
+  const cwd = state.cwd && pathInDir(full, state.cwd) ? (state.sep === '\\' ? String(state.cwd).replace(/[\\/]+$/, '') : state.cwd.replace(/\/$/, '')) : '';
+  const dir = cwd || (state.sep === '\\' ? full.slice(0, Math.max(full.lastIndexOf('\\'), full.lastIndexOf('/'))) : full.slice(0, full.lastIndexOf('/')));
+  const rel = splitRel(full, dir);
   if (!dir || !rel) return;
   const now = Date.now();
   let c = state.changeLog.find((x) => x.path === full);
@@ -5345,7 +5406,7 @@ function agentBusyIn(project) {
   let busy = false;
   term.sessions.forEach((t) => {
     const c = t.cwd || t.startDir || '';
-    if (!t.dead && t.status === 'busy' && (c === project || c.startsWith(project + '/') || project.startsWith(c + '/'))) busy = true;
+    if (!t.dead && t.status === 'busy' && (pathInDir(c, project) || pathInDir(project, c))) busy = true;
   });
   return busy;
 }
@@ -5372,7 +5433,7 @@ async function openRoundPanel() {
     const t = new Date(ts); const hm = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
     return t.toDateString() === new Date().toDateString() ? hm : `${t.getMonth() + 1}/${t.getDate()} ${hm}`;
   };
-  const inProject = (p) => p === project || p.startsWith(project.replace(/\/$/, '') + '/');
+  const inProject = (p) => pathInDir(p, project);
   const groupLabel = (termId, agent) => {
     if (!termId) return '文件监听';
     const s = term.sessions.find((x) => x.id === termId);
@@ -5403,7 +5464,7 @@ async function openRoundPanel() {
       `<div class="round-top">${sel}<button class="ghost-btn snap-restore round-rollback"${snaps.length ? '' : ' disabled'} title="整个项目回到这一回合开工前的样子（回滚前会再自动存一份）">整回合回滚</button><button class="ghost-btn snap-restore round-manage" title="看存档占用、清理旧存档">存档管理…</button></div>` +
       (files.size ? keys.map((k) => {
         const rows = groups.get(k).sort((a, b) => b.ts - a.ts).map((f) => {
-          const rel = f.path.startsWith(project + '/') ? f.path.slice(project.length + 1) : f.path.replace(state.home, '~');
+          const rel = pathInDir(f.path, project) ? splitRel(f.path, project) : f.path.replace(state.home, '~');
           const e = { path: f.path, name: f.name, kind: kindFromName(f.path), isDir: false };
           const dn = done.get(f.path);
           return `<div class="round-row${dn ? ' rr-done' : ''}" data-path="${escapeHtml(f.path)}">
@@ -5411,7 +5472,7 @@ async function openRoundPanel() {
             <span class="rr-path" title="${escapeHtml(f.path)}">${escapeHtml(rel)}${f.count > 1 ? ` <em class="rr-n">×${f.count}</em>` : ''}</span>
             <span class="rr-stat" title="悬停算 +/- 行数">${dn ? escapeHtml(dn) : ''}</span>
             <span class="rr-time">${fmtClock(f.ts)}</span>
-            ${dn ? '' : `<button class="ghost-btn snap-restore" data-act="diff">查看改动</button><button class="ghost-btn snap-restore" data-act="restore" title="只把这一个文件退回本回合开工前（git 项目退回 HEAD）；本回合新建的文件会移入废纸篓">还原此文件</button>`}
+            ${dn ? '' : `<button class="ghost-btn snap-restore" data-act="diff">查看改动</button><button class="ghost-btn snap-restore" data-act="restore" title="只把这一个文件退回本回合开工前（git 项目退回 HEAD）；本回合新建的文件会移入${trashName()}">还原此文件</button>`}
           </div>`;
         }).join('');
         return `<div class="round-group">${escapeHtml(groupLabel(k, groups.get(k)[0].agent))} · ${groups.get(k).length}</div>${rows}`;
@@ -5450,12 +5511,12 @@ async function openRoundPanel() {
           ev.stopPropagation();
           if (b.dataset.act === 'diff') { close(); await navigate(dirOf(p)); applySelection(p); showDiff(state.entries.find((x) => x.path === p) || e); return; } // 目录里有真条目就用它，页脚的大小/时间才有数
           if (agentBusyIn(project)) { toast('这个项目的 agent 正在干活，先等它停下（或按 Esc 打断）再还原', true); return; }
-          if (!await confirmDialog(`把「${e.name}」退回本回合开工前的版本？之后对它的改动会被移除（本回合新建的文件会移入废纸篓，可找回）`)) return;
+          if (!await confirmDialog(`把「${e.name}」退回本回合开工前的版本？之后对它的改动会被移除（本回合新建的文件会移入${trashName()}，可找回）`)) return;
           b.disabled = true; b.textContent = '还原中…';
           const r = await apiPost('/api/snapshot-restore-file', { file: p, tag: snaps[cur] ? snaps[cur].hash : undefined });
           if (!r.ok) { toast(r.error || '还原失败', true); b.disabled = false; b.textContent = '还原此文件'; return; }
-          done.set(p, r.trashed ? '已移入废纸篓' : '已还原');
-          toast(r.trashed ? `「${e.name}」是本回合新建的，已移入废纸篓` : `「${e.name}」已还原`);
+          done.set(p, r.trashed ? `已移入${trashName()}` : '已还原');
+          toast(r.trashed ? `「${e.name}」是本回合新建的，已移入${trashName()}` : `「${e.name}」已还原`);
           render();
         };
       });
@@ -5847,7 +5908,7 @@ function playChime(type) {
 function igniteCard(top, count) {
   const area = $('#file-area');
   if (!area || !state.cwd) return;
-  const path = state.cwd.replace(/\/$/, '') + state.sep + top;
+  const path = joinPath(state.cwd, top);
   const el = area.querySelector(`[data-path="${CSS.escape(path)}"]`);
   if (!el) return; // 卡片还没渲染（新文件首次出现），等 refresh 后由 renderFiles 接管发光
   el.style.setProperty('--heat', Math.min(1, 0.4 + count * 0.12).toFixed(2));
@@ -5892,7 +5953,7 @@ if (window.fanboxFs) {
     if (filename && isNoisyChange(filename)) return;
     // 自己刚打开的文件：macOS 写 lastuseddate 扩展属性触发的假变更，整条丢弃（不点卡、不进收件箱、不刷新）
     if (filename) {
-      const abs = dir.replace(/\/$/, '') + '/' + String(filename);
+      const abs = joinPath(dir, String(filename));
       const t = selfOpened.get(abs);
       if (t) {
         if (Date.now() - t < 3000) return;
@@ -5905,14 +5966,14 @@ if (window.fanboxFs) {
     if (filename) followChange(dir, String(filename));
     // 打开中的 md 编辑器若对应的磁盘文件被外部（如 agent / 命令行）改了：未脏就静默重载，脏则不动（保存时 mtime 冲突保护会拦）
     if (filename && currentEditor) {
-      const abs = dir.replace(/\/$/, '') + '/' + String(filename);
+      const abs = joinPath(dir, String(filename));
       if (abs === currentEditor.path && !currentEditor.isDirty()) currentEditor.reload();
     }
     if (dir !== state.cwd || state.recentMode) return;
     // 高亮被 agent 改动的项：递归监听下 src/foo.js 归到顶层 src，并累计计数 + 记子路径供 tooltip 定位
     if (filename) {
       const sub = String(filename);
-      const top = sub.split('/')[0];
+      const top = sub.split(/[\\/]/)[0];
       let rec = state.changed.get(top);
       if (!rec) { rec = { count: 0, files: new Set(), ts: 0 }; state.changed.set(top, rec); }
       rec.count++; rec.ts = Date.now();
@@ -6281,7 +6342,7 @@ async function init() {
       const abs0 = img.dataset.fsAbs || '';
       if (!abs0) return;
       img.dataset.fsStage = 'fs';
-      img.src = '/fs' + encodeURI(abs0);
+      img.src = (state.sep === '\\' ? '/fs/' : '/fs') + encodeURI(abs0);
       return;
     }
     if (/^(https?:|data:|blob:)/.test(src) || src.startsWith('/api/') || src.startsWith('/fs/')) return;
@@ -6302,7 +6363,7 @@ async function init() {
     }
     img.dataset.fsAbs = abs;
     if (canThumb(abs)) { img.dataset.fsStage = 'thumb'; img.src = thumbUrl(abs, displayImgWidth()); }
-    else { img.dataset.fsStage = 'fs'; img.src = '/fs' + encodeURI(abs); }
+    else { img.dataset.fsStage = 'fs'; img.src = (winSep ? '/fs/' : '/fs') + encodeURI(abs); }
   }, true);
   document.querySelectorAll('#theme-switch .theme-seg button').forEach((b) => { b.onclick = () => applyTheme(b.dataset.skin); });
   // 回到上次浏览的目录（目录已不存在则退回主目录）。roots / favorites / 文件列表三条请求并发发出，
@@ -6377,7 +6438,7 @@ function bindUpdateNotice() {
       dl.onclick = async () => {
         dl.disabled = true; dl.textContent = '下载中…';
         const r = await window.fanboxUpdate.download(version).catch(() => ({ ok: false }));
-        if (r && r.ok) { msg.textContent = '已下载并打开 dmg，拖进 Applications 完成更新'; dl.remove(); }
+        if (r && r.ok) { msg.textContent = isWindows() ? '已下载并打开安装包，按提示完成覆盖安装' : '已下载并打开 dmg，拖进 Applications 完成更新'; dl.remove(); }
         else {
           dl.disabled = false; dl.textContent = '下载更新';
           // no-asset: release has no installer for this arch; main already opened the release page

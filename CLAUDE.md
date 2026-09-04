@@ -8,7 +8,8 @@ FanBox — a desktop "cockpit" for coding agents: it runs Claude Code / Codex in
 
 - Branches: `master` = upstream mirror (never develop here); `windows` = published port line; `dev` = active work. `dev` = upstream release tag + Windows-port commits; expect future work to re-align `windows`/`dev` to newer upstream tags.
 - **Golden rule of the port: macOS/Linux code paths stay byte-for-byte unchanged.** Windows behavior is added as parallel branches (`PLATFORM === 'win32'`, `isWindows()`); when merging upstream, POSIX strings are never touched. The README section below the divider is kept verbatim from upstream; only the top (port) section is edited here.
-- Releases: merge `dev` → `windows`, bump version, publish a GitHub Release with **both** assets attached at publish time: `FanBox-<ver>-win-x64.exe` (NSIS) + `FanBox-<ver>-win-x64-portable.exe`. The in-app updater downloads the installer by exact asset name and only offers updates when a `FanBox-*-win-*.exe` asset exists (`REL_REPO` is `Emberwhirl/fanbox` on Windows, upstream on macOS).
+- Releases: merge `dev` → `windows`, bump version, publish a GitHub Release with **both** assets attached at publish time: `FanBox-<ver>-win-x64.exe` (NSIS) + `FanBox-<ver>-win-x64-portable.exe`. The in-app updater downloads the installer by exact asset name and only offers updates when a `FanBox-*-win-*.exe` asset exists (`REL_REPO` is `Emberwhirl/fanbox` on Windows, upstream on macOS). Windows does **not** ship `latest.yml` / blockmap / `SHA256SUMS.txt`; `probeAutoUpdate` returns false before any network so the capsule stays 下载更新.
+- Claude Code one-click launch on Windows appends `--settings` with a quoted absolute HTTP hook file under `~/.fanbox/hooks/` (token only in process env / headers). Codex notify is omitted unless `node.exe` is present. Terminal maximize is `Ctrl+Alt+M`.
 
 ## Commands
 

@@ -9,10 +9,10 @@ const PKG = 'D:\\fanbox\\package.json';
   // ================= Launch A: v2.12.1 =================
   let { app, win } = await launch({}, { port: '4710' });
 
-  // ---- update auto-check: latest release v2.7.0 < 2.12.1 → no update offered ----
+  // ---- update auto-check: latest release older than installed 2.13.0 → no update offered ----
   await win.waitForTimeout(9000); // auto check fires at +6s
   const upd = await win.evaluate(() => window.fanboxUpdate.get());
-  check(upd == null, 'auto update check: no update offered (v2.7.0 < v2.12.1)', JSON.stringify(upd));
+  check(upd == null, 'auto update check: no update offered (older GitHub latest than installed 2.13.0)', JSON.stringify(upd));
 
   // ---- disk panel ----
   await win.evaluate((p) => diskPanel(p), FAKE_HOME);
@@ -71,17 +71,18 @@ const PKG = 'D:\\fanbox\\package.json';
 
   await closeApp(app);
 
-  // ================= Launch B: pretend v2.6.0 → v2.7.0 release (has win exe) must be offered =================
+  // ================= Launch B: pretend v2.13.0 → v2.16.1 release (exact-pair win exes) must be offered =================
+  // probeAutoUpdate must return false on win32 before any network (D1); capsule stays 下载更新.
   const pkgRaw = fs.readFileSync(PKG, 'utf8');
-  fs.writeFileSync(PKG, pkgRaw.replace('"version": "2.12.1"', '"version": "2.6.0"'));
+  fs.writeFileSync(PKG, pkgRaw.replace('"version": "2.16.1"', '"version": "2.13.0"'));
   try {
     ({ app, win } = await launch({}, { port: '4711' }));
     let got = null;
     for (let i = 0; i < 20 && !got; i++) { await win.waitForTimeout(1000); got = await win.evaluate(() => window.fanboxUpdate.get()); }
-    check(!!got && got.version === '2.7.0', 'newer release with win .exe asset → update offered', JSON.stringify(got));
+    check(!!got && got.version === '2.16.1' && got.auto === false, 'newer 2.16.1 exact-pair offer, auto=false (no electron-updater on win32)', JSON.stringify(got));
   } finally {
     fs.writeFileSync(PKG, pkgRaw);
   }
 
   await done(app);
-})().catch((e) => { console.error('FAIL: exception', e); try { const raw = fs.readFileSync(PKG, 'utf8'); if (raw.includes('"2.6.0"')) fs.writeFileSync(PKG, raw.replace('"version": "2.6.0"', '"version": "2.12.1"')); } catch {} process.exit(2); });
+})().catch((e) => { console.error('FAIL: exception', e); try { const raw = fs.readFileSync(PKG, 'utf8'); if (raw.includes('"version": "2.13.0"') && !raw.includes('"2.16.1"')) fs.writeFileSync(PKG, raw.replace('"version": "2.13.0"', '"version": "2.16.1"')); } catch {} process.exit(2); });

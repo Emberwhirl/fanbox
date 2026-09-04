@@ -12,25 +12,16 @@ core JS files falls into an accepted golden-rule category:
 - **(b)** pure addition (new win-only helper, new dict keys)
 - **(c)** whitelisted one-liner rewrite whose only behavioral branch is behind a platform/sep guard
 
-### Accepted golden-rule deviation — markdown sanitization (2026-08-01)
+### Accepted shared edits (v2.16.1) — PR #60 sanitizer deviation retired
 
-One change deliberately breaks the rule and is **expected** to be flagged by `verify.js`:
-the `mdHtml()` sanitizing chokepoint and its five call sites (`public/app.js` ×4,
-`public/typeset.js` ×2), plus the vendored `public/vendor/purify.min.js`. These are shared
-lines with no platform guard — the POSIX arm changes too.
+Upstream v2.15+ shipped the DOMPurify `mdHtml()` chokepoint, so the v2.12.1 PR #60
+Windows-port sanitizer deviation is **retired**. Remaining accepted shared-text edits
+this round (classified in `verify.js` whitelist, listed in CHANGELOG `### Windows port`):
 
-Why it was accepted: `marked.parse()` output reached `innerHTML` in the main renderer,
-where preload exposes `fanboxPty` / `fanboxFs` / `fanboxAgentCtl`. A hostile `.md` therefore
-executed with terminal-spawn and filesystem powers. It was reproduced on this machine through
-the ordinary double-click-to-open path (and via `semanticSig`, so merely opening a file was
-enough). Shipping a Windows release with a verified, remotely-authored code-execution path in
-order to preserve byte-identical POSIX text is the wrong trade.
-
-Provenance and convergence: the change is `git cherry-pick -x` of the commit that also went
-upstream as a PR against `alchaincyf/fanbox`. When upstream merges it, the next upstream merge
-brings the identical change and this deviation disappears — either auto-merging or as a trivial
-conflict resolved in upstream's favour. Until then, treat the `verify.js` flag on these hunks as
-known and expected; every *other* flag still needs review.
+1. `autoUpdater.on('error', …)` — an emitted error with no listener throws in main.
+2. inert `<template>` `semanticSig()` — a `<div>` would load `<img>` and fire `onerror`.
+3. platform-ternary `fsp.rm` `{ maxRetries, retryDelay }` — Windows file locks vs un-awaited `git gc`.
+4. optional third parameter on `run()` — Windows thumbnails share the 4-way concurrency gate.
 
 `preview-guard.test.js` pins the preview server's win32 path gate — the boundary that
 keeps a malicious previewed HTML (which runs `allow-same-origin` against the preview

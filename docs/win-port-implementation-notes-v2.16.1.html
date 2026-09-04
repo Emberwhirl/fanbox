@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Windows Port v2.16.1 — Implementation Notes</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1c1e21; --muted: #616a73; --line: #e2e5e9;
+    --card: #f6f7f9; --accent: #0969da; --code-bg: #eef1f4;
+    --ok: #1a7f37; --warn: #b56300; --bad: #c93c37;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --fg: #e6edf3; --muted: #9aa4af; --line: #2d333b;
+      --card: #161b22; --accent: #539bf5; --code-bg: #1c2128;
+      --ok: #57ab5a; --warn: #d29922; --bad: #f47067;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0 auto; max-width: 960px; padding: 2rem 1.4rem 4rem;
+         font: 15px/1.65 -apple-system, "Segoe UI", system-ui, sans-serif;
+         background: var(--bg); color: var(--fg); }
+  h1 { font-size: 1.55rem; margin: 0 0 .3rem; }
+  h2 { font-size: 1.2rem; margin: 2.2rem 0 .7rem; padding-top: 1rem; border-top: 2px solid var(--line); }
+  h3 { font-size: 1rem; margin: 1.4rem 0 .4rem; }
+  .sub { color: var(--muted); margin: 0 0 1.4rem; }
+  code { font: 12.5px/1.5 ui-monospace, Consolas, monospace; background: var(--code-bg);
+         padding: .1em .35em; border-radius: 4px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+          padding: .9rem 1.1rem; margin: .8rem 0; }
+  .ok { color: var(--ok); font-weight: 600; } .warn { color: var(--warn); font-weight: 600; }
+  .bad { color: var(--bad); font-weight: 600; }
+  ul { padding-left: 1.2rem; }
+  li { margin: .25rem 0; max-width: 80ch; }
+  table { border-collapse: collapse; width: 100%; font-size: .88rem; margin: .6rem 0 1rem; }
+  th, td { border: 1px solid var(--line); padding: .4em .65em; text-align: left; vertical-align: top; }
+  th { background: var(--card); }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<h1>Windows Port v2.16.1 — Implementation Notes</h1>
+<p class="sub">Live log for <code>docs/win-port-implementation-plan-v2.16.1.html</code>.
+Defaults from the plan used unless listed under <b>Deviations</b>. Branch: <code>dev</code>. Implemented 2026-09-04.</p>
+
+<div class="card">
+  <b>Status:</b> <span class="ok">GATE B COMPLETE</span> on Linux (phases 0–4).
+  Physical Windows groups A–G (Gate C) and packaging/publish (Gates D–E) were not run and are not authorized.
+</div>
+
+<h2>Baseline</h2>
+<table>
+  <tr><th>Ref</th><th>OID</th></tr>
+  <tr><td><code>dev</code> at start (plan commit on merge)</td><td><code>d568a3a87b7da91201ebfc42fdc5fd48d748e7fd</code></td></tr>
+  <tr><td>two-parent merge</td><td><code>498ba9ea0c147e4850192455d5c9be3c85d4282d</code> (parents <code>b31c17b</code>, <code>0394dae</code>)</td></tr>
+  <tr><td><code>windows</code></td><td><code>b31c17b596ae458f291494530b8431a06b6eacd2</code></td></tr>
+  <tr><td><code>master</code> / upstream v2.16.1</td><td><code>0394dae502b7e11ba261fccda189d17ccd184fec</code></td></tr>
+  <tr><td>merge base</td><td><code>ca204a2221377b808473fbc1eb0079fce6d8f820</code></td></tr>
+  <tr><td>fork tag <code>v2.13.0</code></td><td><code>1038dd43f9c797a8a8314df44b26b4b7ed068b9c</code></td></tr>
+</table>
+<ul>
+  <li>Remotes: <code>github</code> = Emberwhirl/fanbox, <code>upstream</code> = alchaincyf/fanbox. Matches the plan; not renamed.</li>
+  <li>Safety refs: <code>refs/safety/dev-pre-v2.16.1-20260904</code> → <code>d568a3a</code>; <code>refs/safety/windows-pre-v2.16.1-20260904</code> → <code>b31c17b</code>.</li>
+  <li>Toolchain: Node v24.15.0, npm 11.12.1. <code>npm ci</code> installed <code>electron-updater@^6.8.9</code>.</li>
+</ul>
+
+<h2>Deviations</h2>
+<ul>
+  <li>None. Recommended defaults D1–D8 used. Codex notify is omitted unless <code>node.exe</code> exists (plan default, not a departure). HTTP hook file is the D2 default; Gate C C1–C3 on a real Windows machine still decides whether the installed Claude Code accepts <code>type:http</code>.</li>
+</ul>
+
+<h2>Gate results</h2>
+<table>
+  <tr><th>Gate</th><th>Date</th><th>OID</th><th>Result</th></tr>
+  <tr><td>A</td><td>2026-09-04</td><td>working tree on <code>d568a3a</code></td><td>Windows arms re-applied; one <code>mdHtml</code>; one <code>files</code> key; <code>dist:win --publish never</code></td></tr>
+  <tr><td>B</td><td>2026-09-04</td><td>see freeze commit</td><td>PASS: <code>node --check</code> 155 JS files; two-run server smoke identical ( <code>/</code> 200 HTML, <code>/api/skills/builtin</code> 200, <code>/api/agent/terminals</code> 501, POST without token 400 not 403 ); hooks contract 58/58 twice; images 106/106 twice; preview-guard 16/16 twice; parity scanner classifies four accepted edits, PR #60 retired, no unexplained leftover; <code>npm run build:hljs</code> no vendor drift; README below divider and <code>skills/fanbox-agent/SKILL.md</code> identical to <code>master</code></td></tr>
+  <tr><td>C</td><td></td><td></td><td>not this environment (no DISPLAY; launcher log captured)</td></tr>
+  <tr><td>D</td><td></td><td></td><td>not authorized</td></tr>
+  <tr><td>E</td><td></td><td></td><td>not authorized</td></tr>
+</table>
+
+<h2>Work log</h2>
+<ul>
+  <li>2026-09-04 — Revalidated baseline OIDs. Created safety refs. Merged <code>package.json</code> <code>files</code> arrays; restored <code>dist:win</code> / <code>dist:win:arm64</code> with <code>--publish never</code>.</li>
+  <li>2026-09-04 — Phase 1–3: re-applied §6.2 arms (powerSaveBlocker import, win32 <code>winOpts</code>, exact-pair updater around <code>probeAutoUpdate</code>, trashPath/execSnap/openDefault, one <code>mdHtml</code>); §6.3 silent defects (<code>baseBlob</code> gitExe, snapUsage/snapClean, <code>run()</code> thumbs, joinPath/splitRel, D1 probe short-circuit + error listener, D4/D6/D7); D2 HTTP hook file + quoted absolute <code>--settings</code>; D3 Codex notify only with <code>node.exe</code>; PTY <code>NO_PROXY</code>; D5 stay-awake layout.</li>
+  <li>2026-09-04 — Linux contracts in <code>experiments/win-v2161-hooks-202609/</code>; updated parity/images campaigns. Gate B green.</li>
+</ul>
+
+</body>
+</html>

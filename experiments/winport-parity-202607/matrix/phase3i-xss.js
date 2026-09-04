@@ -13,7 +13,7 @@ const readBuf = (id) => id;
   const { app, win } = await launch({}, { port: '4750' });
 
   check(await win.evaluate(() => !!(window.DOMPurify && typeof window.DOMPurify.sanitize === 'function')), 'DOMPurify loaded');
-  check(await win.evaluate(() => (window.DOMPurify ? window.DOMPurify.version : null)) === '3.4.11', 'DOMPurify 3.4.11');
+  check(await win.evaluate(() => (window.DOMPurify ? window.DOMPurify.version : null)) === '3.4.8', 'DOMPurify 3.4.8 (upstream vendor/dompurify)');
   check(await win.evaluate(() => typeof mdHtml) === 'function', 'mdHtml chokepoint present');
 
   // --- every previously vulnerable path ---

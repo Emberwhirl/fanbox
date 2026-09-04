@@ -485,9 +485,23 @@ function trashPath(p) {
       bin = 'osascript';
       args = ['-e', 'on run argv', '-e', 'tell application "Finder" to delete (POSIX file (item 1 of argv) as alias)', '-e', 'end run', target];
     } else if (PLATFORM === 'win32') {
-      const method = isDir ? 'DeleteDirectory' : 'DeleteFile';
-      bin = 'powershell';
-      args = ['-NoProfile', '-Command', `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::${method}('${target.replace(/'/g, "''")}','OnlyErrorDialogs','SendToRecycleBin')`];
+      // argv-style PowerShell — path via env (never interpolates user path into -Command).
+      // Keep VB FileSystem::Delete* SendToRecycleBin (Remove-Item is permanent delete).
+      // 目录联接/符号链接的 lstat 报的是 link 不是 dir，会被派到 DeleteFile，而 VB 那边
+      // File.Exists 对目录为 false → 必然抛错。win 上用 stat（跟随链接）重判一次
+      let winIsDir = isDir;
+      try { winIsDir = fs.statSync(target).isDirectory(); } catch { /* 断链就沿用 lstat 的判断 */ }
+      const method = winIsDir ? 'DeleteDirectory' : 'DeleteFile';
+      const script = `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::${method}($env:FANBOX_TRASH_PATH,'OnlyErrorDialogs','SendToRecycleBin')`;
+      execFile(WIN_PS, ['-NoProfile', '-NonInteractive', '-Command', script], {
+        env: { ...process.env, FANBOX_TRASH_PATH: target },
+        windowsHide: true,
+        timeout: 30000,
+      }, (err) => {
+        if (!err) return resolve({ ok: true });
+        resolve({ ok: false, error: err.message });
+      });
+      return;
     } else {
       bin = 'sh';
       args = ['-c', 'gio trash "$1" || trash-put "$1" || trash "$1"', '--', target];
@@ -679,8 +693,19 @@ ${history || '（还没有历史记录）'}
 // FanBox 自己拉起的 claude / codex 一律带上官方 hooks，agent 自己汇报状态（见 docs/12「事件端点」）。
 // 两份文件由桌面主进程启动时写到 ~/.fanbox/hooks/；网页版没有它们就裸跑（claude 遇到不存在的 --settings 会报错退出）
 const HOOKS_DIR = path.join(HOME, '.fanbox', 'hooks');
-function claudeHooksFlag() { const f = path.join(HOOKS_DIR, 'claude-settings.json'); return fs.existsSync(f) ? ` --settings "${f}"` : ''; }
-function codexHooksFlag() { const f = path.join(HOOKS_DIR, 'codex-notify.sh'); return fs.existsSync(f) ? ` -c 'notify=["${f}"]'` : ''; }
+function claudeHooksFlag() {
+  const f = path.join(HOOKS_DIR, 'claude-settings.json');
+  return fs.existsSync(f) ? winPortHelpers.claudeSettingsFlag(f) : '';
+}
+function codexHooksFlag() {
+  if (PLATFORM === 'win32') {
+    const f = path.join(HOOKS_DIR, 'codex-notify.js');
+    const node = winFindExe('node');
+    return winPortHelpers.codexNotifyFlag(node, fs.existsSync(f) ? f : '');
+  }
+  const f = path.join(HOOKS_DIR, 'codex-notify.sh');
+  return fs.existsSync(f) ? ` -c 'notify=["${f}"]'` : '';
+}
 
 // ---------- 发版向导：检查项目状态 → 改版本号/CHANGELOG → 命令序列交给内嵌终端跑（每步可见可拦）----------
 async function releaseInspect(p) {
@@ -1314,6 +1339,15 @@ function snapGitDir(project) {
 // project 传 null = 只碰裸仓库不挂工作区（项目目录可能已经不在了，cwd 落到快照根目录）
 function execSnap(gitDir, project, args, timeout = 10000) {
   return new Promise((resolve) => {
+    if (PLATFORM === 'win32') {
+      const git = gitExe();
+      if (!git) return resolve({ ok: false, killed: false, code: -1, stdout: '', stderr: 'git not found' });
+      execFile(git, ['--git-dir', gitDir, ...(project ? ['--work-tree', project] : []), ...args],
+        { cwd: project || SNAP_ROOT, timeout, maxBuffer: 16 * 1024 * 1024, env: winSpawnEnv() }, (err, stdout, stderr) => {
+          resolve({ ok: !err, killed: !!(err && err.killed), code: err ? err.code : 0, stdout: stdout || '', stderr: stderr || '' });
+        });
+      return;
+    }
     execFile('git', ['--git-dir', gitDir, ...(project ? ['--work-tree', project] : []), ...args],
       { cwd: project || SNAP_ROOT, timeout, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
         resolve({ ok: !err, killed: !!(err && err.killed), code: err ? err.code : 0, stdout: stdout || '', stderr: stderr || '' });
@@ -1387,7 +1421,7 @@ async function snapReapIfEmpty(gitDir) {
   if (!tags.ok || tags.stdout.trim()) return false;
   const head = await execSnap(gitDir, null, ['rev-parse', '--verify', '-q', 'HEAD']);
   if (head.ok) return false;
-  await fsp.rm(gitDir, { recursive: true, force: true });
+  await fsp.rm(gitDir, { recursive: true, force: true, ...(PLATFORM === 'win32' ? { maxRetries: 5, retryDelay: 100 } : {}) });
   snapUsageCache = null;
   console.log('  🧹  清掉没有任何快照的影子仓库：' + path.basename(gitDir));
   return true;
@@ -1405,6 +1439,10 @@ async function snapEnsureRepo(project) {
     const r = await execSnap(gitDir, project, ['init', '-q']);
     if (!r.ok) return null;
     await fsp.writeFile(path.join(gitDir, 'info', 'exclude'), SNAP_EXCLUDE).catch(() => {});
+    if (PLATFORM === 'win32') {
+      await execSnap(gitDir, project, ['config', 'core.autocrlf', 'false']);
+      await execSnap(gitDir, project, ['config', 'core.filemode', 'false']);
+    }
     // 登记 hash→项目路径，供「文件在哪个影子仓库」反查
     try {
       const idx = JSON.parse(await fsp.readFile(SNAP_INDEX, 'utf8').catch(() => '{}'));
@@ -1472,12 +1510,17 @@ async function snapUsage() {
   try { names = (await fsp.readdir(SNAP_ROOT)).filter((n) => /^[0-9a-f]{16}$/.test(n)); } catch { /* 还没存过档 */ }
   const sizes = {};
   if (names.length) {
-    const out = await new Promise((resolve) => {
-      execFile('du', ['-sk', ...names.map((n) => path.join(SNAP_ROOT, n))], { timeout: 120000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => resolve(stdout || ''));
-    });
-    for (const line of out.split('\n')) {
-      const m = line.match(/^(\d+)\s+(.+)$/);
-      if (m) sizes[path.basename(m[2])] = Number(m[1]) * 1024;
+    if (PLATFORM === 'win32') {
+      const map = await winDirSizes(SNAP_ROOT);
+      for (const n of names) sizes[n] = map.get(n) || 0;
+    } else {
+      const out = await new Promise((resolve) => {
+        execFile('du', ['-sk', ...names.map((n) => path.join(SNAP_ROOT, n))], { timeout: 120000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => resolve(stdout || ''));
+      });
+      for (const line of out.split('\n')) {
+        const m = line.match(/^(\d+)\s+(.+)$/);
+        if (m) sizes[path.basename(m[2])] = Number(m[1]) * 1024;
+      }
     }
   }
   const repos = [];
@@ -1498,7 +1541,7 @@ async function snapClean({ project, dead }) {
   let targets;
   if (dead) targets = usage.repos.filter((r) => r.dead);
   else if (project) {
-    const norm = snapReal(path.normalize(resolvePath(project)).replace(/\/+$/, ''));
+    const norm = snapReal(path.normalize(resolvePath(project)).replace(PLATFORM === 'win32' ? /[\\/]+$/ : /\/+$/, ''));
     targets = usage.repos.filter((r) => r.project === norm);
     if (!targets.length) return { ok: false, error: '这个目录还没有存档' };
   } else return { ok: false, error: '缺少参数' };
@@ -1506,7 +1549,7 @@ async function snapClean({ project, dead }) {
   let idx = {};
   try { idx = JSON.parse(await fsp.readFile(SNAP_INDEX, 'utf8')); } catch { /* */ }
   for (const r of targets) {
-    await fsp.rm(path.join(SNAP_ROOT, r.dir), { recursive: true, force: true });
+    await fsp.rm(path.join(SNAP_ROOT, r.dir), { recursive: true, force: true, ...(PLATFORM === 'win32' ? { maxRetries: 5, retryDelay: 100 } : {}) });
     freed += r.bytes;
     delete idx[r.dir];
     if (r.project) { snapDead.delete(r.project); snapThrottle.delete(r.project); }
@@ -1607,6 +1650,12 @@ function baseExec(b, args, timeout) {
 function baseBlob(b) {
   const args = b.kind === 'git' ? ['-C', b.root, 'show', `${b.ref}:${b.rel}`] : ['--git-dir', b.gitDir, '--work-tree', b.root, 'show', `${b.ref}:${b.rel}`];
   return new Promise((resolve) => {
+    if (PLATFORM === 'win32') {
+      const git = gitExe();
+      if (!git) return resolve(null);
+      execFile(git, args, { cwd: b.root, timeout: 10000, maxBuffer: 64 * 1024 * 1024, encoding: 'buffer', env: winSpawnEnv() }, (err, stdout) => resolve(err ? null : stdout));
+      return;
+    }
     execFile('git', args, { cwd: b.root, timeout: 10000, maxBuffer: 64 * 1024 * 1024, encoding: 'buffer' }, (err, stdout) => resolve(err ? null : stdout));
   });
 }
@@ -1714,7 +1763,24 @@ function openInOS(target, withApp) {
       const dir = (() => { try { return fs.statSync(target).isDirectory() ? target : path.dirname(target); } catch { return path.dirname(target); } })();
       let tBin, tArgs;
       if (PLATFORM === 'darwin') { tBin = 'open'; tArgs = ['-a', 'Terminal', dir]; }
-      else if (PLATFORM === 'win32') { tBin = 'cmd.exe'; tArgs = ['/c', 'start', '', 'cmd', '/K', 'cd', '/d', dir]; }
+      else if (PLATFORM === 'win32') {
+        // 路径只走 argv / spawn cwd，不进任何 shell 命令行。Windows Terminal（wt -d）优先；
+        // 没装则 start 新开 PowerShell 控制台，目录靠 cwd 继承。
+        const wt = winFindExe('wt', [
+          process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Microsoft', 'WindowsApps'),
+        ].filter(Boolean));
+        let child;
+        if (wt) {
+          child = spawn(wt, ['-d', dir], { stdio: 'ignore', detached: true, windowsHide: false });
+        } else {
+          child = spawn(WIN_CMD, ['/c', 'start', '', WIN_PS, '-NoExit'], {
+            cwd: dir, stdio: 'ignore', detached: true, windowsHide: false, env: winSpawnEnv(),
+          });
+        }
+        child.on('error', (err) => resolve({ ok: false, error: err.message }));
+        child.on('spawn', () => { child.unref(); resolve({ ok: true, with: 'terminal' }); });
+        return;
+      }
       else { tBin = 'sh'; tArgs = ['-c', 'x-terminal-emulator --working-directory="$1" || gnome-terminal --working-directory="$1" || xterm', '--', dir]; }
       execFile(tBin, tArgs, (err) => resolve(err ? { ok: false, error: err.message } : { ok: true, with: 'terminal' }));
       return;
@@ -1752,8 +1818,19 @@ function openDefault(target, withApp) {
       if (withApp === 'reveal') { bin = 'open'; args = ['-R', target]; }
       else { bin = 'open'; args = [target]; }
     } else if (PLATFORM === 'win32') {
-      if (withApp === 'reveal') { bin = 'explorer.exe'; args = ['/select,' + target]; }
-      else { bin = 'cmd.exe'; args = ['/c', 'start', '', target]; }
+      if (withApp === 'reveal') {
+        let settled = false;
+        const done = (r) => { if (settled) return; settled = true; resolve(r); };
+        const child = spawn(WIN_EXPLORER, [`/select,${target}`], { stdio: 'ignore', detached: true });
+        child.on('error', (err) => done({ ok: false, error: err.message }));
+        child.on('spawn', () => { child.unref(); done({ ok: true, with: 'reveal' }); });
+        setTimeout(() => done({ ok: true, with: 'reveal' }), 1500);
+        return;
+      }
+      const child = spawn(WIN_EXPLORER, [target], { stdio: 'ignore', detached: true, windowsHide: true });
+      child.on('error', (err) => resolve({ ok: false, error: err.message }));
+      child.on('spawn', () => { child.unref(); resolve({ ok: true, with: withApp || 'default' }); });
+      return;
     } else {
       if (withApp === 'reveal') { bin = 'xdg-open'; args = [path.dirname(target)]; }
       else { bin = 'xdg-open'; args = [target]; }
@@ -1814,9 +1891,9 @@ const thumbInflight = new Map(); // cacheFile -> Promise，去重并发生成
 let runActive = 0;
 const runQueue = [];
 const RUN_MAX = 4;
-function run(cmd, args) {
+function run(cmd, args, opts) {
   return new Promise((resolve, reject) => {
-    const job = () => execFile(cmd, args, { timeout: 15000 }, (e) => {
+    const job = () => execFile(cmd, args, { timeout: 15000, ...(opts || {}) }, (e) => {
       runActive--;
       const next = runQueue.shift();
       if (next) { runActive++; next(); }
@@ -1831,24 +1908,23 @@ async function generateThumb(src, e, size, cacheFile, isImg) {
   await fsp.mkdir(THUMB_DIR, { recursive: true });
   if (PLATFORM === 'win32') {
     // D6: magick (IM7 via winFindExe) → ffmpeg → give up. Never bare convert (System32 FAT→NTFS).
+    // Routed through run() so the 4-way concurrency gate applies (accepted shared third param).
     const magick = winFindExe('magick');
     const ffmpeg = winFindExe('ffmpeg');
-    const runExe = (file, args) => new Promise((resolve, reject) => {
-      execFile(file, args, { timeout: 60000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (err) => err ? reject(err) : resolve());
-    });
+    const winOpts = { timeout: 60000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 };
     if (isImg) {
       if (magick) {
         // -delete 1--1：多帧输入（GIF 动图、HEIC 连拍）只留第一帧，否则 magick 会写成
         // cache-0.png / cache-1.png…，我们等的 cacheFile 反而不存在。
         // 用它而不是 src+'[0]'：文件名里真带方括号时不会被当成帧选择器
-        try { await runExe(magick, [src, '-delete', '1--1', '-auto-orient', '-thumbnail', `${size}x${size}>`, cacheFile]); return; } catch { /* ffmpeg */ }
+        try { await run(magick, [src, '-delete', '1--1', '-auto-orient', '-thumbnail', `${size}x${size}>`, cacheFile], winOpts); return; } catch { /* ffmpeg */ }
       }
       if (!ffmpeg) throw new Error('no thumb tools');
-      await runExe(ffmpeg, ['-y', '-i', src, '-vf', `scale=${size}:${size}:force_original_aspect_ratio=decrease`, '-frames:v', '1', cacheFile]);
+      await run(ffmpeg, ['-y', '-i', src, '-vf', `scale=${size}:${size}:force_original_aspect_ratio=decrease`, '-frames:v', '1', cacheFile], winOpts);
       return;
     }
     if (!ffmpeg) throw new Error('no thumb tools');
-    await runExe(ffmpeg, ['-y', '-ss', '0', '-i', src, '-frames:v', '1', '-vf', `scale=${size}:${size}:force_original_aspect_ratio=decrease`, cacheFile]);
+    await run(ffmpeg, ['-y', '-ss', '0', '-i', src, '-frames:v', '1', '-vf', `scale=${size}:${size}:force_original_aspect_ratio=decrease`, cacheFile], winOpts);
     return;
   }
   // master body (darwin; Linux inherits upstream wart per D8)
@@ -3437,7 +3513,7 @@ const previewServer = http.createServer(async (req, res) => {
 });
 previewServer.on('error', (err) => { console.error('  ⚠️  预览服务器启动失败：', err.message); });
 if (process.env.FANBOX_HELPERS_ONLY) {
-  module.exports = { gitExe, winSpawnEnv, releaseInspect, releasePrepare, shellQuote };
+  module.exports = { gitExe, winSpawnEnv, releaseInspect, releasePrepare, shellQuote, execSnap, claudeHooksFlag, codexHooksFlag };
 } else {
 previewServer.listen(PREVIEW_PORT, '127.0.0.1', () => { console.log(`  🖼  预览源（隔离）：http://localhost:${PREVIEW_PORT}`); });
 
