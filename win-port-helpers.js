@@ -440,6 +440,19 @@ function winGitBash(env, io) {
   return null;
 }
 
+// Claude Code reads CLAUDE_CODE_GIT_BASH_PATH from the `env` block of its own settings.json
+// (${CLAUDE_CONFIG_DIR || ~/.claude}/settings.json) as well as from the process environment.
+// Pure parse of that file's text: returns the configured path or ''. Invalid JSON, a missing
+// or non-object `env`, or a non-string / blank value all give ''. The value is returned as written
+// (winGitBash checks that the file exists). Reads nothing, writes nothing.
+function claudeSettingsGitBashPath(settingsText) {
+  try {
+    const d = JSON.parse(String(settingsText));
+    const v = d && typeof d === 'object' && d.env && typeof d.env === 'object' ? d.env.CLAUDE_CODE_GIT_BASH_PATH : '';
+    return typeof v === 'string' && v.trim() ? v : '';
+  } catch { return ''; }
+}
+
 function claudeSettingsFlag(settingsPath) {
   if (!settingsPath) return '';
   return ' --settings "' + String(settingsPath) + '"';
@@ -666,6 +679,7 @@ module.exports = {
   claudeHttpHookSettings,
   winStatusLineCommand,
   winGitBash,
+  claudeSettingsGitBashPath,
   claudeSettingsFlag,
   codexNotifyFlag,
   codexNotifyArgv,

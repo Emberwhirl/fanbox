@@ -178,6 +178,27 @@ test('winFindOnPath without io keeps its real-filesystem behavior (lower-case PA
 });
 
 // ---------------------------------------------------------------------------
+// claudeSettingsGitBashPath: Claude Code's own settings.json `env` block (review follow-up)
+// ---------------------------------------------------------------------------
+test('claudeSettingsGitBashPath: reads CLAUDE_CODE_GIT_BASH_PATH from the env block, as written', () => {
+  const p = 'D:\\开发 tools\\Git\\bin\\bash.exe';
+  assert.equal(H.claudeSettingsGitBashPath(JSON.stringify({ model: 'x', env: { A: '1', CLAUDE_CODE_GIT_BASH_PATH: p } })), p);
+  assert.equal(H.claudeSettingsGitBashPath(JSON.stringify({ env: { CLAUDE_CODE_GIT_BASH_PATH: p } }, null, 2)), p, 'pretty-printed file');
+  assert.equal(H.claudeSettingsGitBashPath(Buffer.from(JSON.stringify({ env: { CLAUDE_CODE_GIT_BASH_PATH: p } }))), p, 'a Buffer is accepted too');
+});
+test('claudeSettingsGitBashPath: invalid JSON, empty, non-JSON values, missing or malformed env all give an empty string', () => {
+  for (const bad of ['{not json', '', undefined, null, 42, '[]', 'null', '"str"', '{}', '{"env":null}', '{"env":"x"}', '{"env":[]}', '{"env":{}}',
+    '{"env":{"CLAUDE_CODE_GIT_BASH_PATH":""}}', '{"env":{"CLAUDE_CODE_GIT_BASH_PATH":"   "}}', '{"env":{"CLAUDE_CODE_GIT_BASH_PATH":5}}', '{"env":{"CLAUDE_CODE_GIT_BASH_PATH":null}}',
+    '{"env":{"claude_code_git_bash_path":"C:\\\\x\\\\bash.exe"}}']) {
+    assert.equal(H.claudeSettingsGitBashPath(bad), '', 'input: ' + String(bad));
+  }
+});
+test('claudeSettingsGitBashPath: pure (no fs, no process.env access)', () => {
+  const src = H.claudeSettingsGitBashPath.toString();
+  assert.ok(!/\bfs\b|process\.env|writeFile/.test(src));
+});
+
+// ---------------------------------------------------------------------------
 // writeHookFiles (Windows branch of electron/main.js, run with fakes)
 // ---------------------------------------------------------------------------
 const mainSrc = fs.readFileSync(MAIN_FILE, 'utf8');
@@ -185,13 +206,18 @@ const hookSlice = mainSrc.slice(mainSrc.indexOf('const HOOKS_DIR = () =>'), main
 assert.ok(hookSlice.includes('function writeHookFiles()') && hookSlice.length < 12000, 'writeHookFiles slice found');
 const makeWriteHookFiles = new Function('path', 'os', 'fs', 'winHelpers', 'IS_WIN', 'PORT', 'process', 'console', '__dirname', 'codexUserNotify', hookSlice + '\nreturn writeHookFiles;');
 
-function runWriteHookFiles({ home = 'C:\\Users\\u', execPath = 'C:\\Users\\u\\AppData\\Local\\Programs\\FanBox\\FanBox.exe', winTree = [BASH], env = { Path: 'C:\\Windows', ProgramFiles: PF }, readFails = false } = {}) {
-  const written = {}; const logs = []; const dirs = [];
+function runWriteHookFiles({ home = 'C:\\Users\\u', execPath = 'C:\\Users\\u\\AppData\\Local\\Programs\\FanBox\\FanBox.exe', winTree = [BASH], env = { Path: 'C:\\Windows', ProgramFiles: PF }, readFails = false, settingsText, settingsDir } = {}) {
+  const written = {}; const logs = []; const dirs = []; const settingsReads = [];
   const asarBridge = w.join('C:\\app\\resources\\app.asar\\electron', '..', 'lib', 'claude-statusline.cjs');
+  // Claude Code's own settings file: ${CLAUDE_CONFIG_DIR || ~/.claude}/settings.json. settingsText undefined = the file does not exist.
+  const settingsFile = w.join(settingsDir || env.CLAUDE_CONFIG_DIR || w.join(home, '.claude'), 'settings.json');
   const fakeFs = {
     mkdirSync: (d) => { dirs.push(d); },
     writeFileSync: (f, data) => { written[f] = data; },
-    readFileSync: (f) => { if (readFails) throw new Error('ENOENT asar'); assert.equal(f, asarBridge, 'the bridge is read from the app (asar) lib dir'); return fs.readFileSync(BRIDGE_FILE); },
+    readFileSync: (f) => {
+      if (/settings\.json$/i.test(String(f))) { settingsReads.push(f); if (f === settingsFile && settingsText !== undefined) return settingsText; throw Object.assign(new Error('ENOENT ' + f), { code: 'ENOENT' }); }
+      if (readFails) throw new Error('ENOENT asar'); assert.equal(f, asarBridge, 'the bridge is read from the app (asar) lib dir'); return fs.readFileSync(BRIDGE_FILE);
+    },
     copyFileSync: () => { throw new Error('copyFileSync must not be used (does not work from app.asar)'); },
     chmodSync: () => {},
   };
@@ -202,7 +228,7 @@ function runWriteHookFiles({ home = 'C:\\Users\\u', execPath = 'C:\\Users\\u\\Ap
   const write = makeWriteHookFiles(w, fakeOs, fakeFs, winHelpers, true, 4567, proc, fakeConsole, 'C:\\app\\resources\\app.asar\\electron', () => []);
   write();
   const hooksDir = w.join(home, '.fanbox', 'hooks');
-  return { written, logs, dirs, hooksDir, settings: written[w.join(hooksDir, 'claude-settings.json')] && JSON.parse(written[w.join(hooksDir, 'claude-settings.json')]) };
+  return { written, logs, dirs, hooksDir, settingsReads, settingsFile, procEnv: proc.env, settings: written[w.join(hooksDir, 'claude-settings.json')] && JSON.parse(written[w.join(hooksDir, 'claude-settings.json')]) };
 }
 
 test('writeHookFiles (win32) with Git Bash: copies the bridge and writes a Git Bash safe statusLine', () => {
@@ -257,6 +283,63 @@ test('writeHookFiles (win32): no generated file contains the token, only $FANBOX
     }
     assert.ok(JSON.stringify(r.settings).includes('$FANBOX_CTL_TOKEN'));
   }
+});
+
+// review follow-up: Claude Code also honors CLAUDE_CODE_GIT_BASH_PATH from the env block of its own settings.json
+const GB_CUSTOM = 'D:\\开发 tools\\Git\\bin\\bash.exe';
+const GB_SETTINGS = JSON.stringify({ env: { CLAUDE_CODE_GIT_BASH_PATH: GB_CUSTOM } }, null, 2);
+const GB_CMD = "ELECTRON_RUN_AS_NODE=1 'C:/Users/u/AppData/Local/Programs/FanBox/FanBox.exe' 'C:/Users/u/.fanbox/hooks/claude-statusline.cjs'";
+
+test('writeHookFiles (win32): Git Bash set only in ~/.claude/settings.json env still yields the statusLine and the bridge copy', () => {
+  const r = runWriteHookFiles({ winTree: [GB_CUSTOM], settingsText: GB_SETTINGS });
+  assert.deepEqual(r.settingsReads, [w.join('C:\\Users\\u', '.claude', 'settings.json')]);
+  assert.equal(r.settings.statusLine.command, GB_CMD);
+  assert.equal(r.written[w.join(r.hooksDir, 'claude-statusline.cjs')].toString(), BRIDGE_SRC);
+  assert.deepEqual(r.logs, []);
+});
+
+test('writeHookFiles (win32): the same machine without that settings entry has no statusLine (so the entry is what matters)', () => {
+  for (const settingsText of [undefined, '{}', '{"env":{}}', '{not json', '{"env":{"CLAUDE_CODE_GIT_BASH_PATH":""}}']) {
+    const r = runWriteHookFiles({ winTree: [GB_CUSTOM], settingsText });
+    assert.deepEqual(Object.keys(r.settings), ['hooks'], 'settingsText: ' + settingsText);
+    assert.ok(!Object.keys(r.written).some((f) => f.endsWith('claude-statusline.cjs')));
+    assert.ok(w.join(r.hooksDir, 'codex-notify.js') in r.written, 'hook files still written');
+    assert.deepEqual(r.logs, [], 'a missing or broken settings file is silent, not an error');
+  }
+});
+
+test('writeHookFiles (win32): a settings path that does not exist falls through to PATH / ProgramFiles like any stale override', () => {
+  const r = runWriteHookFiles({ winTree: [BASH], settingsText: JSON.stringify({ env: { CLAUDE_CODE_GIT_BASH_PATH: 'D:\\gone\\bash.exe' } }) });
+  assert.equal(r.settings.statusLine.command, GB_CMD, 'ProgramFiles Git still found');
+});
+
+test('writeHookFiles (win32): CLAUDE_CONFIG_DIR moves the settings file; the default ~/.claude one is then not read', () => {
+  const dir = 'D:\\cc 配置';
+  const r = runWriteHookFiles({ winTree: [GB_CUSTOM], settingsText: GB_SETTINGS, env: { Path: 'C:\\Windows', CLAUDE_CONFIG_DIR: dir } });
+  assert.deepEqual(r.settingsReads, [w.join(dir, 'settings.json')]);
+  assert.equal(r.settings.statusLine.command, GB_CMD);
+});
+
+test('writeHookFiles (win32): CLAUDE_CODE_GIT_BASH_PATH in the process env wins and the settings file is not even read', () => {
+  const real = 'E:\\mine\\bash.exe';
+  const r = runWriteHookFiles({ winTree: [real], env: { Path: 'C:\\Windows', CLAUDE_CODE_GIT_BASH_PATH: real }, settingsText: GB_SETTINGS });
+  assert.deepEqual(r.settingsReads, []);
+  assert.equal(r.settings.statusLine.command, GB_CMD);
+});
+
+test('writeHookFiles (win32): the value goes into a copy of the env, process.env is untouched, and the user settings file is never written', () => {
+  let seen;
+  const winHelpers = Object.assign({}, H, { winGitBash: (e, io) => { seen = e; return H.winGitBash(e, tree([GB_CUSTOM])); } });
+  const written = {};
+  const proc = { platform: 'win32', execPath: 'C:\\FanBox.exe', env: { Path: 'C:\\Windows' } };
+  const fakeFs = { mkdirSync() {}, writeFileSync: (f, d) => { written[f] = d; }, readFileSync: (f) => (/settings\.json$/.test(f) ? GB_SETTINGS : fs.readFileSync(BRIDGE_FILE)) };
+  makeWriteHookFiles(w, { homedir: () => 'C:\\Users\\u' }, fakeFs, winHelpers, true, 4567, proc, console, 'C:\\a', () => [])();
+  assert.notEqual(seen, proc.env, 'winGitBash got a copy');
+  assert.equal(seen.CLAUDE_CODE_GIT_BASH_PATH, GB_CUSTOM);
+  assert.equal(seen.Path, 'C:\\Windows', 'the rest of the env is carried over');
+  assert.equal(proc.env.CLAUDE_CODE_GIT_BASH_PATH, undefined, 'process.env itself is not modified');
+  assert.deepEqual(Object.keys(written).filter((f) => !f.startsWith(w.join('C:\\Users\\u', '.fanbox', 'hooks'))), [], 'only ~/.fanbox/hooks is written');
+  assert.ok(!Object.keys(written).some((f) => /settings\.json$/.test(f) && !f.endsWith('claude-settings.json')), 'the user settings file is never written');
 });
 
 test('writeHookFiles: Git Bash is looked up in process.env (the env the PTYs inherit after the registry PATH merge)', () => {
@@ -397,12 +480,36 @@ test('D2 label: the 5h part and a missing weekly window are untouched', () => {
   assert.equal(runBridge({ env: WIN_ENV, files: CFG('zh'), input: only7d }).out, '周 9%\n');
 });
 
+// review follow-up: config.lang is only written when the user clicks the toggle. For everyone else the UI follows Chromium's
+// locale, which main.js hands to the PTY env as FANBOX_LANG (the bridge's own Intl locale is the Windows regional format).
+test('D2 label: FANBOX_LANG decides when there is no config.lang (even against the process locale)', () => {
+  assert.equal(runBridge({ env: { ...WIN_ENV, FANBOX_LANG: 'en' }, files: {}, locale: 'zh-CN' }).out, '5h 23% · 7d 41%\n', 'UI is English, regional format is Chinese');
+  assert.equal(runBridge({ env: { ...WIN_ENV, FANBOX_LANG: 'zh' }, files: {}, locale: 'en-US' }).out, '5h 23% · 周 41%\n', 'UI is Chinese, regional format is English');
+  assert.equal(runBridge({ env: { ...WIN_ENV, FANBOX_LANG: 'en' }, files: CFG(undefined), locale: 'zh-CN' }).out, '5h 23% · 7d 41%\n', 'config without lang behaves like missing');
+  assert.equal(runBridge({ env: { ...WIN_ENV, FANBOX_LANG: 'en' }, files: { [w.join(WIN_HOME, '.fanbox', 'config.json')]: '{not json' }, locale: 'zh-CN' }).out, '5h 23% · 7d 41%\n', 'unreadable config behaves like missing');
+});
+test('D2 label: config.lang beats FANBOX_LANG (an explicit, later choice is read live)', () => {
+  assert.equal(runBridge({ env: { ...WIN_ENV, FANBOX_LANG: 'en' }, files: CFG('zh'), locale: 'en-US' }).out, '5h 23% · 周 41%\n');
+  assert.equal(runBridge({ env: { ...WIN_ENV, FANBOX_LANG: 'zh' }, files: CFG('en'), locale: 'zh-CN' }).out, '5h 23% · 7d 41%\n');
+});
+test('D2 label: an invalid FANBOX_LANG is ignored and the locale decides', () => {
+  for (const bad of ['fr', 'EN', 'zh-CN', '', ' en']) {
+    assert.equal(runBridge({ env: { ...WIN_ENV, FANBOX_LANG: bad }, files: {}, locale: 'zh-CN' }).out, '5h 23% · 周 41%\n', JSON.stringify(bad));
+    assert.equal(runBridge({ env: { ...WIN_ENV, FANBOX_LANG: bad }, files: {}, locale: 'en-US' }).out, '5h 23% · 7d 41%\n', JSON.stringify(bad));
+  }
+});
+test('D2 label: resolution order in the source is config.lang, then FANBOX_LANG, then Intl', () => {
+  const body = BRIDGE_SRC.slice(BRIDGE_SRC.indexOf('function winLang()'), BRIDGE_SRC.indexOf('function run(input)'));
+  const at = (needle) => { const i = body.indexOf(needle); assert.ok(i >= 0, needle); return i; };
+  assert.ok(at('.fanbox') < at('process.env.FANBOX_LANG') && at('process.env.FANBOX_LANG') < at('Intl.DateTimeFormat'));
+});
+
 // POSIX behavior is exactly upstream's
 for (const platform of ['linux', 'darwin']) {
   test(`bridge ${platform}: unchanged. Label stays 周 (config and locale ignored), chaining uses shell:true`, () => {
     const home = '/home/u';
     const cfgEn = { [path.join(home, '.fanbox', 'config.json')]: JSON.stringify({ lang: 'en' }) };
-    const base = { platform, home, env: { Path: '/usr/bin', PATH: '/usr/bin' }, locale: 'en-US', input: { ...SAMPLE, cwd: '/proj' } };
+    const base = { platform, home, env: { Path: '/usr/bin', PATH: '/usr/bin', FANBOX_LANG: 'en' }, locale: 'en-US', input: { ...SAMPLE, cwd: '/proj' } }; // FANBOX_LANG is a Windows-only variable and must change nothing here
     let r = runBridge({ ...base, files: cfgEn });
     assert.equal(r.out, '5h 23% · 周 41%\n');
     assert.equal(r.spawns.length, 0);
@@ -417,6 +524,58 @@ for (const platform of ['linux', 'darwin']) {
     assert.equal(r.out, 'stub-out');
   });
 }
+
+// ---------------------------------------------------------------------------
+// Source contracts for the two Windows-only lines in shared files (Electron and the server cannot run on Linux)
+// ---------------------------------------------------------------------------
+// the text between `{` at `openIdx` and its matching `}` (no braces occur in strings/comments of the blocks sliced here)
+function braceBlock(src, openIdx) {
+  let depth = 0;
+  for (let i = openIdx; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}' && --depth === 0) return src.slice(openIdx, i + 1);
+  }
+  throw new Error('unbalanced braces');
+}
+
+test('pty:spawn: FANBOX_LANG is added to the PTY env under the IS_WIN guard only, never in the shared env object', () => {
+  assert.equal(mainSrc.split('FANBOX_LANG').length - 1, 1, 'exactly one mention in electron/main.js');
+  const handler = mainSrc.slice(mainSrc.indexOf("ipcMain.handle('pty:spawn'"));
+  const envObj = handler.slice(handler.indexOf('const env = {'), handler.indexOf('\n  };') + 5);
+  assert.ok(envObj.includes('FANBOX_CTL_TOKEN: AGENT_TOKEN') && envObj.includes('FANBOX_TERM_ID: id'), 'sliced the shared env object');
+  assert.ok(!envObj.includes('FANBOX_LANG'), 'the shared env object does not carry it');
+  // the single assignment sits inside the `if (IS_WIN) {` block that follows it
+  const open = handler.indexOf('\n  if (IS_WIN) {', handler.indexOf(envObj) + envObj.length) + 1;
+  assert.ok(open > 0, 'found the IS_WIN block after the env object');
+  const block = braceBlock(handler, handler.indexOf('{', open));
+  assert.ok(block.includes('env.FANBOX_LANG = uiLang();'), 'FANBOX_LANG = uiLang() is inside the IS_WIN block');
+  assert.ok(handler.indexOf('FANBOX_LANG') > open && handler.indexOf('FANBOX_LANG') < open + block.length);
+  // uiLang() is the same resolution the UI uses (config.lang, else Chromium's locale)
+  const ui = mainSrc.slice(mainSrc.indexOf('function uiLang()'), mainSrc.indexOf('const M = (zh, en)'));
+  assert.ok(ui.includes('c.lang') && ui.includes('app.getLocale()'));
+});
+
+test('usageRequest: the curl on Windows is the exact name curl.exe (PATH first, System32 second), bare curl elsewhere', () => {
+  const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const fn = srv.slice(srv.indexOf('async function usageRequest('), srv.indexOf('const officialCache = new Map()'));
+  assert.ok(fn.includes("const curlExe = PLATFORM === 'win32' ? (winFindExe('curl.exe') || path.join(WIN_SYS32, 'curl.exe')) : 'curl';"));
+  assert.ok(!fn.includes("winFindExe('curl')"), 'no PATHEXT lookup (it would pick curl.cmd / curl.bat, which execFile cannot run without a shell)');
+  assert.ok(fn.includes('execFile(curlExe, ['), 'the request goes through the selected binary');
+  assert.equal(srv.split("winFindExe('curl").length - 1, 1, 'no other curl lookup in server.js');
+});
+
+test('winFindExe: a name with an extension is an exact lookup (no PATHEXT expansion, curl.cmd never stands in for curl.exe)', () => {
+  const srv = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+  const src = srv.slice(srv.indexOf('function winFindExe(name, extraDirs) {'), srv.indexOf('// VS Code 真身'));
+  assert.ok(src.length > 100 && src.length < 3000, 'sliced winFindExe');
+  const make = (files, Path, PATHEXT) => new Function('path', 'fs', 'process', src + '\nreturn winFindExe;')(
+    w, { existsSync: (f) => files.map((x) => x.toLowerCase()).includes(String(f).toLowerCase()) }, { env: { Path, PATHEXT } });
+  const find = make(['C:\\shim\\curl.cmd', 'C:\\shim\\curl.bat', 'C:\\Windows\\System32\\curl.exe'], 'C:\\shim;C:\\Windows\\System32', '.COM;.EXE;.BAT;.CMD');
+  assert.equal(find('curl.exe'), 'C:\\Windows\\System32\\curl.exe', 'the earlier curl.cmd / curl.bat are skipped');
+  assert.equal(find('curl').toLowerCase(), 'c:\\shim\\curl.bat', 'whereas the bare name does expand PATHEXT (the bug this avoids)');
+  assert.equal(make(['C:\\shim\\curl.cmd'], 'C:\\shim', '.COM;.EXE;.BAT;.CMD')('curl.exe'), null, 'only a .cmd on PATH: null, so the System32 fallback applies');
+  assert.equal(make(['C:\\tools\\curl.exe', 'C:\\Windows\\System32\\curl.exe'], '"C:\\tools";C:\\Windows\\System32', '.EXE')('curl.exe'), 'C:\\tools\\curl.exe', 'PATH first (quoted entry handled)');
+});
 
 test('bridge file: the Windows branches are the only difference from master (only added lines)', () => {
   const r = spawnSync('git', ['diff', '--numstat', 'master', '--', 'lib/claude-statusline.cjs'], { cwd: ROOT, encoding: 'utf8' });

@@ -2427,8 +2427,10 @@ async function curlSysProxyLine() {
 async function usageRequest(url, token, extraHeader = '') {
   const proxyLine = await curlSysProxyLine();
   const out = await new Promise((resolve, reject) => {
-    // Windows：curl 走绝对路径——裸名会先在 cwd 里找同名 exe，而这条请求的 stdin 里带着 OAuth token
-    const curlExe = PLATFORM === 'win32' ? (winFindExe('curl') || path.join(WIN_SYS32, 'curl.exe')) : 'curl';
+    // Windows：curl 走绝对路径——裸名会先在 cwd 里找同名 exe，而这条请求的 stdin 里带着 OAuth token。
+    // 只认精确名 curl.exe（winFindExe 对带扩展名的名字不走 PATHEXT）：PATH 前面的 curl.cmd / curl.bat 会让
+    // 不带 shell 的 execFile 抛 EINVAL，还会把 token 交给不认识的脚本
+    const curlExe = PLATFORM === 'win32' ? (winFindExe('curl.exe') || path.join(WIN_SYS32, 'curl.exe')) : 'curl';
     const cp = execFile(curlExe, ['-sS', '--connect-timeout', '5', '--max-time', '12', '-w', '\n%{http_code}', '-K', '-', url],
       { timeout: 14000, maxBuffer: 1024 * 1024, env: winSpawnEnv(), windowsHide: true }, (err, stdout) => err ? reject(new Error('网络连接失败或超时')) : resolve(stdout));
     cp.stdin.on('error', () => {});

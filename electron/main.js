@@ -61,12 +61,21 @@ function writeHookFiles() {
       // argv (buildCodexSpawnSpec) so PowerShell never sees `-c notify=[…]`.
       // 2.17.0 status-line bridge: Claude Code runs status lines through Git Bash (never cmd), so
       // the command is only emitted when Git Bash is found. writeHookFiles runs after the registry
-      // PATH merge in whenReady, so winGitBash(process.env) sees the same env the PTYs inherit.
+      // PATH merge in whenReady, so winGitBash sees the same env the PTYs inherit.
       // Any failure leaves statusLine out (2.16.1 behavior) instead of breaking one-click launch.
+      // Claude Code also honors CLAUDE_CODE_GIT_BASH_PATH from the `env` block of its own settings.json
+      // (${CLAUDE_CONFIG_DIR || ~/.claude}); read-only, and only when the process env does not set it.
       let statusLine = null;
       try {
         const script = path.join(dir, 'claude-statusline.cjs');
-        const cmd = winHelpers.winGitBash(process.env) ? winHelpers.winStatusLineCommand(process.execPath, script) : null;
+        let gitEnv = process.env;
+        if (!gitEnv.CLAUDE_CODE_GIT_BASH_PATH) {
+          try {
+            const fromSettings = winHelpers.claudeSettingsGitBashPath(fs.readFileSync(path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'settings.json'), 'utf8'));
+            if (fromSettings) gitEnv = { ...process.env, CLAUDE_CODE_GIT_BASH_PATH: fromSettings };
+          } catch { /* no readable Claude Code settings: the process env and PATH decide */ }
+        }
+        const cmd = winHelpers.winGitBash(gitEnv) ? winHelpers.winStatusLineCommand(process.execPath, script) : null;
         if (cmd) {
           // read+write (not copyFileSync) so the source may live inside app.asar
           fs.writeFileSync(script, fs.readFileSync(path.join(__dirname, '..', 'lib', 'claude-statusline.cjs')));
@@ -1233,6 +1242,11 @@ ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme, shell, agent, extr
     // ConPTY 友好：强制 UTF-8 代码页相关变量；补 HOME 给跨平台工具
     env.PYTHONIOENCODING = env.PYTHONIOENCODING || 'utf-8';
     if (!env.HOME && env.USERPROFILE) env.HOME = env.USERPROFILE;
+    // 2.17.0 status-line bridge: the weekly-quota label must follow the same language as the UI. The bridge runs as
+    // Electron-as-Node, whose ICU locale is the Windows regional format, not Chromium's UI locale (app.getLocale()
+    // behind uiLang()), and config.lang exists only after the user clicks the toggle once. The bridge still reads
+    // config.lang first (live), then this.
+    env.FANBOX_LANG = uiLang();
     // server.js 在本进程上设了 NoDefaultCurrentDirectoryInExePath（libuv 只认调用方的这个变量，
     // 见那边注释）。用户的终端不该被我们改掉原生语义：这里从 PTY 的 env 里删掉，
     // 用户在自己 shell 里跑裸命令时行为与系统一致。
