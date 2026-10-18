@@ -1,7 +1,7 @@
 # FanBox
 
 > [!IMPORTANT]
-> This is an unofficial **community Windows port** of [FanBox](https://github.com/alchaincyf/fanbox), tracking upstream **v2.16.1**. Windows installers are published in [this repository’s Releases](https://github.com/Emberwhirl/fanbox/releases). macOS users should use the [official project](https://github.com/alchaincyf/fanbox).
+> This is an unofficial **community Windows port** of [FanBox](https://github.com/alchaincyf/fanbox), tracking upstream **v2.17.0**. Windows installers are published in [this repository’s Releases](https://github.com/Emberwhirl/fanbox/releases). macOS users should use the [official project](https://github.com/alchaincyf/fanbox).
 
 [![Windows x64 port](assets/badge-windows-x64.svg)](https://github.com/Emberwhirl/fanbox/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -9,7 +9,7 @@
 
 ## About this Windows port
 
-FanBox officially ships for macOS only. This repository maintains a full-featured Windows 10/11 (x64) port on the `windows` branch: started from scratch at upstream v2.6.3, then kept in step with upstream releases—currently **v2.16.1**. Platform-specific paths that fail outside macOS were reworked for Windows conventions rather than left as half-ports.
+FanBox officially ships for macOS only. This repository maintains a full-featured Windows 10/11 (x64) port on the `windows` branch: started from scratch at upstream v2.6.3, then kept in step with upstream releases—currently **v2.17.0**. Platform-specific paths that fail outside macOS were reworked for Windows conventions rather than left as half-ports.
 
 ### What the port covers
 
@@ -18,6 +18,8 @@ FanBox officially ships for macOS only. This repository maintains a full-feature
 - **Backend in its own process (v2.14+).** `server.js` runs as a `fanbox-server` utility child under FanBox, so terminal input never queues behind thumbnails or big directory scans; if the child dies it restarts by itself. Thumbnails go through ImageMagick/ffmpeg with a 4-way concurrency gate, and Markdown editors show thumbnails instead of full-size images.
 - **指挥台 and 本回合 (v2.15+).** Agent status comes from official Claude Code events (HTTP hooks on Windows) instead of scraping terminal text: the 指挥台 lists sessions waiting for you, the taskbar icon gets a dot and flashes, and `Ctrl+Alt+L` cycles them. The 本回合 panel (change inbox, session replay, round snapshots, single-file restore, line diffs with comments) joins paths with `\` on Windows so rollback guards, sub-directory heat and editor reloads work under `C:\`.
 - **Quit only blocks working agents (v2.15+).** Closing the window or pressing Alt+F4 asks for confirmation only while a hooked agent is mid-turn or a shell has a live child process; idle PowerShell tabs never trigger the dialog or keep the stay-awake guard on.
+- **Agent usage panel (v2.17+).** Each agent expands into a token breakdown (uncached input, cache read, cache write, output, reasoning) for the last 5 hours, today and the last 7 days, with an input cache hit rate; the counts come from your local session logs, counted on a background thread. The panel also **contacts the official Claude and Codex quota endpoints** (`api.anthropic.com`, `chatgpt.com`) for plan windows and Codex reset credits, through the absolute `curl.exe` path with the token on stdin only. Codex reads `%USERPROFILE%\.codex\auth.json` (or `CODEX_HOME`); when that file is missing or the request fails, the panel falls back to the Codex session logs and says why. A failed refresh keeps the last good numbers. Everything new is translated in English mode.
+- **Quota line under Claude Code (v2.17+).** In Claude Code sessions that FanBox launches (one-click, resume, scheduled tasks, AI 整理) a status line shows the live 5-hour and weekly quota (`5h 23% · 7d 41%`, `周` instead of `7d` in Chinese mode) and feeds the usage panel within seconds. It **needs Git for Windows (Git Bash)**, because Claude Code runs status lines through Git Bash; without it, or when your profile path contains an apostrophe, FanBox leaves the status line out and the panel keeps polling the official API as in 2.16.1. Once any status line is set, Claude Code hides most footer hints (esc to interrupt, `?` for shortcuts). Your own `statusLine` still runs, inside the bridge, and replaces the quota text; a `claude` you type yourself is unaffected. Restart running Claude Code sessions after upgrading to get it.
 - **Scheduled tasks (v2.11+).** Cron, one-shot, and interval schedules open a real terminal tab on the agent-control path; agents may author schedules via token-gated `/api/agent/cron*`.
 - **Typeset and long-image export (v2.9–2.16).** Markdown has Insert image plus a Typeset modal (no persistent typeset tab); export full-article or sectioned PNG long images for social posts; `/api/img-proxy` fetches remote images for inlining. Windows image paths are percent-encoded once into Markdown and displayed via `/api/raw`.
 - **One-click open.** Editor: VS Code when present, otherwise the system default app. Terminal: Windows Terminal preferred. Reveal in Explorer is safe for spaces, non-ASCII, and special characters.
@@ -25,17 +27,17 @@ FanBox officially ships for macOS only. This repository maintains a full-feature
 - **Stay awake.** One sidebar switch (Windows wording: keep awake while tasks run; there is no lid). WeChat stay-awake lives in the native View menu. Uses Electron `powerSaveBlocker`. Lid-close sleep still follows OS power options.
 - **Snapshot safety belt.** Drive-aware eligibility: projects such as `D:\myproject` remain eligible; `C:\Users` and `C:\Windows` are refused.
 - **Environment and proxy.** On launch, User and Machine registry PATH entries are merged so the embedded terminal, agent binary probes, and WeChat bridge find `claude` / `codex` / npm globals even when started from the GUI. System proxy is honored, including SOCKS-only setups (Clash, v2rayN). Localized profile paths work throughout. Loopback hook POSTs append `NO_PROXY=127.0.0.1,localhost`.
-- **Updates.** Checks target this repository’s Releases. The app only prompts when both exact x64 artifacts exist (`FanBox-<ver>-win-x64.exe` and `-portable.exe`); the capsule stays **下载更新** (download the installer — no electron-updater auto-install, no `latest.yml` on the public release). Fuzzy names, a single file, or the wrong architecture fail closed.
+- **Updates.** Checks target this repository’s Releases. The app only prompts when both exact x64 artifacts exist (`FanBox-<ver>-win-x64.exe` and `-portable.exe`); the capsule stays **下载更新** (download the installer — no electron-updater auto-install, no `latest.yml` on the public release). Fuzzy names, a single file, or the wrong architecture fail closed. A manual **Check for Updates…** that fails now says why (rate limit, HTTP status, network) in FanBox’s language and offers a button that opens this repository’s Releases.
 - **Shortcuts.** Every `⌘` binding maps to `Ctrl` (for example `Ctrl+K` global search, `Ctrl+Enter` open in editor). Terminal maximize is `Ctrl+Alt+M` so `Ctrl+Shift+M` still reaches the TUI. Dynamic labels use platform-correct modifiers.
 
 ### Install
 
-Download **v2.16.1** from [**Releases**](https://github.com/Emberwhirl/fanbox/releases/tag/v2.16.1):
+Download **v2.17.0** from [**Releases**](https://github.com/Emberwhirl/fanbox/releases/tag/v2.17.0):
 
 | File | Use |
 |---|---|
-| `FanBox-2.16.1-win-x64.exe` | NSIS installer — pick install dir, creates shortcuts |
-| `FanBox-2.16.1-win-x64-portable.exe` | Portable — run without installing |
+| `FanBox-2.17.0-win-x64.exe` | NSIS installer — pick install dir, creates shortcuts |
+| `FanBox-2.17.0-win-x64-portable.exe` | Portable — run without installing |
 
 > **Not code-signed.** First launch may show SmartScreen “unknown publisher” — **More info → Run anyway**. Windows 10/11 x64 only.
 
@@ -59,7 +61,9 @@ npm run dist:win     # NSIS installer + portable exe → dist/
 | Embedded terminal | node-pty with ConPTY; PowerShell by default; registry PATH merged at startup |
 | Agent hooks | One-click Claude Code uses `--settings` with a quoted absolute HTTP hook file (only when the file exists); FanBox-launched Codex is `pty.spawn`'d with a real argv (`-c notify=["node","script"]` as one slot) so PowerShell never sees the JSON; typed `codex` stays un-hooked |
 | Agent cross-control | Hooked tabs use official events; un-hooked busy/idle via child-process probe; default `wait` idleMs is 3500 ms; `terminals` reports last-known directory (spawn/locate), not live cwd |
-| Updates | Exact pair `FanBox-<ver>-win-x64.exe` + `-portable.exe` required; capsule is 下载更新; electron-updater probe returns false before any network |
+| Updates | Exact pair `FanBox-<ver>-win-x64.exe` + `-portable.exe` required; capsule is 下载更新; electron-updater probe returns false before any network; a failed manual check explains why and links to this repository’s Releases |
+| Usage panel | Official Claude and Codex quota endpoints through absolute `curl.exe` (token on stdin, environment or system proxy); Codex login from `%USERPROFILE%\.codex\auth.json`, else local session snapshot; token breakdown from local logs |
+| Claude quota line | Status line in FanBox-launched Claude Code sessions only, run through Git Bash (Git for Windows required; silently omitted without it); label follows FanBox’s language; restart Claude sessions after upgrading |
 | Screenshot express | Watches `Pictures\Screenshots` and the Desktop |
 | Stay awake | One sidebar switch + View-menu WeChat item + `powerSaveBlocker`; lid-close sleep still follows OS power options |
 | Scheduled tasks | Same scheduler as macOS; fires only while FanBox is running (no Windows Task Scheduler install) |
@@ -74,7 +78,7 @@ Please file port-related issues in [this repository’s Issues](https://github.c
 
 ## Upstream README (verbatim)
 
-<sub>The content below is kept verbatim from <a href="https://github.com/alchaincyf/fanbox">alchaincyf/fanbox</a> <strong>v2.16.1</strong> and describes the official macOS product. Download links, install steps, and community-port lists reflect the upstream author’s view. For Windows, use the section above.</sub>
+<sub>The content below is kept verbatim from <a href="https://github.com/alchaincyf/fanbox">alchaincyf/fanbox</a> <strong>v2.17.0</strong> and describes the official macOS product. Download links, install steps, and community-port lists reflect the upstream author’s view. For Windows, use the section above.</sub>
 
 </div>
 
