@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>FanBox 2.17.0 Windows Port</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+  /* Layout: one reading column; decisions first as ruled blocks, engineering detail in dense tables at the end. */
+  :root {
+    --paper: #f6f7f5;
+    --ink: #1b201d;
+    --ink-2: #59625d;
+    --rule: #d9ded9;
+    --panel: #eceeea;
+    --accent: #0d6b5a;
+    --call: #9a5800;
+    --risk: #b3261e;
+    --ok: #2c7a3f;
+    --code-bg: #e5e9e5;
+    --term-bg: #0d100e;
+    --term-fg: #cfd6d1;
+    --term-dim: #7f8a84;
+    --term-amber: #e3a540;
+    --term-line: #2a302c;
+    --dlg-bg: #ffffff;
+    --dlg-line: #d4d8d4;
+    --display: "IBM Plex Sans Condensed", "Arial Narrow", "PingFang SC", "Microsoft YaHei", sans-serif;
+    --body: "IBM Plex Sans", "Segoe UI", system-ui, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+    --mono: "IBM Plex Mono", "Cascadia Mono", Consolas, "PingFang SC", "Microsoft YaHei", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #121513; --ink: #e2e7e3; --ink-2: #9ba59f; --rule: #2b312d; --panel: #1a1e1b;
+      --accent: #58c3a9; --call: #e2a64a; --risk: #f07a70; --ok: #6cc183; --code-bg: #20251f;
+      --dlg-bg: #202421; --dlg-line: #343a35;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #121513; --ink: #e2e7e3; --ink-2: #9ba59f; --rule: #2b312d; --panel: #1a1e1b;
+    --accent: #58c3a9; --call: #e2a64a; --risk: #f07a70; --ok: #6cc183; --code-bg: #20251f;
+    --dlg-bg: #202421; --dlg-line: #343a35;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--paper); color: var(--ink);
+    font: 15px/1.62 var(--body);
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 40px 96px;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; }
+  h1, h2, h3 { font-family: var(--display); font-weight: 600; text-wrap: balance; line-height: 1.2; }
+  h1 { font-size: 2.1rem; margin: 0 0 .5rem; letter-spacing: -.01em; }
+  h2 { font-size: 1.45rem; margin: 3.2rem 0 1rem; padding-top: .9rem; border-top: 2px solid var(--ink); }
+  h3 { font-size: 1.12rem; margin: 2rem 0 .6rem; }
+  h4 { font-size: .95rem; margin: 1.4rem 0 .4rem; }
+  p, li { max-width: 68ch; }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  a:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  code, kbd, .mono { font-family: var(--mono); font-size: .86em; }
+  code { background: var(--code-bg); padding: .08em .35em; border-radius: 3px; overflow-wrap: anywhere; }
+  pre { background: var(--code-bg); padding: .8rem 1rem; border-radius: 4px; overflow-x: auto; font: 12.5px/1.55 var(--mono); }
+  pre code { background: none; padding: 0; }
+  kbd { border: 1px solid var(--rule); border-bottom-width: 2px; border-radius: 4px; padding: 0 .35em; background: var(--panel); }
+  .lede { color: var(--ink-2); max-width: 68ch; margin: 0 0 1.4rem; }
+  .eyebrow { font: 500 11.5px/1 var(--mono); letter-spacing: .09em; text-transform: uppercase; color: var(--ink-2); margin: 0 0 .7rem; }
+  .muted { color: var(--ink-2); }
+  .small { font-size: 13.5px; }
+
+  .status { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); margin: 1.2rem 0 1.4rem; }
+  .status > div { background: var(--paper); padding: .65rem .8rem; min-width: 0; }
+  .status dt { font: 500 11px/1.3 var(--mono); letter-spacing: .07em; text-transform: uppercase; color: var(--ink-2); }
+  .status dd { margin: .2rem 0 0; font-size: 14px; overflow-wrap: anywhere; }
+  .status dd b { color: var(--accent); font-weight: 600; }
+
+  nav.toc { display: flex; flex-wrap: wrap; gap: .3rem 1.1rem; font-size: 14px; margin: 0 0 1rem; }
+  nav.toc a { text-decoration: none; }
+  nav.toc a:hover { text-decoration: underline; }
+  nav.toc span { font-family: var(--mono); color: var(--ink-2); margin-right: .3rem; }
+
+  /* decision blocks */
+  .decision { border-top: 2px solid var(--ink); padding-top: .9rem; margin: 2.4rem 0 0; }
+  .decision-head { display: flex; gap: .8rem; align-items: baseline; flex-wrap: wrap; }
+  .decision-head .id { font: 500 13px/1 var(--mono); color: var(--call); border: 1px solid currentColor; padding: .25em .45em; border-radius: 3px; }
+  .decision-head h3 { margin: 0; flex: 1 1 22rem; min-width: 0; }
+  .options { list-style: none; padding: 0; margin: .8rem 0 0; display: grid; gap: .5rem; }
+  .options li { display: grid; grid-template-columns: 2.2rem 1fr; gap: .2rem .6rem; padding: .55rem .7rem; background: var(--panel); border-radius: 4px; max-width: none; }
+  .options li > b { font-family: var(--mono); font-weight: 500; color: var(--ink-2); }
+  .options li.default { outline: 1.5px solid var(--accent); }
+  .options li.default > b { color: var(--accent); }
+  .chip { display: inline-block; font: 500 11px/1.5 var(--mono); letter-spacing: .05em; text-transform: uppercase; padding: 0 .5em; border-radius: 999px; border: 1px solid currentColor; vertical-align: 1px; margin-left: .3rem; }
+  .chip.def { color: var(--accent); }
+  .chip.risk { color: var(--risk); }
+  .chip.you { color: var(--call); }
+  .chip.ok { color: var(--ok); }
+  .why { font-size: 14px; color: var(--ink-2); margin-top: .7rem; }
+
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: .9rem 0; }
+  .pair > * { min-width: 0; }
+  @media (max-width: 680px) { .pair { grid-template-columns: 1fr; } }
+
+  /* terminal mock */
+  .term { background: var(--term-bg); color: var(--term-fg); border-radius: 6px; padding: .8rem .9rem .9rem; font: 12.5px/1.55 var(--mono); border: 1px solid var(--term-line); overflow-x: auto; }
+  .term .cap { font: 500 10.5px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--term-dim); margin-bottom: .7rem; }
+  .term .rule { border-top: 1px solid var(--term-line); margin: .35rem 0; }
+  .term .dim { color: var(--term-dim); }
+  .term .amber { color: var(--term-amber); }
+  .term .row { white-space: pre; }
+
+  /* usage panel mock */
+  .usage { background: var(--term-bg); color: var(--term-fg); border-radius: 6px; padding: .9rem 1rem; font: 12.5px/1.5 var(--body); border: 1px solid var(--term-line); }
+  .usage .agent { font-weight: 600; margin: .2rem 0 .4rem; }
+  .usage .agent i { font-style: normal; font: 500 10.5px/1 var(--mono); color: var(--term-dim); border: 1px solid var(--term-line); border-radius: 3px; padding: .15em .35em; margin-left: .3rem; }
+  .usage .bar { display: grid; grid-template-columns: 4.8rem 1fr 2.6rem; gap: .5rem; align-items: center; margin: .25rem 0; }
+  .usage .track { height: 5px; background: var(--term-line); border-radius: 3px; overflow: hidden; }
+  .usage .fill { height: 100%; background: var(--term-amber); }
+  .usage .num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .usage .sub { color: var(--term-dim); font-size: 11.5px; margin: .15rem 0; }
+  .usage .det { color: #6fc7b1; font-size: 11.5px; margin: .45rem 0 .7rem; }
+  .usage hr { border: 0; border-top: 1px solid var(--term-line); margin: .7rem 0; }
+  .langtoggle { display: inline-flex; border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; margin: 0 0 .5rem; }
+  .langtoggle button { font: 500 12px/1 var(--mono); padding: .45em .8em; background: var(--paper); color: var(--ink-2); border: 0; cursor: pointer; }
+  .langtoggle button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+
+  /* dialog mock */
+  .dlg { background: var(--dlg-bg); border: 1px solid var(--dlg-line); border-radius: 8px; max-width: 30rem; font: 13.5px/1.5 "Segoe UI", var(--body); box-shadow: 0 6px 24px rgba(0,0,0,.12); overflow: hidden; }
+  .dlg .tb { padding: .45rem .8rem; font-size: 12px; color: var(--ink-2); border-bottom: 1px solid var(--dlg-line); }
+  .dlg .bd { display: grid; grid-template-columns: 2rem 1fr; gap: .8rem; padding: 1rem 1.1rem .4rem; }
+  .dlg .icon { width: 1.8rem; height: 1.8rem; border-radius: 50%; background: var(--call); color: var(--dlg-bg); display: grid; place-items: center; font-weight: 700; }
+  .dlg .msg { font-weight: 600; margin-bottom: .3rem; }
+  .dlg .det { color: var(--ink-2); font-size: 12.5px; overflow-wrap: anywhere; }
+  .dlg .btns { display: flex; justify-content: flex-end; gap: .5rem; padding: .8rem 1.1rem 1rem; flex-wrap: wrap; }
+  .dlg .btn { padding: .3rem .9rem; border-radius: 4px; border: 1px solid var(--dlg-line); font-size: 12.5px; }
+  .dlg .btn.primary { background: var(--accent); color: var(--dlg-bg); border-color: var(--accent); }
+
+  /* tables */
+  .tbl { overflow-x: auto; margin: .8rem 0 1.2rem; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; vertical-align: top; padding: .45rem .6rem; border-bottom: 1px solid var(--rule); }
+  th { font: 500 11.5px/1.3 var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--ink-2); border-bottom: 1.5px solid var(--ink); }
+  td.zh { white-space: nowrap; }
+  td code { white-space: normal; }
+
+  /* checklists */
+  .tests { display: grid; gap: .1rem; margin: .6rem 0 1.2rem; }
+  .t { display: grid; grid-template-columns: 2.6rem 1fr; gap: .6rem; padding: .45rem 0; border-bottom: 1px dashed var(--rule); }
+  .t > b { font: 500 13px/1.6 var(--mono); color: var(--accent); }
+  .t > div { min-width: 0; }
+  .t .pass { display: block; color: var(--ink-2); font-size: 13.5px; }
+  .group-h { display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap; margin: 1.6rem 0 .2rem; }
+  .group-h h4 { margin: 0; }
+
+  .callout { border-left: 3px solid var(--call); background: var(--panel); padding: .7rem .9rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+  .callout p { margin: .2rem 0; }
+
+  .flow { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: .5rem; margin: .8rem 0 1rem; }
+  .flow > div { border: 1px solid var(--rule); border-radius: 4px; padding: .55rem .7rem; font-size: 13px; min-width: 0; }
+  .flow > div b { display: block; font-family: var(--display); font-size: 14px; }
+  .flow > div.you { border-color: var(--call); }
+
+  ul.tight { padding-left: 1.2rem; }
+  ul.tight li { margin: .25rem 0; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="eyebrow">Emberwhirl/fanbox · Windows port · plan</p>
+<h1>FanBox 2.17.0 Windows Port</h1>
+<p class="lede">How upstream FanBox 2.17.0 gets onto the Windows line. Written 2026-10-18 after reviewing the upstream diff, the current port on <code>windows</code>, and a throwaway trial merge. Sections 1 to 3 are the parts you are likely to change. Section 6 is engineering detail.</p>
+
+<dl class="status">
+  <div><dt>Status</dt><dd><b>Plan only.</b> Nothing merged, <code>dev</code> code untouched</dd></div>
+  <div><dt>Base</dt><dd><code>dev</code> <code>a778a1f</code> = v2.16.1 port (<code>windows</code> <code>dbf40d8</code> + 2 doc commits)</dd></div>
+  <div><dt>Target</dt><dd>upstream 2.17.0 = <code>master</code> <code>e8395cb</code>, released 2026-10-12</dd></div>
+  <div><dt>Size</dt><dd>15 files, +687 / −177. Trial merge: <b>2 conflicts</b>, 13 of 14 upstream tests pass</dd></div>
+</dl>
+
+<nav class="toc" aria-label="Contents">
+  <a href="#decisions"><span>1</span>Decisions</a>
+  <a href="#users"><span>2</span>What users notice</a>
+  <a href="#tests"><span>3</span>Your Windows tests</a>
+  <a href="#scope"><span>4</span>Scope</a>
+  <a href="#phases"><span>5</span>Phases</a>
+  <a href="#eng"><span>6</span>Engineering</a>
+  <a href="#log"><span>7</span>Log</a>
+</nav>
+
+<!-- ================================================================ -->
+<h2 id="decisions">1 · Decisions you are most likely to tweak</h2>
+<p>Each block names the default I will implement unless you say otherwise. Everything here changes what a Windows user sees or what leaves their machine.</p>
+
+<!-- D1 -->
+<section class="decision" aria-labelledby="d1">
+  <div class="decision-head"><span class="id">D1</span><h3 id="d1">A quota line under Claude Code in FanBox-launched sessions</h3></div>
+  <p>The headline of 2.17.0 is a "status-line bridge". When FanBox starts Claude Code (one-click, resume, cron, AI 整理), it adds a status line to the settings file FanBox already passes with <code>--settings</code>. Claude Code hands that status line its live 5-hour and weekly quota. The bridge sends those two numbers to FanBox's usage panel, which then updates within seconds instead of polling the official API once a minute. It also prints them under the prompt.</p>
+  <div class="pair">
+    <div class="term" role="img" aria-label="Claude Code in a FanBox tab today: footer shows the shortcuts hint">
+      <div class="cap">2.16.1 today</div>
+      <div class="row">● Updated src/app.ts</div>
+      <div class="rule"></div>
+      <div class="row">&gt; <span class="dim">_</span></div>
+      <div class="rule"></div>
+      <div class="row dim">  ? for shortcuts</div>
+    </div>
+    <div class="term" role="img" aria-label="Claude Code in a FanBox tab with the bridge: a quota line replaces the footer hints">
+      <div class="cap">2.17.0 default</div>
+      <div class="row">● Updated src/app.ts</div>
+      <div class="rule"></div>
+      <div class="row">&gt; <span class="dim">_</span></div>
+      <div class="rule"></div>
+      <div class="row amber">  5h 23% · 周 41%</div>
+    </div>
+  </div>
+  <p class="small">Things to know before choosing:</p>
+  <ul class="tight small">
+    <li>Once any status line is configured, Claude Code hides most footer hints (<code>esc to interrupt</code>, <code>? for shortcuts</code>). That is Claude Code's behavior, and macOS users get the same trade-off from upstream.</li>
+    <li>The numbers only exist for Claude Pro and Max plans, and only after the first reply in a session. For other users the bridge prints nothing.</li>
+    <li>Your own <code>~/.claude/settings.json</code> is never written. If you later add your own <code>statusLine</code>, the bridge runs it and shows its output instead of the quota text.</li>
+    <li>A <code>claude</code> you type yourself is unaffected. The change starts with Claude sessions launched after the upgrade.</li>
+    <li>On Windows this needs Git Bash, because Claude Code runs status lines through Git Bash (PowerShell only when Git Bash is missing). Without Git Bash, FanBox leaves the status line out and keeps polling, exactly as 2.16.1 does.</li>
+    <li>Upstream's Windows command string cannot be used. Under Git Bash it would launch a second full FanBox window on every status refresh (details in 6.4).</li>
+  </ul>
+  <ul class="options">
+    <li class="default"><b>(a)</b><div><strong>Ship the bridge, with a Windows-correct command</strong> <span class="chip def">default</span><br><span class="small muted">Same feature as macOS. Requires Git Bash, falls back silently without it.</span></div></li>
+    <li><b>(b)</b><div><strong>Leave it out on Windows</strong><br><span class="small muted">Claude Code looks exactly as in 2.16.1. The panel's Claude quota comes from the official API every 60 s (it shows 官方数据 instead of CLI实时回传).</span></div></li>
+  </ul>
+</section>
+
+<!-- D2 -->
+<section class="decision" aria-labelledby="d2">
+  <div class="decision-head"><span class="id">D2</span><h3 id="d2">Language of that quota line</h3></div>
+  <p>Upstream always prints <code>5h 23% · 周 41%</code>. The line is drawn by Claude Code inside the terminal, so FanBox's English dictionary never reaches it. English-mode users would see one Chinese character in an otherwise English screen.</p>
+  <div class="tbl"><table>
+    <thead><tr><th>FanBox language</th><th>Option (a), default</th><th>Option (b)</th></tr></thead>
+    <tbody>
+      <tr><td>中文</td><td><code>5h 23% · 周 41%</code></td><td><code>5h 23% · 周 41%</code></td></tr>
+      <tr><td>English</td><td><code>5h 23% · 7d 41%</code></td><td><code>5h 23% · 周 41%</code></td></tr>
+    </tbody>
+  </table></div>
+  <ul class="options">
+    <li class="default"><b>(a)</b><div><strong>Follow FanBox's language</strong> <span class="chip def">default</span><br><span class="small muted">The bridge reads the language you picked in FanBox (stored in <code>~/.fanbox/config.json</code>), falling back to the system language. A small Windows-only branch in the bridge file.</span></div></li>
+    <li><b>(b)</b><div><strong>Keep upstream's text</strong><br><span class="small muted">No change to the bridge's output code. Identical to macOS.</span></div></li>
+  </ul>
+</section>
+
+<!-- D3 -->
+<section class="decision" aria-labelledby="d3">
+  <div class="decision-head"><span class="id">D3</span><h3 id="d3">Codex quota from the official endpoint (a new network call)</h3></div>
+  <p>Until now the Codex numbers came only from Codex's own session logs on disk. 2.17.0 also asks <code>chatgpt.com</code> directly, using the Codex login in <code>%USERPROFILE%\.codex\auth.json</code>. The token goes to <code>curl.exe</code> through stdin only, so it never shows in a process list or a log. In return you get your plan name, correct window names (a Pro weekly limit was mislabeled as 5h before), and Codex's limit-reset credits.</p>
+  <div class="pair">
+    <div>
+      <div class="langtoggle" role="group" aria-label="Preview language">
+        <button type="button" id="lang-zh" aria-pressed="true">中文</button>
+        <button type="button" id="lang-en" aria-pressed="false">English</button>
+      </div>
+      <div class="usage" id="usage-mock" aria-label="Agent usage panel preview">
+        <div class="agent">Codex <i>pro</i></div>
+        <div class="bar"><span data-zh="周额度" data-en="Weekly limit">周额度</span><span class="track"><span class="fill" style="width:87%"></span></span><span class="num">87%</span></div>
+        <div class="sub" data-zh="周五 09:00 重置" data-en="Resets Fri 09:00">周五 09:00 重置</div>
+        <div class="sub" data-zh="官方数据 · 2 分钟前" data-en="Official data · 2 min ago">官方数据 · 2 分钟前</div>
+        <div class="sub" data-zh="重置卡：1张 · 当前适用0张" data-en="Reset credits: 1 · 0 usable now">重置卡：1张 · 当前适用0张</div>
+        <div class="det" data-zh="▸ token明细与缓存命中率" data-en="▸ Token details and cache hit rate">▸ token明细与缓存命中率</div>
+        <hr>
+        <div class="agent">Claude Code</div>
+        <div class="bar"><span data-zh="5h窗口" data-en="5h window">5h窗口</span><span class="track"><span class="fill" style="width:23%"></span></span><span class="num">23%</span></div>
+        <div class="bar"><span data-zh="周额度" data-en="Weekly limit">周额度</span><span class="track"><span class="fill" style="width:41%"></span></span><span class="num">41%</span></div>
+        <div class="sub" data-zh="CLI实时回传 · 刚刚" data-en="Live from CLI · just now">CLI实时回传 · 刚刚</div>
+      </div>
+    </div>
+    <div class="small">
+      <p><b>When it cannot get official data</b> (no <code>auth.json</code>, because some Codex setups keep the login in Windows Credential Manager; or the request is refused), the panel falls back to the session-log snapshot and says why, for example 未找到Codex登录凭证，使用本地快照. Nothing breaks.</p>
+      <p><b>Proxy:</b> uses your environment proxy, or the Windows system proxy when FanBox was started from the Start menu.</p>
+      <p><b>Unknown until your test:</b> whether <code>chatgpt.com</code> accepts Windows' built-in <code>curl.exe</code>. If it refuses, you will see the snapshot fallback with an HTTP code (test U1).</p>
+    </div>
+  </div>
+  <ul class="options">
+    <li class="default"><b>(a)</b><div><strong>On, as upstream</strong> <span class="chip def">default</span><br><span class="small muted">The README's Windows section will say the usage panel contacts the official Claude and Codex quota endpoints.</span></div></li>
+    <li><b>(b)</b><div><strong>Off on Windows</strong><br><span class="small muted">Codex numbers come from session logs only, as in 2.16.1. No request to chatgpt.com.</span></div></li>
+  </ul>
+</section>
+
+<!-- D4 -->
+<section class="decision" aria-labelledby="d4">
+  <div class="decision-head"><span class="id">D4</span><h3 id="d4">English wording for the new usage-panel text</h3></div>
+  <p>Upstream added about 40 Chinese strings (panel labels and quota error messages) and no English entries, so English mode would show them in Chinese. Default: translate all of them through the existing dictionary. The preview above switches to these terms. Edit any you would word differently.</p>
+  <div class="tbl"><table>
+    <thead><tr><th>Chinese (source)</th><th>Proposed English</th><th>Where</th></tr></thead>
+    <tbody>
+      <tr><td class="zh">周额度</td><td>Weekly limit</td><td>bar label</td></tr>
+      <tr><td class="zh">5h窗口 · N天窗口 · 额度窗口</td><td>5h window · N-day window · Limit window</td><td>bar label</td></tr>
+      <tr><td class="zh">待更新（旧窗口已结束）</td><td>Waiting for update (previous window ended)</td><td>expired window</td></tr>
+      <tr><td class="zh">上次成功值</td><td>last good value</td><td>stale marker</td></tr>
+      <tr><td class="zh">官方数据 · 会话快照 · CLI实时回传</td><td>Official data · Session snapshot · Live from CLI</td><td>source line</td></tr>
+      <tr><td class="zh">重置卡：N张 · 当前适用M张</td><td>Reset credits: N · M usable now</td><td>Codex</td></tr>
+      <tr><td class="zh">失效时间、使用记录：接口未提供</td><td>Expiry and usage history: not provided by the API</td><td>Codex</td></tr>
+      <tr><td class="zh">重置卡信息暂不可用</td><td>Reset credit info unavailable</td><td>Codex</td></tr>
+      <tr><td class="zh">token明细与缓存命中率</td><td>Token details and cache hit rate</td><td>expander</td></tr>
+      <tr><td class="zh">近5h · 今日 · 近7天</td><td>Last 5h · Today · Last 7 days</td><td>periods</td></tr>
+      <tr><td class="zh">未缓存输入 · 缓存读取 · 缓存写入 · 输出 · 其中推理</td><td>Uncached input · Cache read · Cache write · Output · Reasoning (part of output)</td><td>breakdown rows</td></tr>
+      <tr><td class="zh">输入缓存命中率</td><td>Input cache hit rate</td><td>breakdown</td></tr>
+      <tr><td class="zh">日志未提供 · 未提供 · 已记录</td><td>Not in logs · n/a · Recorded</td><td>reasoning cell</td></tr>
+      <tr><td class="zh">仅本机会话日志（含子agent），非账号账单</td><td>Local session logs only (subagents included), not your account bill</td><td>breakdown note</td></tr>
+      <tr><td class="zh">部分文件读取失败</td><td>some files could not be read</td><td>breakdown note</td></tr>
+      <tr><td class="zh">正在统计本地token… · 本地token统计暂不可用</td><td>Counting local tokens… · Local token stats unavailable</td><td>while scanning</td></tr>
+      <tr><td class="zh">读取失败，稍后重试 · 刷新失败，保留上次数据</td><td>Couldn't load. Try again shortly. · Refresh failed. Showing the last data.</td><td>errors</td></tr>
+      <tr><td class="zh">登录凭证已过期，请在CLI重新登录</td><td>Login expired. Sign in again in the CLI.</td><td>quota error</td></tr>
+      <tr><td class="zh">未找到有效登录凭证，请在Claude Code重新登录</td><td>No valid login found. Sign in again in Claude Code.</td><td>quota error</td></tr>
+      <tr><td class="zh">未找到Codex登录凭证，使用本地快照</td><td>No Codex login found. Using the local snapshot.</td><td>quota error</td></tr>
+      <tr><td class="zh">请求过于频繁，稍后自动重试</td><td>Too many requests. Retrying automatically.</td><td>quota error</td></tr>
+      <tr><td class="zh">额度接口HTTP N · 额度接口返回格式异常</td><td>Quota API HTTP N · Unexpected response from the quota API</td><td>quota error</td></tr>
+      <tr><td class="zh">额度接口没有返回可识别的窗口 · 网络连接失败或超时</td><td>The quota API returned no usable window · Network connection failed or timed out</td><td>quota error</td></tr>
+    </tbody>
+  </table></div>
+  <p class="small muted">Plus the long cache tip: "Hit rate = cache read ÷ all input. Reasoning is counted inside output, not added twice. A stable context prefix and not re-pasting large blocks help the cache. Actual quota use is whatever the vendor reports." The dictionary is shared, so macOS English users would get these translations too if upstream ever picks them up. No macOS code changes.</p>
+</section>
+
+<!-- D5 -->
+<section class="decision" aria-labelledby="d5">
+  <div class="decision-head"><span class="id">D5</span><h3 id="d5">"Update check failed" dialog</h3></div>
+  <p>A manual 检查更新… that fails now says why (rate limit, HTTP error, network) and offers an <b>Open download page</b> button. Upstream points that button at its own macOS releases. Upstream's reason text is Chinese even in English mode, because native dialogs never pass through the dictionary.</p>
+  <div class="pair">
+    <div class="dlg" role="img" aria-label="Windows dialog: Update check failed, with Open download page and Close buttons">
+      <div class="tb">FanBox</div>
+      <div class="bd"><span class="icon">!</span><div><div class="msg">Update check failed</div><div class="det">GitHub API rate limited (HTTP 403); release page HTTP 503<br>https://github.com/Emberwhirl/fanbox/releases/latest</div></div></div>
+      <div class="btns"><span class="btn primary">Open download page</span><span class="btn">Close</span></div>
+    </div>
+    <div class="small">
+      <p>Default on Windows:</p>
+      <ul class="tight">
+        <li>The button and the link open <b>this fork's</b> Releases page.</li>
+        <li>The reason follows FanBox's language. Chinese mode shows upstream's exact text.</li>
+        <li>Upstream's 12-second timeouts are kept.</li>
+      </ul>
+    </div>
+  </div>
+  <ul class="options">
+    <li class="default"><b>(a)</b><div><strong>Fork's page, localized reason</strong> <span class="chip def">default</span></div></li>
+    <li><b>(b)</b><div><strong>Fork's page, upstream's Chinese-only reason</strong><br><span class="small muted">Smaller Windows branch. English users see a Chinese line in this one dialog.</span></div></li>
+  </ul>
+</section>
+
+<h3>Unchanged on Windows (not up for decision unless you want them to be)</h3>
+<ul class="tight">
+  <li><b>Release contents:</b> exactly <code>FanBox-2.17.0-win-x64.exe</code> and <code>FanBox-2.17.0-win-x64-portable.exe</code>. No <code>latest.yml</code>, blockmap or <code>SHA256SUMS.txt</code>.</li>
+  <li><b>Update capsule:</b> stays 下载更新 (download the installer, then run it). No silent install on Windows.</li>
+  <li>Claude Code hooks through the HTTP hook file, Codex launched with a real argv, <kbd>Ctrl+Alt+M</kbd> maximize, Windows wording (Recycle Bin, File Explorer, "this PC").</li>
+</ul>
+
+<!-- ================================================================ -->
+<h2 id="users">2 · What Windows users will notice in 2.17.0</h2>
+<ul>
+  <li><b>Richer Agent 用量 panel.</b> Each agent expands into a token breakdown (uncached input, cache read, cache write, output, reasoning) for the last 5 hours, today and the last 7 days, with an input cache hit rate. Codex shows plan, correct window names and reset credits (D3).</li>
+  <li><b>Failures keep the last numbers.</b> A failed refresh keeps the last good values and says why, then retries with backoff (30 s growing to 10 min) instead of showing 0%.</li>
+  <li><b>Live Claude quota</b> in FanBox-launched sessions, plus the quota line under the prompt (D1, D2).</li>
+  <li><b>No freeze on large log folders.</b> Token counting moved to a background thread and reads only what changed since the last pass.</li>
+  <li><b>Smoother while an agent writes many files.</b> Repeat notifications for the same file are merged, the queue is capped, and the file list refreshes at most every 0.75 s. Card highlights no longer force a re-layout on every write, so typing in a terminal stays responsive during a burst.</li>
+  <li><b>Clearer update failures</b> with a download-page button (D5).</li>
+  <li>A small fix: switching folders while the list is refreshing no longer shows the previous folder's files.</li>
+  <li><b>After upgrading:</b> restart any running Claude Code session to get the quota line. Upstream's release note says the same.</li>
+</ul>
+
+<!-- ================================================================ -->
+<h2 id="tests">3 · Your part: tests on the Windows PC</h2>
+<p>Only a physical Windows machine can answer these. Setup: Windows 11, Git for Windows, Node 22, VS Build Tools, an isolated profile (the launcher redirects <code>USERPROFILE</code>, <code>APPDATA</code>, <code>LOCALAPPDATA</code>), Codex signed in. Please record the candidate commit, Windows build, and Node / Git / Claude Code / Codex versions. A failed or skipped required case stops the gate. Groups U–X run from the source checkout; G runs on the built packages.</p>
+
+<div class="callout">
+  <p><span class="chip you">needs you</span> <b>One thing I need to know:</b> group S needs a Claude Code CLI that runs inside a FanBox terminal and is signed in with a <b>Pro or Max</b> plan, because the quota numbers only exist for those plans.</p>
+  <p class="small">If you don't have that, S1–S3 run with a stand-in <code>claude</code> that feeds sample status-line data through your real Git Bash. That proves FanBox's side but not Claude Code's, and I will mark the real-Claude check as skipped in the log.</p>
+</div>
+
+<div class="group-h"><h4>U · Usage panel</h4><span class="chip">D3 D4</span></div>
+<div class="tests">
+  <div class="t"><b>U1</b><div>Open Agent 用量 with Codex signed in.<span class="pass">Codex row shows your plan; window names match it (a weekly limit reads 周额度, never 5h); source line reads 官方数据. If it shows 会话快照 with an HTTP code instead, note the code: that answers the curl.exe question in D3.</span></div></div>
+  <div class="t"><b>U2</b><div>Temporarily rename <code>%USERPROFILE%\.codex\auth.json</code> in the isolated profile.<span class="pass">Panel shows 会话快照 and 未找到Codex登录凭证，使用本地快照; nothing else changes. Rename it back.</span></div></div>
+  <div class="t"><b>U3</b><div>Disconnect the network and wait for a refresh, then reconnect.<span class="pass">Old numbers stay, marked 上次成功值 with the reason; values recover on their own after reconnecting.</span></div></div>
+  <div class="t"><b>U4</b><div>System proxy on, no <code>HTTP_PROXY</code> variables, FanBox started from the Start menu.<span class="pass">Official data still loads for Claude and Codex.</span></div></div>
+  <div class="t"><b>U5</b><div>Expand both token breakdowns and wait past one 60-second refresh.<span class="pass">Five rows plus hit rate for each period; the expanders stay open after the refresh.</span></div></div>
+  <div class="t"><b>U6</b><div>Point the profile at a large Claude log folder (the campaign generates about 500 MB).<span class="pass">Panel shows 正在统计本地token… and then numbers; typing in a terminal tab stays responsive throughout.</span></div></div>
+  <div class="t"><b>U7</b><div>Switch FanBox to English and repeat U1–U3.<span class="pass">No Chinese anywhere in the panel, including error lines.</span></div></div>
+</div>
+
+<div class="group-h"><h4>S · Quota line in Claude Code</h4><span class="chip">D1 D2</span></div>
+<div class="tests">
+  <div class="t"><b>S1</b><div>One-click 启动 Claude Code and send one prompt.<span class="pass">The line under the prompt shows the quota (Chinese or English per D2); the panel's Claude source reads CLI实时回传 · 刚刚.</span></div></div>
+  <div class="t"><b>S2</b><div>Keep that session working for about 10 minutes with Task Manager open.<span class="pass">No second FanBox window ever appears; no leftover <code>FanBox.exe</code> processes beyond the app's own; each status refresh finishes in under 1 s (<code>claude --debug</code> log).</span></div></div>
+  <div class="t"><b>S3</b><div>Add your own <code>statusLine</code> to the isolated <code>~/.claude/settings.json</code>: first a bash script <code>~/.claude/statusline.sh</code>, then <code>powershell -NoProfile -File C:/…/statusline.ps1</code>. Restart the session.<span class="pass">Your script's text replaces the quota text in both cases; the panel still receives live numbers.</span></div></div>
+  <div class="t"><b>S4</b><div>Type <code>claude</code> yourself in a FanBox tab.<span class="pass">Behaves as in 2.16.1; no FanBox quota line.</span></div></div>
+  <div class="t"><b>S5</b><div>Campaign launch with Git removed from PATH.<span class="pass">FanBox's hook file contains no status line; one-click Claude starts normally; the panel polls the official API.</span></div></div>
+  <div class="t"><b>S6</b><div>Isolated home under a path with a space and Chinese characters (for example <code>E:\fanbox test\用户</code>).<span class="pass">S1 passes. A home path containing an apostrophe gets no status line, by design.</span></div></div>
+</div>
+
+<div class="group-h"><h4>W · File changes under load</h4></div>
+<div class="tests">
+  <div class="t"><b>W1</b><div>The campaign writes 2,000 files into a watched project within 10 seconds.<span class="pass">Typing in another terminal tab stays responsive; card heat and 本回合 entries appear; the list catches up within about 2 s after the burst.</span></div></div>
+  <div class="t"><b>W2</b><div>Rewrite one file 100 times with identical content.<span class="pass">One change notification, not 100.</span></div></div>
+  <div class="t"><b>W3</b><div>Only open and read a file (preview, Explorer).<span class="pass">No "changed" marker.</span></div></div>
+  <div class="t"><b>W4</b><div>Delete a file to the Recycle Bin from Explorer; write into <code>node_modules</code>; write <code>sub\a.ts</code>.<span class="pass">Delete shows as a change; node_modules stays silent; <code>sub</code> lights up.</span></div></div>
+</div>
+
+<div class="group-h"><h4>R · Update check</h4><span class="chip">D5</span></div>
+<div class="tests">
+  <div class="t"><b>R1</b><div>Go offline and use 检查更新… in Chinese, then in English.<span class="pass">Dialog shows the reason and 打开下载页 / Open download page; the button opens <code>github.com/Emberwhirl/fanbox/releases/latest</code>.</span></div></div>
+  <div class="t"><b>R2</b><div>After publishing: the campaign's pretend-2.16.1 build, then the real 2.17.0.<span class="pass">The older build offers 2.17.0 with 下载更新 (only when both exact files exist); 2.17.0 reports up to date.</span></div></div>
+</div>
+
+<div class="group-h"><h4>X · Regression smoke</h4><span class="chip">unchanged features</span></div>
+<div class="tests">
+  <div class="t"><b>X1</b><div>One-click Claude: permission prompt lights the tab and 指挥台; Codex launch still receives its notify argument intact; <kbd>Ctrl+Alt+M</kbd>; snapshot rollback; the Markdown XSS fixture stays inert; quitting mid-turn asks, idle quit does not.<span class="pass">Same results as on 2.16.1.</span></div></div>
+</div>
+
+<div class="group-h"><h4>G · Packages</h4><span class="chip">after authorization</span></div>
+<div class="tests">
+  <div class="t"><b>G1</b><div>Install the NSIS build into a path with spaces and Chinese characters; run the portable from another drive.<span class="pass">Both start; About shows 2.17.0; S1 passes from both (the portable's status line points at its unpacked copy).</span></div></div>
+  <div class="t"><b>G2</b><div>Package audit.<span class="pass">The app archive contains <code>lib/</code> (three files) and excludes <code>tests/</code>, <code>发布/</code>, <code>docs/</code>, <code>experiments/</code>; the token breakdown appears in the packaged build (the background thread loads from inside the archive).</span></div></div>
+  <div class="t"><b>G3</b><div>Upgrade over installed 2.16.1; uninstall.<span class="pass">No duplicate shortcuts; profile kept; uninstall keeps <code>~/.fanbox</code>.</span></div></div>
+</div>
+
+<!-- ================================================================ -->
+<h2 id="scope">4 · Goals, deliverables, boundaries</h2>
+<div class="pair">
+  <div>
+    <h4>Goals</h4>
+    <ol class="small">
+      <li>A real two-parent merge of upstream 2.17.0 into <code>dev</code>, with every Windows branch intact.</li>
+      <li>Every 2.17.0 feature works on Windows, or is off because a decision above says so.</li>
+      <li>macOS/Linux code byte-identical to <code>master</code> except the shared edits listed in 6.7.</li>
+      <li>No Chinese in English mode for anything new.</li>
+      <li>Upstream's <code>npm test</code> green on Linux and Windows (14/14), plus Windows contract tests.</li>
+      <li>Release 2.17.0 with the two installers.</li>
+    </ol>
+  </div>
+  <div>
+    <h4>Deliverables</h4>
+    <ol class="small">
+      <li>Commits on <code>dev</code> with English messages; the last one ends <code>+ release 2.17.0</code>.</li>
+      <li>CHANGELOG: upstream's 2.17.0 entry verbatim plus a <code>### Windows port</code> subsection.</li>
+      <li>README top section moved to 2.17.0 (the part below the divider stays identical to upstream); CLAUDE.md updated (<code>npm test</code> now exists, bridge notes).</li>
+      <li>New campaign <code>experiments/win-v2170-usage-202610/</code>.</li>
+      <li>Release on this fork with the two files and recorded hashes.</li>
+    </ol>
+  </div>
+</div>
+<h4>Out of scope</h4>
+<p class="small">macOS packaging, ARM64, silent auto-update on Windows, redesigning upstream's usage panel, a quota line when Git Bash is missing, dependency upgrades beyond upstream's lockfile.</p>
+<h4>Checkpoints</h4>
+<p class="small">Approving this plan authorizes nothing by itself. "Begin implementation" covers safety refs, the merge, code, tests, docs and local commits on <code>dev</code> up to a frozen candidate. Each of these needs its own instruction: fast-forward of <code>windows</code>, any push, packaging, tagging, the draft release, publication. No force-push; a pushed tag or published release is fixed forward, never rewritten.</p>
+
+<!-- ================================================================ -->
+<h2 id="phases">5 · Phases and gates</h2>
+<div class="flow">
+  <div><b>0 · Merge</b>safety refs, two-parent merge, resolve 2 hunks</div>
+  <div><b>1 · Windows branches</b>bridge, update check, curl, dictionary</div>
+  <div><b>2 · Linux gate</b>syntax, <code>npm test</code>, contracts, smoke → candidate</div>
+  <div class="you"><b>3 · Windows gate</b><span class="chip you">you</span> groups U S W R X</div>
+  <div class="you"><b>4 · Package</b><span class="chip you">you</span> build, audit, G1–G3</div>
+  <div class="you"><b>5 · Publish</b><span class="chip you">you</span> tag, draft, verify, publish, R2</div>
+</div>
+<p class="small">Any code change after the candidate is frozen makes a new candidate and repeats phases 2 and 3. A rebuild after hashing repeats phase 4.</p>
+
+<!-- ================================================================ -->
+<h2 id="eng">6 · Engineering appendix</h2>
+<p class="muted small">You said you trust me here. It is written down so the work can be checked against it.</p>
+
+<h3>6.1 · Upstream 2.17.0 inventory</h3>
+<div class="tbl"><table>
+  <thead><tr><th>Area</th><th>Upstream change</th><th>Windows impact</th><th>Action</th></tr></thead>
+  <tbody>
+    <tr><td><code>main.js</code> <code>writeHookFiles</code></td><td>Copies <code>lib/claude-statusline.cjs</code> to <code>~/.fanbox/hooks/</code>, adds <code>statusLine</code> to the hook file. Includes a win32 command <code>set ELECTRON_RUN_AS_NODE=1&amp;&amp;"exe" "script"</code>.</td><td>Auto-merged into the POSIX part only; the Windows branch returns earlier, so Windows gets no bridge. The win32 string is unreachable and wrong anyway (6.4).</td><td>Windows branch (6.4)</td></tr>
+    <tr><td><code>main.js</code> update check</td><td>12 s timeouts, <code>latestReleaseError</code>, failure dialog with "Open download page".</td><td>Conflict with the fork's <code>REL_REPO</code>; upstream's test slices <code>const REL_PAGE</code>…<code>let pendingUpdate</code> and fails on the fork's code.</td><td>Restructure (6.5)</td></tr>
+    <tr><td><code>main.js</code> watcher + <code>lib/watch-batcher.js</code></td><td>Dedupe by <code>dir+filename</code>, 400 ms window, queue cap 256 + per-dir overflow, 16 parallel stats, signature <code>ino:size:mtime</code>, async dir-gone cleanup.</td><td>Platform-neutral; the fork's <code>watchNoisy</code> (split on <code>[\\/]</code>) survives the merge.</td><td>Test W only</td></tr>
+    <tr><td><code>preload.js</code> <code>onChanged</code></td><td>Renderer-side drain, 32 per tick, 512 cap with overflow marker.</td><td>Neutral.</td><td>None</td></tr>
+    <tr><td><code>server.js</code> usage</td><td>Token stats in a <code>worker_threads</code> worker (<code>lib/agent-tokens.js</code>); <code>CLAUDE_CONFIG_DIR</code>/<code>CODEX_HOME</code>; <code>usageRequest</code> via curl with status codes; <code>cachedOfficial</code> backoff; <code>codexOfficialLimits</code>; token-gated <code>POST /api/agent/usage</code>.</td><td>Conflict at the curl call (the fork uses an absolute <code>curl.exe</code> and <code>winSpawnEnv()</code>). Worker runs inside the utility-process backend and, when packaged, from <code>app.asar</code>.</td><td>Resolve (6.2); verify G2</td></tr>
+    <tr><td><code>server.js</code> <code>codexUsage</code></td><td><code>limit_id</code> filter; stale windows keep their percent.</td><td>Neutral.</td><td>None</td></tr>
+    <tr><td><code>lib/claude-statusline.cjs</code></td><td>Bridge: POSTs limits to <code>$FANBOX_CTL/usage</code>, then runs the user's own <code>statusLine</code> with <code>spawnSync(cmd, {shell:true})</code>.</td><td><code>shell:true</code> means <code>cmd.exe</code> on Windows, but Claude Code runs status lines in Git Bash, so user scripts would break inside FanBox sessions.</td><td>Windows branch (6.4)</td></tr>
+    <tr><td><code>app.js</code></td><td>Usage panel rewrite; <code>refresh()</code> race guard; fs refresh scheduler (750 ms, no overlap); <code>igniteCard</code> throttle.</td><td>About 40 new Chinese strings. The fork's <code>joinPath</code> arms in the change handler auto-merged intact.</td><td>Dictionary (D4)</td></tr>
+    <tr><td><code>style.css</code></td><td>Usage detail styles.</td><td>None.</td><td>None</td></tr>
+    <tr><td><code>tests/</code></td><td><code>node:test</code> suite (14 tests) + a Playwright UI script.</td><td>1 test fails on the port (update check).</td><td>6.5; run suite on both OSes</td></tr>
+    <tr><td><code>package.json</code></td><td><code>test</code> script; <code>tests/</code> and <code>发布/</code> excluded from packages.</td><td>Merges cleanly with <code>dist:win</code>. <code>node --test tests/*.test.js</code> works under cmd.exe because Node 21+ expands the glob itself.</td><td>None</td></tr>
+    <tr><td>README, CHANGELOG, <code>.gitignore</code></td><td>Upstream text.</td><td>Lower README must stay verbatim (auto-merge keeps it).</td><td>Update fork section</td></tr>
+  </tbody>
+</table></div>
+
+<h3>6.2 · Trial merge and the two conflicts</h3>
+<p class="small">Run in a detached scratch worktree (<code>git merge --no-commit master</code> on <code>a778a1f</code>); <code>dev</code> was not touched. Everything else auto-merged, including <code>app.js</code> and the CHANGELOG (upstream's 2.17.0 entry lands above the 2.16.1 Windows port subsection).</p>
+<div class="tbl"><table>
+  <thead><tr><th>Hunk</th><th>Resolution</th></tr></thead>
+  <tbody>
+    <tr><td><code>electron/main.js</code> before <code>fetchLatestRelease</code> (fork <code>REL_REPO</code>/<code>REL_PAGE</code>/<code>hasWinInstallerAsset</code> vs upstream <code>REL_PAGE</code> literal + <code>latestReleaseError</code>)</td><td>Take upstream's side verbatim, then move the fork's logic into a separate Windows function (6.5). With both sides combined inline, 13/14 tests pass; the restructure is what makes 14/14.</td></tr>
+    <tr><td><code>server.js</code> curl call (fork's <code>claudeOfficialLimits</code> body vs upstream's <code>usageRequest</code> + <code>cachedOfficial</code> + <code>codexOfficialLimits</code>)</td><td>Take upstream's side; inside <code>usageRequest</code> use <code>PLATFORM === 'win32' ? (winFindExe('curl') || path.join(WIN_SYS32, 'curl.exe')) : 'curl'</code> and add <code>env: winSpawnEnv()</code>, <code>windowsHide: true</code>. The absolute path matters because the token travels on that process's stdin. Syntax-checked in the trial.</td></tr>
+  </tbody>
+</table></div>
+
+<h3>6.3 · Silent issues (auto-merged, wrong or missing on Windows)</h3>
+<div class="tbl"><table>
+  <thead><tr><th>#</th><th>Problem</th><th>Fix</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>No bridge on Windows: <code>writeHookFiles</code>' Windows branch writes <code>claudeHttpHookSettings(PORT)</code> and returns before upstream's new lines.</td><td>6.4 (D1)</td></tr>
+    <tr><td>2</td><td>Upstream's win32 status command is cmd syntax. Claude Code never uses cmd for status lines. Under Git Bash, <code>set</code> exports nothing, so <code>FanBox.exe</code> starts as a full app on every refresh; <code>main.js</code> has no single-instance lock, so each run opens a window and retries port 4567. Under PowerShell 5.1, <code>&amp;&amp;</code> is a parse error.</td><td>Never emit it on Windows; Windows command from a helper (6.4)</td></tr>
+    <tr><td>3</td><td>The bridge runs the user's own status line through <code>cmd.exe</code>.</td><td>Windows branch runs it through Git Bash (6.4)</td></tr>
+    <tr><td>4</td><td>New UI strings and server quota errors have no dictionary entries.</td><td>Keys + <code>FANBOX_DICT_RULES</code> for dynamic ones (6.6)</td></tr>
+    <tr><td>5</td><td>Update-failure reasons are Chinese in a native dialog.</td><td><code>M()</code> in the Windows branch (D5)</td></tr>
+    <tr><td>6</td><td>Upstream's update-check test fails against the fork's code.</td><td>6.5</td></tr>
+    <tr><td>7</td><td>Bridge text <code>周</code> ignores FanBox's language.</td><td>D2 branch</td></tr>
+    <tr><td>8</td><td>CLAUDE.md says there is no test framework.</td><td>Document <code>npm test</code></td></tr>
+  </tbody>
+</table></div>
+
+<h3>6.4 · The status-line bridge on Windows</h3>
+<p class="small"><b>Facts it rests on</b> (Claude Code status-line docs, checked today): on Windows the command runs through Git Bash when installed, otherwise PowerShell; Git Bash eats unquoted backslashes, so paths must use forward slashes; status lines have no exec form and no <code>shell</code> field (hooks do). The script runs on events (session start, each new assistant message, mode changes), debounced at 300 ms, and an in-flight run is cancelled by the next.</p>
+<h4>Command</h4>
+<pre><code>ELECTRON_RUN_AS_NODE=1 'C:/Users/u/AppData/Local/Programs/FanBox/FanBox.exe' 'C:/Users/u/.fanbox/hooks/claude-statusline.cjs'</code></pre>
+<ul class="tight small">
+  <li>Built by a pure helper <code>winStatusLineCommand(execPath, scriptPath)</code> in <code>win-port-helpers.js</code>: backslashes to forward slashes, each path in single quotes. Returns <code>null</code> if either path contains <code>'</code>, so no status line is written; spaces, <code>$</code>, backticks and CJK are safe inside single quotes.</li>
+  <li>Emitted only when <code>winGitBash()</code> finds bash, in Claude Code's own order: <code>CLAUDE_CODE_GIT_BASH_PATH</code> (from the merged registry environment the PTYs inherit), then <code>git.exe</code> via the existing PATH walk mapped to <code>&lt;git root&gt;\bin\bash.exe</code> (handles <code>cmd\</code>, <code>bin\</code>, <code>mingw64\bin\</code>), then <code>%ProgramFiles%\Git\bin\bash.exe</code>.</li>
+  <li>If detection disagrees with Claude Code and PowerShell runs the line, it fails with "term not recognized": the status line is blank and nothing is launched. The failure mode is harmless by construction.</li>
+  <li><code>claudeHttpHookSettings(PORT, { statusLine })</code> gains an optional second argument; the Windows branch copies the bridge script from the app (works from <code>app.asar</code>) before writing the file. The file stays token-free.</li>
+  <li>Portable build: <code>process.execPath</code> is the unpacked copy in <code>%TEMP%</code>, valid while FanBox runs; the file is rewritten at each launch. Never <code>PORTABLE_EXECUTABLE_FILE</code>, which would re-extract on every refresh.</li>
+  <li><code>ELECTRON_RUN_AS_NODE</code> already works in this build (the WeChat driver and Codex launch use it).</li>
+</ul>
+<h4>Behavior under each shell</h4>
+<div class="tbl"><table>
+  <thead><tr><th>Shell Claude Code uses</th><th>Windows command above</th><th>Upstream's win32 string</th></tr></thead>
+  <tbody>
+    <tr><td>Git Bash</td><td><span class="chip ok">works</span> FanBox runs as Node, bridge prints quota</td><td><span class="chip risk">harmful</span> full FanBox launch per refresh</td></tr>
+    <tr><td>PowerShell (no Git Bash)</td><td>not written (detection finds no bash)</td><td>parse error</td></tr>
+    <tr><td>PowerShell (detection mismatch)</td><td>parse error, blank line, nothing launched</td><td>parse error</td></tr>
+  </tbody>
+</table></div>
+<h4>Windows branch inside <code>lib/claude-statusline.cjs</code></h4>
+<ul class="tight small">
+  <li><b>Chaining:</b> when <code>process.platform === 'win32'</code> and bash is found, run the user's command as <code>spawnSync(bash, ['-c', command], { input, cwd, env without ELECTRON_RUN_AS_NODE, timeout: 3000, windowsHide: true, maxBuffer })</code>, so it runs exactly as Claude Code would run it. Bash detection is inline (about 15 lines), because the copied file cannot <code>require</code> the helpers. If bash is not found, it falls back to upstream's line. The POSIX lines stay byte-identical.</li>
+  <li><b>Label (D2a):</b> Windows-only; read <code>lang</code> from <code>~/.fanbox/config.json</code>, else <code>Intl</code> locale; English uses <code>7d</code>.</li>
+  <li>Upstream's loop guard (a command containing <code>claude-statusline.cjs</code> is skipped) and its "only the two limit numbers leave the process" rule are unchanged.</li>
+</ul>
+
+<h3>6.5 · Update check: parallel Windows function</h3>
+<ul class="tight small">
+  <li>Upstream's <code>const REL_PAGE = '…alchaincyf…'</code>, <code>latestReleaseError</code> and <code>fetchLatestRelease()</code> stay byte-identical, so upstream's test passes and future merges stop conflicting here.</li>
+  <li>The fork's exact-pair logic moves to <code>fetchLatestReleaseWin()</code> + <code>WIN_REL_PAGE</code>, defined after <code>let pendingUpdate</code>. <code>checkUpdate</code> picks <code>IS_WIN ? fetchLatestReleaseWin() : fetchLatestRelease()</code>; the failure dialog's page and reason use Windows values on Windows (D5). The macOS path is unchanged, and the diff against <code>master</code> in this region gets smaller than today.</li>
+  <li>The Windows asset rule is unchanged: offer only when <code>FanBox-&lt;ver&gt;-win-x64.exe</code> and <code>-portable.exe</code> both exist, via the API list or exact-URL probes.</li>
+</ul>
+
+<h3>6.6 · Dictionary</h3>
+<p class="small">Static keys for fixed strings. <code>FANBOX_DICT_RULES</code> regexes for the composed text nodes: <code>(\d+)天窗口</code>, <code>([\d.]+)h窗口</code>, <code>(.+)：待更新（旧窗口已结束）</code>, <code>重置卡：(\d+)张( · 当前适用(\d+)张)?</code>, <code>额度接口HTTP (\d+)</code>, <code>(官方数据|会话快照|CLI实时回传) · (.+)</code> (reusing the existing "N 分钟前" rules for the tail), <code>(近5h|今日|近7天) · (.+) token</code>, <code>已记录 (.+)</code>, and the update-check reason fragments. A contract test renders the panel from fixtures in English and fails on any CJK character left in <code>#usage-body</code>.</p>
+
+<h3>6.7 · Golden-rule ledger (shared code touched)</h3>
+<div class="tbl"><table>
+  <thead><tr><th>File</th><th>Shared edit</th><th>Why acceptable</th></tr></thead>
+  <tbody>
+    <tr><td><code>lib/claude-statusline.cjs</code></td><td>Windows-only branches for chaining shell and label</td><td>POSIX statements unchanged; branch on <code>process.platform</code></td></tr>
+    <tr><td><code>electron/main.js</code></td><td><code>checkUpdate</code> picks the Windows fetcher/page on Windows</td><td>Replaces today's larger inline divergence; upstream function verbatim</td></tr>
+    <tr><td><code>server.js</code></td><td>Platform ternary for the curl path and env inside <code>usageRequest</code></td><td>Same pattern the fork already used in this spot</td></tr>
+    <tr><td><code>public/i18n-dict.js</code></td><td>New keys and rules</td><td>Additive</td></tr>
+    <tr><td><code>win-port-helpers.js</code></td><td><code>winGitBash</code>, <code>winStatusLineCommand</code>, <code>claudeHttpHookSettings</code> option</td><td>Windows-only file</td></tr>
+  </tbody>
+</table></div>
+<p class="small">The parity scanner gets these classified. README below the divider and <code>skills/fanbox-agent/SKILL.md</code> stay byte-identical to <code>master</code>.</p>
+
+<h3>6.8 · Tests and the Linux gate</h3>
+<ul class="tight small">
+  <li><b>Upstream suite:</b> <code>npm test</code>, 14 tests. Trial on Linux: 13 pass, the update-check test fails (<code>REL_REPO is not defined</code>). Target 14/14 on Linux and on Windows; on Windows the bridge test exercises the Git Bash chaining branch (<code>printf</code> exists only in bash). Upstream's <code>tests/ui-usage.cjs</code> runs once on Windows with Chrome.</li>
+  <li><b>New campaign</b> <code>experiments/win-v2170-usage-202610/</code>: <code>contract.test.js</code> (Linux) covers hook-file shape with and without bash, no token literal, forward slashes, quote rules, apostrophe returns <code>null</code>, <code>winGitBash</code> against fake directory trees, the bridge's Windows branch with an injected platform, the D2 label, <code>fetchLatestReleaseWin</code> exact-pair cases, and English coverage of the usage panel. <code>playwright-electron.js</code> (Windows) runs a stand-in <code>claude</code> that executes the hook file's <code>statusLine</code> through the real Git Bash with sample JSON and checks the output, the POST to <code>/api/agent/usage</code>, and the panel's source line; it also drives U/W/R with fixtures.</li>
+  <li><b>Gate checklist:</b> <code>node --check</code> on every JS file; <code>git diff --check</code>; server smoke (<code>FANBOX_NO_OPEN=1 FANBOX_PORT=45991 node server.js</code> → <code>/</code> and <code>/api/skills/builtin</code> 200, <code>/api/agent/terminals</code> 501, <code>/api/agent-usage</code> 200 JSON); existing campaigns' Linux parts; parity scanner; README/skill byte checks; one <code>files</code> key; clean tree on the frozen commit.</li>
+</ul>
+
+<h3>6.9 · Risks</h3>
+<div class="tbl"><table>
+  <thead><tr><th>Risk</th><th>How we'd see it</th><th>Fallback</th></tr></thead>
+  <tbody>
+    <tr><td>Claude Code changes how it runs status lines on Windows</td><td>S1/S2</td><td>D1(b): drop the status line from the Windows hook file</td></tr>
+    <tr><td><code>chatgpt.com</code> refuses Windows' <code>curl.exe</code></td><td>U1 shows 会话快照 + HTTP code</td><td>Automatic snapshot fallback; optionally prefer Git's curl if it passes</td></tr>
+    <tr><td>Codex keeps its login in Credential Manager (no <code>auth.json</code>)</td><td>U1/U2</td><td>Automatic snapshot fallback</td></tr>
+    <tr><td>Worker fails to load from <code>app.asar</code></td><td>G2: breakdown missing in package</td><td><code>asarUnpack</code> for <code>lib/agent-tokens.js</code></td></tr>
+    <tr><td>Status refresh slower than 1 s (Electron-as-Node start-up)</td><td>S2 timing</td><td>Use <code>node.exe</code> when present; keep FanBox.exe otherwise</td></tr>
+    <tr><td>Watcher dedupe hides a real write (same size and mtime)</td><td>W1/W2</td><td>Report upstream; NTFS mtime resolution makes it unlikely</td></tr>
+  </tbody>
+</table></div>
+
+<!-- ================================================================ -->
+<h2 id="log">7 · Log</h2>
+<h4>Baseline (2026-10-18)</h4>
+<div class="tbl"><table>
+  <thead><tr><th>Ref</th><th>Commit</th></tr></thead>
+  <tbody>
+    <tr><td><code>dev</code></td><td><code>a778a1f017fcd23e8b30eab1bb90c52d13a62933</code></td></tr>
+    <tr><td><code>windows</code> = <code>github/windows</code> = tag <code>v2.16.1</code></td><td><code>dbf40d839ed5085fd4342630aae937da0956a37d</code></td></tr>
+    <tr><td><code>master</code> = <code>github/master</code> (upstream 2.17.0)</td><td><code>e8395cb3043c90715651f20073a27580673b467a</code></td></tr>
+    <tr><td>merge base</td><td><code>0394dae502b7e11ba261fccda189d17ccd184fec</code> (upstream 2.16.1)</td></tr>
+  </tbody>
+</table></div>
+<p class="small">Remotes: <code>github</code> = Emberwhirl/fanbox only (the stale <code>upstream</code> remote was removed today at your request). Toolchain here: Node 24.15, Electron 33.4.11.</p>
+<h4>Deviations</h4>
+<p class="small muted">None yet.</p>
+<h4>Work log</h4>
+<ul class="tight small">
+  <li>2026-10-18: reviewed the upstream 2.16.1 → 2.17.0 diff and the port's Windows branches; checked Claude Code's Windows status-line behavior against its docs; trial merge in a scratch worktree (2 conflicts; 13/14 upstream tests with a naive resolution); wrote this plan. <code>dev</code> code untouched.</li>
+</ul>
+
+</div>
+
+<script>
+(function () {
+  var zh = document.getElementById('lang-zh');
+  var en = document.getElementById('lang-en');
+  var box = document.getElementById('usage-mock');
+  if (!zh || !en || !box) return;
+  function set(lang) {
+    box.querySelectorAll('[data-zh]').forEach(function (el) { el.textContent = el.getAttribute('data-' + lang); });
+    zh.setAttribute('aria-pressed', String(lang === 'zh'));
+    en.setAttribute('aria-pressed', String(lang === 'en'));
+  }
+  zh.addEventListener('click', function () { set('zh'); });
+  en.addEventListener('click', function () { set('en'); });
+})();
+</script>
+
+</body>
+</html>
