@@ -59,7 +59,21 @@ function writeHookFiles() {
       // D2: HTTP hook — no shell, token only via env/header interpolation.
       // D3 argv: write codex-notify.js; FanBox-launched Codex is pty.spawn'd with a real
       // argv (buildCodexSpawnSpec) so PowerShell never sees `-c notify=[…]`.
-      fs.writeFileSync(path.join(dir, 'claude-settings.json'), JSON.stringify(winHelpers.claudeHttpHookSettings(PORT), null, 2) + '\n');
+      // 2.17.0 status-line bridge: Claude Code runs status lines through Git Bash (never cmd), so
+      // the command is only emitted when Git Bash is found. writeHookFiles runs after the registry
+      // PATH merge in whenReady, so winGitBash(process.env) sees the same env the PTYs inherit.
+      // Any failure leaves statusLine out (2.16.1 behavior) instead of breaking one-click launch.
+      let statusLine = null;
+      try {
+        const script = path.join(dir, 'claude-statusline.cjs');
+        const cmd = winHelpers.winGitBash(process.env) ? winHelpers.winStatusLineCommand(process.execPath, script) : null;
+        if (cmd) {
+          // read+write (not copyFileSync) so the source may live inside app.asar
+          fs.writeFileSync(script, fs.readFileSync(path.join(__dirname, '..', 'lib', 'claude-statusline.cjs')));
+          statusLine = cmd;
+        }
+      } catch (e) { console.error('[fanbox] status-line bridge skipped:', e.message); }
+      fs.writeFileSync(path.join(dir, 'claude-settings.json'), JSON.stringify(winHelpers.claudeHttpHookSettings(PORT, { statusLine }), null, 2) + '\n');
       fs.writeFileSync(path.join(dir, 'codex-notify.js'), winHelpers.buildCodexNotifyJs());
       return;
     }

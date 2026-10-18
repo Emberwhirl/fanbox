@@ -372,7 +372,7 @@ function stripTrailingSeps(p, win) {
   return String(p).replace(win ? /[\\/]+$/ : /\/+$/, '');
 }
 
-function claudeHttpHookSettings(port) {
+function claudeHttpHookSettings(port, opts) {
   const p = Number(port) || 4567;
   const hook = {
     type: 'http',
@@ -388,7 +388,56 @@ function claudeHttpHookSettings(port) {
     hooks[ev] = on('*');
   }
   hooks.PostToolUse = on('Edit|Write|MultiEdit|NotebookEdit|Bash');
+  // 2.17.0 status-line bridge: same shape as upstream's statusLine; only when the caller
+  // found Git Bash (Claude Code runs status lines through it) and built a safe command.
+  if (opts && typeof opts.statusLine === 'string' && opts.statusLine) {
+    return { hooks: hooks, statusLine: { type: 'command', command: opts.statusLine } };
+  }
   return { hooks: hooks };
+}
+
+// Command Claude Code runs for the status line on Windows. Claude Code uses Git Bash
+// (PowerShell only when Git Bash is missing), never cmd, and Git Bash eats unquoted
+// backslashes: forward slashes plus single quotes. Returns null when a path is empty or
+// holds a single quote (cannot be quoted safely) so the caller omits the status line.
+// Spaces, $, backticks and CJK are literal inside single quotes.
+function winStatusLineCommand(execPath, scriptPath) {
+  const a = String(execPath || ''), b = String(scriptPath || '');
+  if (!a || !b || a.indexOf("'") >= 0 || b.indexOf("'") >= 0) return null;
+  const fwd = (s) => "'" + s.replace(/\\/g, '/') + "'";
+  return 'ELECTRON_RUN_AS_NODE=1 ' + fwd(a) + ' ' + fwd(b);
+}
+
+// Locate Git Bash in Claude Code's own order: CLAUDE_CODE_GIT_BASH_PATH, then git.exe on
+// PATH mapped to <git root>\bin\bash.exe (git.exe lives in <root>\cmd, <root>\bin or
+// <root>\mingw64\bin), then %ProgramFiles%\Git\bin\bash.exe. Returns the absolute path
+// or null. io.exists is injectable and path.win32 is used so Linux tests match Windows.
+function winGitBash(env, io) {
+  const e = env || process.env;
+  const exists = (io && io.exists) || ((f) => fs.existsSync(f));
+  const ok = (f) => { try { return !!f && exists(f); } catch { return false; } };
+  // Windows env names are case-insensitive; a spread copy of process.env keeps the real case.
+  const get = (k) => {
+    if (e[k]) return String(e[k]);
+    const hit = Object.keys(e).find((x) => x.toLowerCase() === k.toLowerCase());
+    return hit && e[hit] ? String(e[hit]) : '';
+  };
+  const override = get('CLAUDE_CODE_GIT_BASH_PATH');
+  if (ok(override)) return override;
+  const git = winFindOnPath('git', e, { exists: exists });
+  if (git) {
+    const dir = win32.dirname(git);
+    for (const up of [['..'], ['..', '..']]) {
+      const cand = win32.join.apply(win32, [dir].concat(up, ['bin', 'bash.exe']));
+      if (ok(cand)) return cand;
+    }
+  }
+  for (const k of ['ProgramFiles', 'ProgramW6432']) {
+    const base = get(k);
+    const cand = base ? win32.join(base, 'Git', 'bin', 'bash.exe') : '';
+    if (ok(cand)) return cand;
+  }
+  return null;
 }
 
 function claudeSettingsFlag(settingsPath) {
@@ -419,8 +468,11 @@ function codexNotifyArgv(nodeExe, scriptPath) {
 
 // Pure-Node PATH walk (PATHEXT). Same rules as electron/wechat/driver.js winFindOnPath:
 // no where.exe / Get-Command (OEM codepage mangles CJK user names).
-function winFindOnPath(name, env) {
+function winFindOnPath(name, env, io) {
   const e = env || process.env;
+  // Optional io.exists makes the walk testable off Windows: it also switches to path.win32.
+  const P = io && io.exists ? win32 : path;
+  const has = io && io.exists ? io.exists : (f) => fs.existsSync(f);
   const dirs = String(e.Path || e.PATH || '').split(';').map((s) => {
     let t = s.trim();
     if (t.length >= 2 && ((t[0] === '"' && t[t.length - 1] === '"') || (t[0] === "'" && t[t.length - 1] === "'"))) {
@@ -432,13 +484,13 @@ function winFindOnPath(name, env) {
   const hasExt = /\.[^\\/.]+$/.test(name);
   for (const d of dirs) {
     if (hasExt) {
-      const f = path.join(d, name);
-      try { if (fs.existsSync(f)) return f; } catch { /* */ }
+      const f = P.join(d, name);
+      try { if (has(f)) return f; } catch { /* */ }
       continue;
     }
     for (const ext of exts) {
-      const f = path.join(d, name + ext);
-      try { if (fs.existsSync(f)) return f; } catch { /* */ }
+      const f = P.join(d, name + ext);
+      try { if (has(f)) return f; } catch { /* */ }
     }
   }
   return null;
@@ -612,6 +664,8 @@ module.exports = {
   pathInDir,
   stripTrailingSeps,
   claudeHttpHookSettings,
+  winStatusLineCommand,
+  winGitBash,
   claudeSettingsFlag,
   codexNotifyFlag,
   codexNotifyArgv,
