@@ -477,6 +477,41 @@ window.FANBOX_DICT = {
   '本周': 'this week',
   'token 总量 · 本地会话日志统计': 'Total tokens · from local session logs',
   '没找到 Claude Code / Codex 的本机会话记录': 'No local Claude Code / Codex session logs found',
+  // 2.17.0 用量面板重写：窗口标签 / 来源行 / token 明细 / 额度错误（窗口 N 天、重置卡、HTTP 状态码等动态文案见下方 FANBOX_DICT_RULES）
+  '周额度': 'Weekly limit',
+  '5h窗口': '5h window',
+  '额度窗口': 'Limit window',
+  '上次成功值': 'last good value',
+  '官方数据': 'Official data',
+  '会话快照': 'Session snapshot',
+  'CLI实时回传': 'Live from CLI',
+  '重置卡信息暂不可用': 'Reset credit info unavailable',
+  '失效时间、使用记录：接口未提供': 'Expiry and usage history: not provided by the API',
+  'token明细与缓存命中率': 'Token details and cache hit rate',
+  '近7天': 'last 7 days',
+  '仅本机会话日志（含子agent），非账号账单': 'Local session logs only (subagents included), not your account bill',
+  '部分文件读取失败': 'some files could not be read',
+  '输入缓存命中率': 'Input cache hit rate',
+  '未缓存输入': 'Uncached input',
+  '缓存读取': 'Cache read',
+  '缓存写入': 'Cache write',
+  '输出': 'Output',
+  '其中推理': 'Reasoning (part of output)',
+  '日志未提供': 'Not in logs',
+  '未提供': 'n/a',
+  '命中率＝缓存读取÷全部输入。推理包含在输出内，不重复相加。复用稳定的上下文前缀、避免反复粘贴大段内容，有助于利用缓存；具体额度消耗以官方为准。': 'Hit rate = cache read ÷ all input. Reasoning is counted inside output, not added twice. A stable context prefix and not re-pasting large blocks help the cache. Actual quota use is whatever the vendor reports.',
+  '正在统计本地token…': 'Counting local tokens…',
+  '本地token统计暂不可用': 'Local token stats unavailable',
+  '读取失败，稍后重试': "Couldn't load. Try again shortly.",
+  '刷新失败，保留上次数据': 'Refresh failed. Showing the last data.',
+  // 额度接口错误（server.js 的 usageRequest / claudeOfficialLimits / codexOfficialLimits，原样显示在面板里）
+  '登录凭证已过期，请在CLI重新登录': 'Login expired. Sign in again in the CLI.',
+  '未找到有效登录凭证，请在Claude Code重新登录': 'No valid login found. Sign in again in Claude Code.',
+  '未找到Codex登录凭证，使用本地快照': 'No Codex login found. Using the local snapshot.',
+  '请求过于频繁，稍后自动重试': 'Too many requests. Retrying automatically.',
+  '额度接口返回格式异常': 'Unexpected response from the quota API',
+  '额度接口没有返回可识别的窗口': 'The quota API returned no usable window',
+  '网络连接失败或超时': 'Network connection failed or timed out',
 
   // ---------- Skills 透视 ----------
   '扫描本机 skills…': 'Scanning local skills…',
@@ -720,6 +755,19 @@ window.FANBOX_DICT_RULES = [
     const t = m[1] === '刚刚' ? 'just now' : m[1].replace(/^(\d+) 分钟前$/, '$1 min ago').replace(/^(\d+) 小时前$/, '$1 hr ago').replace(/^(\d+) 天前$/, '$1 days ago');
     return `Snapshot: Codex session from ${t}`;
   }],
+  // 用量面板（2.17.0）：窗口名 N 天 / N 小时
+  [/^(\d+)天窗口$/, (m) => `${m[1]}-day window`],
+  [/^([\d.]+)h窗口$/, (m) => `${m[1]}h window`],
+  // 过期窗口：「<窗口名>：待更新（旧窗口已结束）」，窗口名走词典/上面两条
+  [/^(.+)：待更新（旧窗口已结束）$/, (m) => `${window.t ? window.t(m[1]) : m[1]}: Waiting for update (previous window ended)`],
+  // 来源行：「官方数据 · 2 分钟前」，尾巴复用上面的相对时间规则
+  [/^(官方数据|会话快照|CLI实时回传) · (.+)$/, (m) => `${({ 官方数据: 'Official data', 会话快照: 'Session snapshot', CLI实时回传: 'Live from CLI' })[m[1]]} · ${window.t ? window.t(m[2]) : m[2]}`],
+  // Codex 重置卡：「重置卡：1张 · 当前适用0张（上次成功值）」，后两段可缺
+  [/^重置卡：(\d+)张(?: · 当前适用(\d+)张)?(（上次成功值）)?$/, (m) => `Reset credits: ${m[1]}${m[2] !== undefined ? ` · ${m[2]} usable now` : ''}${m[3] ? ' (last good value)' : ''}`],
+  // token 明细的区间标题：「近5h · 110 token」（侧栏三联里单独的「近5h」「今日」仍走上面的静态词条）
+  [/^(近5h|今日|近7天) · (.+) token$/, (m) => `${({ 近5h: 'Last 5h', 今日: 'Today', 近7天: 'Last 7 days' })[m[1]]} · ${m[2]} token`],
+  [/^已记录 (.+)$/, (m) => `Recorded ${m[1]}`],
+  [/^额度接口HTTP (.+)$/, (m) => `Quota API HTTP ${m[1]}`],
   // Skills 透视
   [/^以下 (\d+) 个 45 天零触发——启用中的描述仍在每次会话占用预算$/, (m) => `The ${m[1]} below had zero hits in 45 days — enabled descriptions still eat budget every session`],
   [/^(\d+) 处副本$/, (m) => `${m[1]} copies`],
