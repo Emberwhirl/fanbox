@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>FanBox 2.17.0 Port Notes</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+  /* Same visual system as the plan (docs/win-port-implementation-plan-v2.17.0.html): one reading column, ruled sections, dense tables. */
+  :root {
+    --paper: #f6f7f5; --ink: #1b201d; --ink-2: #59625d; --rule: #d9ded9; --panel: #eceeea;
+    --accent: #0d6b5a; --call: #9a5800; --risk: #b3261e; --ok: #2c7a3f; --code-bg: #e5e9e5;
+    --display: "IBM Plex Sans Condensed", "Arial Narrow", "PingFang SC", "Microsoft YaHei", sans-serif;
+    --body: "IBM Plex Sans", "Segoe UI", system-ui, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+    --mono: "IBM Plex Mono", "Cascadia Mono", Consolas, "PingFang SC", "Microsoft YaHei", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #121513; --ink: #e2e7e3; --ink-2: #9ba59f; --rule: #2b312d; --panel: #1a1e1b;
+      --accent: #58c3a9; --call: #e2a64a; --risk: #f07a70; --ok: #6cc183; --code-bg: #20251f;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #121513; --ink: #e2e7e3; --ink-2: #9ba59f; --rule: #2b312d; --panel: #1a1e1b;
+    --accent: #58c3a9; --call: #e2a64a; --risk: #f07a70; --ok: #6cc183; --code-bg: #20251f;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--paper); color: var(--ink); font: 15px/1.62 var(--body);
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 40px 96px;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; }
+  h1, h2, h3 { font-family: var(--display); font-weight: 600; text-wrap: balance; line-height: 1.2; }
+  h1 { font-size: 2.1rem; margin: 0 0 .5rem; letter-spacing: -.01em; }
+  h2 { font-size: 1.45rem; margin: 3.2rem 0 1rem; padding-top: .9rem; border-top: 2px solid var(--ink); }
+  h3 { font-size: 1.12rem; margin: 2rem 0 .6rem; }
+  p, li { max-width: 68ch; }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  code, .mono { font-family: var(--mono); font-size: .86em; }
+  code { background: var(--code-bg); padding: .08em .35em; border-radius: 3px; overflow-wrap: anywhere; }
+  pre { background: var(--code-bg); padding: .8rem 1rem; border-radius: 4px; overflow-x: auto; font: 12.5px/1.55 var(--mono); }
+  pre code { background: none; padding: 0; }
+  .lede { color: var(--ink-2); max-width: 68ch; margin: 0 0 1.4rem; }
+  .eyebrow { font: 500 11.5px/1 var(--mono); letter-spacing: .09em; text-transform: uppercase; color: var(--ink-2); margin: 0 0 .7rem; }
+  .muted { color: var(--ink-2); }
+  .small { font-size: 13.5px; }
+  .status { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); margin: 1.2rem 0 1.4rem; }
+  .status > div { background: var(--paper); padding: .65rem .8rem; min-width: 0; }
+  .status dt { font: 500 11px/1.3 var(--mono); letter-spacing: .07em; text-transform: uppercase; color: var(--ink-2); }
+  .status dd { margin: .2rem 0 0; font-size: 14px; overflow-wrap: anywhere; }
+  .status dd b { color: var(--accent); font-weight: 600; }
+  nav.toc { display: flex; flex-wrap: wrap; gap: .3rem 1.1rem; font-size: 14px; margin: 0 0 1rem; }
+  nav.toc a { text-decoration: none; }
+  nav.toc span { font-family: var(--mono); color: var(--ink-2); margin-right: .3rem; }
+  .chip { display: inline-block; font: 500 11px/1.5 var(--mono); letter-spacing: .05em; text-transform: uppercase; padding: 0 .5em; border-radius: 999px; border: 1px solid currentColor; vertical-align: 1px; white-space: nowrap; }
+  .chip.ok { color: var(--ok); }
+  .chip.risk { color: var(--risk); }
+  .chip.you { color: var(--call); }
+  .chip.wip { color: var(--accent); }
+  .tbl { overflow-x: auto; margin: .8rem 0 1.2rem; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; vertical-align: top; padding: .45rem .6rem; border-bottom: 1px solid var(--rule); }
+  th { font: 500 11.5px/1.3 var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--ink-2); border-bottom: 1.5px solid var(--ink); }
+  td code { white-space: normal; }
+  .dev { border-left: 3px solid var(--call); background: var(--panel); padding: .7rem .9rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+  .dev h3 { margin: 0 0 .3rem; font-size: 1rem; }
+  .dev p { margin: .25rem 0; font-size: 14px; }
+  ul.tight { padding-left: 1.2rem; }
+  ul.tight li { margin: .25rem 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="eyebrow">Emberwhirl/fanbox · Windows port · implementation notes</p>
+<h1>FanBox 2.17.0 Port Notes</h1>
+<p class="lede">Running record of implementing <a href="win-port-implementation-plan-v2.17.0.html">the 2.17.0 plan</a> on <code>dev</code>. Started 2026-10-18. Work is done by Sonnet 5.5 subagents (effort xhigh); the orchestrator reviews every change and runs the gates.</p>
+
+<dl class="status">
+  <div><dt>Status</dt><dd><b>Phases 0–2 done.</b> Your Windows PC is next.</dd></div>
+  <div><dt>Branch</dt><dd><code>dev</code> (local only, nothing pushed)</dd></div>
+  <div><dt>Safety refs</dt><dd><code>backup/dev-pre-v2.17.0</code> = <code>f37efca</code>; <code>backup/dev-pre-reword</code> = <code>68a852f</code></dd></div>
+  <div><dt>Candidate</dt><dd><code>fb5cf7b</code> (this notes file is the one commit on top; it changes no code)</dd></div>
+</dl>
+
+<nav class="toc" aria-label="Contents">
+  <a href="#decisions"><span>1</span>Decisions applied</a>
+  <a href="#phases"><span>2</span>Phases</a>
+  <a href="#deviations"><span>3</span>Deviations</a>
+  <a href="#gate"><span>4</span>Linux gate</a>
+  <a href="#handoff"><span>5</span>Windows handoff</a>
+  <a href="#log"><span>6</span>Work log</a>
+</nav>
+
+<h2 id="decisions">1 · Decisions applied</h2>
+<p class="small">You asked for the plan to be implemented without changing any decision, so every decision uses its default.</p>
+<div class="tbl"><table>
+  <thead><tr><th>ID</th><th>Choice</th><th>Implemented in</th></tr></thead>
+  <tbody>
+    <tr><td>D1</td><td>(a) Ship the status-line bridge with a Windows-correct bash command; omit it when Git Bash is missing</td><td><code>d806fef</code>: <code>winStatusLineCommand</code>, <code>winGitBash</code>, <code>claudeHttpHookSettings(port, {statusLine})</code>; <code>writeHookFiles</code> Windows branch; Git Bash chaining in the bridge. <code>03042ef</code>: also reads <code>CLAUDE_CODE_GIT_BASH_PATH</code> from Claude Code's <code>settings.json</code> (Dev-5)</td></tr>
+    <tr><td>D2</td><td>(a) Quota line follows FanBox's language (<code>7d</code> in English)</td><td><code>d806fef</code>: <code>winLang()</code> in the bridge, win32 only. <code>03042ef</code>: falls back to the UI language through <code>FANBOX_LANG</code> (Dev-5)</td></tr>
+    <tr><td>D3</td><td>(a) Codex official quota from chatgpt.com on, as upstream</td><td><code>7d05196</code>: upstream's <code>usageRequest</code>/<code>codexOfficialLimits</code> taken as-is; on win32 curl is an absolute <code>curl.exe</code> with <code>winSpawnEnv()</code> and <code>windowsHide</code>, and the system-proxy line reaches both endpoints. <code>03042ef</code>: exact-name lookup <code>winFindExe('curl.exe')</code> (Dev-5)</td></tr>
+    <tr><td>D4</td><td>(a) Translate all new usage-panel strings via the dictionary</td><td><code>18acd7e</code>: 33 keys and 8 rules in <code>public/i18n-dict.js</code>, using the D4 wording verbatim (see Dev-3 for the period labels)</td></tr>
+    <tr><td>D5</td><td>(a) Update-failure dialog opens the fork's Releases page; reason follows FanBox's language</td><td><code>7d05196</code> (Windows fetcher and page), <code>1f7d3fa</code> (reason rendered with <code>M()</code>; Chinese text identical to upstream)</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="phases">2 · Phases</h2>
+<div class="tbl"><table>
+  <thead><tr><th>Phase</th><th>Scope</th><th>State</th></tr></thead>
+  <tbody>
+    <tr><td>0 · Merge</td><td>Safety ref, two-parent merge of <code>master</code>, both conflicts resolved, update check restructured</td><td><span class="chip ok">done</span> <code>7d05196</code>, <code>1f7d3fa</code></td></tr>
+    <tr><td>1 · Windows branches</td><td>Bridge (D1, D2), update dialog (D5), dictionary (D4), campaign, docs, review follow-ups</td><td><span class="chip ok">done</span> <code>d806fef</code> … <code>fb5cf7b</code></td></tr>
+    <tr><td>2 · Linux gate</td><td>Syntax, <code>npm test</code>, contracts, smoke, parity, byte checks, independent review; freeze candidate</td><td><span class="chip ok">passed</span> on <code>fb5cf7b</code>, see §4</td></tr>
+    <tr><td>3 · Windows gate</td><td>Groups U S W R X on your PC</td><td><span class="chip you">you</span></td></tr>
+    <tr><td>4 · Package</td><td>Build, audit, G1–G3</td><td><span class="chip you">needs instruction</span></td></tr>
+    <tr><td>5 · Publish</td><td>Tag, draft, verify, publish, R2</td><td><span class="chip you">needs instruction</span></td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="deviations">3 · Deviations</h2>
+<p class="small muted">Places where the work had to depart from the plan. In each case the conservative option was taken.</p>
+<div class="dev" id="dev-1">
+  <h3>Dev-1 · Two older shared rewrites in the update code are kept</h3>
+  <p><b>Plan:</b> goal 3 says macOS/Linux code is byte-identical to <code>master</code> except the shared edits in the 6.7 ledger.</p>
+  <p><b>Found:</b> the 2.16.1 port had already rewritten two shared spots that the ledger does not list: the tail of <code>checkUpdate</code> (<code>if (newer &amp;&amp; winAssetOk)</code>, with the macOS dialog moved into an <code>else</code>) and <code>update:download</code> (split into <code>updateAssetCandidates</code> plus a candidate loop). macOS behavior is unchanged, but the text differs from <code>master</code>.</p>
+  <p><b>Chosen:</b> keep them as shipped in 2.16.1. That code has passed the Windows matrix twice, while making it byte-identical would mean a new parallel Windows handler that has never been tested. Plan 6.5 only requires upstream's fetch function and failure dialog to be verbatim, and both are. The ledger in these notes lists the two spots.</p>
+</div>
+<div class="dev" id="dev-2">
+  <h3>Dev-2 · Campaign contract tests are split into separate files</h3>
+  <p><b>Plan:</b> 6.8 names a single <code>contract.test.js</code>.</p>
+  <p><b>Chosen:</b> <code>contract-bridge.test.js</code> (D1, D2) and <code>contract-i18n.test.js</code> (D4), so the two parallel agents never edited the same file. Both run in one command: <code>node --test experiments/win-v2170-usage-202610/contract-*.test.js</code>. A real-browser English check, <code>ui-usage-en.cjs</code>, was added on top of the Node test the plan asked for.</p>
+</div>
+<div class="dev" id="dev-3">
+  <h3>Dev-3 · Lowercase period labels in the sidebar trio</h3>
+  <p><b>Plan:</b> D4 lists 近5h · 今日 · 近7天 as "Last 5h · Today · Last 7 days".</p>
+  <p><b>Found:</b> <code>近5h</code> → <code>last 5h</code> and <code>今日</code> → <code>today</code> already exist as dictionary keys from earlier releases, and the sidebar trio (<code>110 last 5h</code>) renders through them.</p>
+  <p><b>Chosen:</b> the existing keys are unchanged, so text that already shipped stays the same, and the new bare <code>近7天</code> key reads <code>last 7 days</code> to match them. The new token-breakdown headings use the D4 capitalized form through a rule: <code>Last 5h · 110 token</code>, <code>Today · …</code>, <code>Last 7 days · …</code>.</p>
+</div>
+<div class="dev" id="dev-4">
+  <h3>Dev-4 · A Chinese file name that matches a dictionary key is translated in English mode (accepted)</h3>
+  <p><b>Found by review:</b> the file list (<code>.fname</code>) is not excluded from translation. In English mode, a folder named exactly <code>输出</code> displays as "Output". The same was already true for existing keys such as <code>图片</code>, <code>文档</code>, <code>桌面</code> and <code>下载</code>. It is display only; opening the folder still works.</p>
+  <p><b>Chosen:</b> no change this round. The fix is to add <code>.fname</code> to the skip list in shared <code>public/i18n.js</code>, which would also change English-mode behavior on macOS. Dropping the key is no fix either: the English panel would then show a Chinese row. Worth raising upstream.</p>
+</div>
+<div class="dev" id="dev-5">
+  <h3>Dev-5 · Three review follow-ups go slightly beyond the plan's wording</h3>
+  <p><b>Language fallback (D2).</b> The plan's fallback was "the system language". In the bridge, which runs as Electron-as-Node, <code>Intl</code> reports the Windows regional format. The UI follows Chromium's display language instead, so a user with an English display language and a Chinese regional format, who never touched the toggle, would get <code>周</code> under an English UI. Windows PTYs now carry <code>FANBOX_LANG = uiLang()</code>. The bridge's order is <code>config.lang</code> (read live), then <code>FANBOX_LANG</code>, then <code>Intl</code>. POSIX PTY env is unchanged.</p>
+  <p><b>Git Bash lookup (6.4).</b> Claude Code also accepts <code>CLAUDE_CODE_GIT_BASH_PATH</code> from the <code>env</code> block of its own <code>settings.json</code>. Without reading it, FanBox would silently leave out the quota line even though Claude Code would find bash. <code>writeHookFiles</code> now reads that file, read-only, when the process env lacks the variable.</p>
+  <p><b>curl (6.2).</b> The plan's <code>winFindExe('curl')</code> expands PATHEXT, so a <code>curl.cmd</code> earlier on PATH would win, fail with <code>EINVAL</code>, and receive the token on stdin. The lookup is now the exact name <code>winFindExe('curl.exe')</code>, still PATH first and System32 second.</p>
+</div>
+
+<h2 id="gate">4 · Linux gate</h2>
+<p>Run by the orchestrator on the frozen candidate <code>fb5cf7b</code>, 2026-10-18, Linux, Node 24.15.0. The notes commit on top changes no code.</p>
+<div class="tbl"><table>
+  <thead><tr><th>Check</th><th>Result</th></tr></thead>
+  <tbody>
+    <tr><td><code>node --check</code> on every tracked <code>.js</code> / <code>.cjs</code> / <code>.mjs</code> outside <code>public/vendor/</code> (67 files)</td><td>65 pass. The 2 failures are <code>src-vendor/hljs-entry.js</code> and <code>src-vendor/milkdown-entry.js</code>, ESM build entries that already use <code>import</code> on <code>master</code>. Not a regression.</td></tr>
+    <tr><td><code>git diff --check master...HEAD</code></td><td>clean</td></tr>
+    <tr><td><code>npm test</code></td><td>14/14</td></tr>
+    <tr><td><code>contract-bridge.test.js</code> + <code>contract-i18n.test.js</code></td><td>67/67 (58 + 9)</td></tr>
+    <tr><td><code>playwright-electron.js --dry</code></td><td>38 PASS, 0 FAIL, 0 WARN</td></tr>
+    <tr><td><code>ui-usage-en.cjs</code> (headless Chromium against <code>server.js</code> with a fake home)</td><td>passed: 20 usage-panel states, no CJK in visible text, textContent or attributes</td></tr>
+    <tr><td><code>experiments/winport-parity-202607/verify.js</code></td><td>exit 0, no review items. 4 hard <code>master</code> compares OK: update-check slice, the POSIX failure dialog, the curl selection pin, anchored dictionary rules. The bridge file has 34 added lines and 0 removed. <code>mutation-proof.js</code> (by the fixes agent): the reviewer's 4 mutations and 6 neighbors all exit 1.</td></tr>
+    <tr><td><code>experiments/win-v213-images-202608/contract.test.js</code></td><td>106/106</td></tr>
+    <tr><td><code>experiments/winport-parity-202607/preview-guard.test.js</code></td><td>16/16</td></tr>
+    <tr><td><code>experiments/win-v2161-hooks-202609/contract.test.js</code></td><td>5 <code>buildCodexSpawnSpec</code> checks fail. That section needs a Windows host; it fails the same way on <code>f37efca</code>, and the file is unchanged.</td></tr>
+    <tr><td>README from upstream's first line down; <code>skills/fanbox-agent/SKILL.md</code>; <code>lib/agent-tokens.js</code>; <code>lib/watch-batcher.js</code>; <code>tests/</code></td><td>byte-identical to <code>master</code>. <code>electron/preload.js</code> differs only by the 2.16.1 port's 16 added lines.</td></tr>
+    <tr><td>CHANGELOG upstream 2.17.0 block (before <code>### Windows port</code>)</td><td>byte-identical to <code>master</code></td></tr>
+    <tr><td><code>package.json</code></td><td>version 2.17.0, one <code>files</code> key</td></tr>
+    <tr><td>Server smoke, fake home</td><td><code>/</code> 200, <code>/api/skills/builtin</code> 200, <code>/api/agent/terminals</code> 501, <code>/api/agent-usage</code> 200 JSON (login errors, as expected in an empty home)</td></tr>
+    <tr><td>Independent review (agent "review")</td><td>No confirmed Windows bug and no golden-rule break. Its 6 low findings: 5 fixed in <code>03042ef</code>/<code>fb5cf7b</code>, 1 accepted (Dev-4).</td></tr>
+  </tbody>
+</table></div>
+<p class="small">Not provable here, so it waits for your Windows run:</p>
+<ul class="tight small">
+  <li>real Git Bash;</li>
+  <li>real Claude Code status-line runs;</li>
+  <li><code>chatgpt.com</code> accepting Windows' <code>curl.exe</code>;</li>
+  <li>the token worker loading from <code>app.asar</code>;</li>
+  <li>every timing threshold.</li>
+</ul>
+
+<h2 id="handoff">5 · Windows handoff</h2>
+<p>The candidate is only on this machine, and <code>dev</code> stays private, so it is not pushed. It travels to the Windows PC as a git bundle. Do not start from <code>windows</code> (still 2.16.1) or <code>master</code> (upstream, macOS).</p>
+<ol class="tight">
+  <li><b>Move the code.</b> Copy the bundle to the PC. Create it with <code>git bundle create fanbox-dev-v2.17.0.bundle dev</code>; it is self-contained. Then either:
+    <ul class="tight">
+      <li>in an existing clone: <code>git fetch &lt;path&gt;\fanbox-dev-v2.17.0.bundle dev:dev</code> then <code>git checkout dev</code>, or</li>
+      <li>fresh: <code>git clone -b dev &lt;path&gt;\fanbox-dev-v2.17.0.bundle fanbox</code>.</li>
+    </ul>
+    Check that <code>git log --oneline -2</code> shows the notes commit on top of <code>fb5cf7b</code>.</li>
+  <li><b>Build.</b> Windows 11 with Git for Windows, Node 22+, and VS Build Tools with the Spectre-mitigated libraries. In the checkout: <code>npm install</code>, then <code>npm run rebuild</code> (unset <code>NoDefaultCurrentDirectoryInExePath</code> in that shell if <code>GetCommitHash.bat</code> fails).</li>
+  <li><b>Quick checks.</b> <code>npm test</code> (expect 14/14; on Windows the bridge test exercises the Git Bash path). Then <code>node --test experiments\win-v2170-usage-202610\contract-bridge.test.js experiments\win-v2170-usage-202610\contract-i18n.test.js</code>.</li>
+  <li><b>Harness setup.</b> <code>playwright-core</code> goes <b>outside</b> the repo: <code>mkdir E:\pw; cd E:\pw; npm init -y; npm i playwright-core</code>. In PowerShell, from the checkout:
+    <ul class="tight">
+      <li><code>$env:NODE_PATH = "E:\pw\node_modules"</code>;</li>
+      <li><code>$env:FANBOX_V2170_BASE = "E:\fanbox-v2170"</code> (short, writable, not inside OneDrive);</li>
+      <li><code>Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue</code>.</li>
+    </ul>
+  </li>
+  <li><b>Automated cases</b>, in this order (leave the FanBox window visible during U6 and W):</li>
+</ol>
+<pre>node experiments\win-v2170-usage-202610\playwright-electron.js --dry
+node experiments\win-v2170-usage-202610\playwright-electron.js --only S1,S5,S6
+node experiments\win-v2170-usage-202610\playwright-electron.js --only UF,R1,X1
+node experiments\win-v2170-usage-202610\playwright-electron.js --only W
+node experiments\win-v2170-usage-202610\playwright-electron.js --only U6
+node experiments\win-v2170-usage-202610\playwright-electron.js --only S2 --soak 10</pre>
+<ol class="tight" start="6">
+  <li><b>Manual cases</b>: S2 with real Claude Code, S3, S4, U1, U3, U4, W3, X1b. Start the isolated profile with <code>node experiments\win-v2170-usage-202610\playwright-electron.js --launch</code>, sign in to Claude Code (Pro/Max for S1/S2) and Codex there, and follow the steps the script prints (also in the campaign README).</li>
+  <li><b>Record</b> the results in the table at the end of <code>experiments/win-v2170-usage-202610/README.md</code>: candidate commit, Windows build, Node/Git/Claude Code/Codex versions. Evidence lands in <code>%FANBOX_V2170_BASE%\evidence\&lt;timestamp&gt;\</code>. A failed or skipped required case stops the gate. <code>--dry</code> is only a sanity check.</li>
+  <li><b>Afterwards:</b> <code>--clean</code> removes the fake homes. W4 sends one small file to the Recycle Bin.</li>
+</ol>
+<p>Then Phases 4 and 5: build with <code>npm run dist:win</code> on the PC (G1–G3), then tag and publish (R2). Each needs your explicit go-ahead. Fast-forwarding <code>windows</code>, pushing and tagging can be done here on request.</p>
+
+<h2 id="log">6 · Work log</h2>
+<h3>Baseline (2026-10-18)</h3>
+<div class="tbl"><table>
+  <thead><tr><th>Ref</th><th>Commit</th></tr></thead>
+  <tbody>
+    <tr><td><code>dev</code> (plan committed)</td><td><code>f37efca51476c762104d12c75d6acc6f1f827706</code></td></tr>
+    <tr><td><code>master</code> (upstream 2.17.0)</td><td><code>e8395cb3043c90715651f20073a27580673b467a</code></td></tr>
+    <tr><td><code>windows</code> = tag <code>v2.16.1</code></td><td><code>dbf40d839ed5085fd4342630aae937da0956a37d</code></td></tr>
+  </tbody>
+</table></div>
+<p class="small">Toolchain here: Linux, Node 24.15.0. Remote: <code>github</code> only.</p>
+<h3>Entries</h3>
+<ul class="tight small" id="worklog">
+  <li>2026-10-18: created local safety branch <code>backup/dev-pre-v2.17.0</code> at <code>f37efca</code>; started Phase 0.</li>
+  <li>2026-10-18, agent "merge": <code>7d05196</code>, a two-parent merge of <code>master</code> (parents <code>f37efca</code>, <code>e8395cb</code>), with the two conflicts resolved:
+    <ul class="tight">
+      <li><code>main.js</code>: upstream's <code>REL_PAGE</code>/<code>latestReleaseError</code>/<code>fetchLatestRelease</code> kept verbatim. The fork's exact-pair logic moved to <code>WIN_REL_REPO</code>, <code>WIN_REL_PAGE</code>, <code>fetchLatestReleaseWin()</code> and <code>winUpdateFailureDialog()</code>, after upstream's <code>let</code> block. <code>checkUpdate</code> dispatches on <code>IS_WIN</code>; <code>updateAssetCandidates</code> and the no-asset fallback use the Windows constants.</li>
+      <li><code>server.js</code>: upstream's usage code kept; <code>usageRequest</code> gets the win32 <code>curl.exe</code> ternary, <code>env: winSpawnEnv()</code> (<code>undefined</code> on POSIX) and <code>windowsHide</code>.</li>
+    </ul>
+  Then <code>1f7d3fa</code> (D5).</li>
+  <li>2026-10-18, orchestrator review of Phase 0:
+    <ul class="tight">
+      <li>Re-ran <code>npm test</code>: 14/14.</li>
+      <li>Diffed the <code>const REL_PAGE</code>…<code>let pendingUpdate</code> slice against <code>master</code>: identical.</li>
+      <li>Read the D5 diff.</li>
+      <li>Agent-reported checks:
+        <ul class="tight">
+          <li>Smoke: <code>/</code> 200, <code>/api/skills/builtin</code> 200, <code>/api/agent/terminals</code> 501, <code>/api/agent-usage</code> 200 JSON.</li>
+          <li><code>lib/</code> and <code>tests/</code> identical to <code>master</code>.</li>
+          <li>README below the divider and upstream's CHANGELOG 2.17.0 block identical.</li>
+          <li>Parity scanner OK.</li>
+          <li>The 2.16.1 hooks contract shows 5 Linux-only <code>buildCodexSpawnSpec</code> failures, identical on <code>f37efca</code>, so they are not regressions.</li>
+        </ul>
+      </li>
+    </ul>
+  </li>
+  <li>2026-10-18: Phase 1 started with two parallel agents in separate worktrees: "bridge" (D1, D2: <code>win-port-helpers.js</code>, the <code>writeHookFiles</code> Windows branch, <code>lib/claude-statusline.cjs</code>) and "dictionary" (D4: <code>public/i18n-dict.js</code> plus English coverage tests).</li>
+  <li>2026-10-18, agent "bridge": committed <code>d806fef</code> and <code>5f7657e</code>; <code>dev</code> was fast-forwarded to them.
+    <ul class="tight">
+      <li><b>Ordering:</b> <code>writeHookFiles()</code> already runs after <code>await mergeWinUserPath(process.env)</code> in <code>whenReady</code>, so <code>winGitBash(process.env)</code> sees the same PATH as the PTYs. No call-order change was needed, and a test pins the order.</li>
+      <li><b>Bridge script copy:</b> the script is copied with read+write, which works from inside <code>app.asar</code>. It is copied only when a command was built; on any failure the hook file is written without <code>statusLine</code>.</li>
+      <li><b>Bridge behavior:</b>
+        <ul class="tight">
+          <li>The bridge's bash lookup runs only when a user <code>statusLine</code> command exists. Upstream's <code>shell:true</code> line remains the fallback.</li>
+          <li><code>git diff master -- lib/claude-statusline.cjs</code> has zero removed lines.</li>
+          <li><code>winFindOnPath</code> gained an optional <code>io</code> argument so it can be tested; without it, behavior is unchanged.</li>
+        </ul>
+      </li>
+      <li><b>Orchestrator re-run:</b> <code>npm test</code> 14/14; <code>contract-bridge.test.js</code> 42/42.</li>
+      <li><b>End-to-end on Linux (by the agent):</b> real <code>bash -c</code> run of the generated command from a directory containing a space, CJK, <code>$</code> and a backtick. It printed <code>5h 23% · 周 42%</code> and POSTed only the two limits.</li>
+    </ul>
+  </li>
+  <li>2026-10-18, agent "dictionary": <code>c2cd3ba</code>, cherry-picked onto <code>dev</code> as <code>18acd7e</code>.
+    <ul class="tight">
+      <li><b>Strings outside the D4 table:</b> the <code>N天窗口</code> and <code>Nh窗口</code> rules; <code>（上次成功值）</code> on the reset-credit line; <code>额度接口HTTP</code> for any status.</li>
+      <li><b><code>统计失败</code> is not translated</b> because it never reaches the DOM: <code>agentUsage()</code> swallows it. A drift test fails if that changes.</li>
+      <li><b>Error rendering:</b> panel errors render bare (<code>escapeHtml(o.error)</code>), not wrapped in <code>上次成功值 · …</code>.</li>
+      <li><b><code>contract-i18n.test.js</code> (9/9):</b> runs the real <code>i18n.js</code> translator in a <code>vm</code> and checks 150+ composed forms. It also extracts the fixed Chinese literals from <code>usagePanel</code> and the server quota code, so a future upstream string fails the test.</li>
+      <li><b><code>ui-usage-en.cjs</code></b> passed 81 checks over 20 rendered states in headless Chromium, with both expanders clicked open. Against the old dictionary: 39 failures.</li>
+      <li><b>Sandbox flag:</b> this sandbox's Chromium needs <code>PW_CHROMIUM_ARGS=--disable-software-rasterizer</code> to fire <code>requestAnimationFrame</code>. A normal desktop doesn't need it.</li>
+      <li><b>Orchestrator re-run on <code>dev</code>:</b> <code>npm test</code> 14/14; both campaign contracts 51/51.</li>
+      <li><b>Parity scanner:</b> flags the 7 new regex rules for review. Classifying them was assigned to the docs agent.</li>
+    </ul>
+  </li>
+  <li>2026-10-18: started two more agents in parallel: "campaign" (Windows harness <code>playwright-electron.js</code>, <code>gen-fixtures.js</code>, campaign README) and "docs" (CHANGELOG <code>### Windows port</code>, README top section, CLAUDE.md, parity-scanner classification).</li>
+  <li>2026-10-18, agent "docs": committed <code>efabd92</code> (parity scanner) and <code>679fbfb</code> (CHANGELOG, README, CLAUDE.md, badge).
+    <ul class="tight">
+      <li><b>Parity scanner:</b> <code>verify.js</code> now classifies single-line tuples inside <code>FANBOX_DICT_RULES</code> as pure additions. It gives <code>lib/claude-statusline.cjs</code> a stricter check: a removed upstream line is a hard failure, and added lines must be win32-gated. It was cherry-picked onto <code>dev</code>; the orchestrator re-ran it there: all 7 files OK, no review items.</li>
+      <li><b>CLAUDE.md corrections</b> (verified against the code):
+        <ul class="tight">
+          <li>Since 2.14, <code>server.js</code> runs as a <code>utilityProcess</code> child through <code>electron/server-child.js</code>, not in-process.</li>
+          <li><code>global.__fanboxAgent</code> is injected there as an RPC proxy.</li>
+          <li><code>npm test</code> now exists.</li>
+          <li>Outbound calls now include <code>chatgpt.com/backend-api/wham/usage</code>.</li>
+          <li><code>REL_REPO</code> is now <code>WIN_REL_REPO</code>.</li>
+        </ul>
+      </li>
+      <li><b>README:</b> the fork-written "Upstream README (verbatim)" wrapper line is bumped to 2.17.0. Everything from upstream's first line down is byte-identical to <code>master</code>.</li>
+    </ul>
+  </li>
+  <li>2026-10-18, agent "campaign":
+    <ul class="tight">
+      <li><b>Session limit:</b> the agent hit the session limit before committing.</li>
+      <li><b>Interim copy:</b> the orchestrator copied its three files onto <code>dev</code> and gated them.</li>
+      <li><b>Resume and comparison:</b> after the limit reset the agent was resumed and committed its final version (<code>7a5f3b4</code> in its worktree). The three files were byte-identical to the copy already on <code>dev</code>.</li>
+      <li><b><code>--dry</code> on Linux:</b> 38 PASS, 0 FAIL.</li>
+      <li><b>Fixture check:</b> the generated fixtures parse in <code>lib/agent-tokens.js</code> to totals that match the generator's ground truth.</li>
+    </ul>
+  </li>
+  <li>2026-10-18: a first Linux gate ran on an interim candidate. Results are in §4; it was re-run on the final candidate.</li>
+  <li>2026-10-18, agent "review": independent read-only review of the product diff.
+    <ul class="tight">
+      <li><b>Confirmed findings:</b> no confirmed Windows bug and no golden-rule break.</li>
+      <li><b>Agent checks:</b>
+        <ul class="tight">
+          <li>Upstream's update-check slice is identical to <code>master</code>.</li>
+          <li>The bridge has 0 removed lines, and its Linux output is byte-identical to upstream's.</li>
+          <li>20,000 fuzzed PATH/file-tree cases found no difference between the bridge's <code>winBash()</code> and <code>winGitBash()</code>.</li>
+          <li>The status-line command was run through real <code>bash -c</code> with spaces, <code>$HOME</code>, backticks, CJK, <code>!</code> and <code>%</code>, and stayed inert.</li>
+          <li>Every update-failure path was simulated against upstream's Chinese text.</li>
+          <li>No token appears in hook files, argv or logs.</li>
+          <li>About 3,500 existing UI strings keep their translations.</li>
+        </ul>
+      </li>
+      <li><b>Low-severity findings</b> (handling in §3 Dev-4 and the next entry):
+        <ul class="tight">
+          <li>(1) The parity scanner let four deliberate mutations through, and CLAUDE.md overstated what it hard-fails.</li>
+          <li>(2) A folder named <code>输出</code> displays as "Output" in English.</li>
+          <li>(3) For users who never toggled language, the quota-line language could differ from the UI.</li>
+          <li>(4) <code>CLAUDE_CODE_GIT_BASH_PATH</code> set only in Claude Code's <code>settings.json</code> was not seen.</li>
+          <li>(5) <code>winFindExe('curl')</code> could pick a <code>curl.cmd</code>.</li>
+          <li>(6) CLAUDE.md called the 2.16.1 hooks contract Linux-runnable.</li>
+        </ul>
+      </li>
+    </ul>
+  </li>
+  <li>2026-10-18: re-committed the last three local commits (none of them pushed).
+    <ul class="tight">
+      <li><b>Why:</b> two of them had Chinese messages, against the English-only commit rule.</li>
+      <li><b>Safety ref:</b> <code>backup/dev-pre-reword</code> = <code>68a852f</code> keeps the previous state.</li>
+      <li><b>Result:</b> <code>ad96ce6</code> (campaign harness) and <code>6b59652</code> (docs <code>+ release 2.17.0</code>, now also listing the harness in the CHANGELOG and fixing a stale line in the campaign README). The notes file is committed last.</li>
+      <li><b>Content check:</b> apart from those two doc edits, the tree is identical to the backup.</li>
+    </ul>
+  </li>
+  <li>2026-10-18, agent "fixes": review findings 1, 3, 4, 5 and 6.
+    <ul class="tight">
+      <li><b><code>03042ef</code></b> (<code>fix(win): … + release 2.17.0</code>):
+        <ul class="tight">
+          <li><code>FANBOX_LANG</code> in the Windows PTY env, read by <code>winLang()</code>.</li>
+          <li><code>claudeSettingsGitBashPath()</code> plus the read-only settings lookup in <code>writeHookFiles</code>.</li>
+          <li><code>winFindExe('curl.exe')</code>.</li>
+          <li><code>contract-bridge</code> tests grow from 42 to 58.</li>
+          <li>CHANGELOG and README updated.</li>
+        </ul>
+      </li>
+      <li><b><code>fb5cf7b</code>:</b> hard <code>master</code> compares in <code>verify.js</code>, the new <code>mutation-proof.js</code>, and CLAUDE.md accuracy (what the scanner enforces; the 2.16.1 hooks contract needs Windows).</li>
+      <li><b>Orchestrator review:</b> read the product diff and confirmed <code>FANBOX_LANG</code> sits inside the <code>if (IS_WIN)</code> block of <code>pty:spawn</code>. Re-committed the fix commit locally to correct one function name in its message (tree unchanged).</li>
+    </ul>
+  </li>
+  <li>2026-10-18: Linux gate re-run on the frozen candidate <code>fb5cf7b</code>; all checks pass (§4).</li>
+</ul>
+
+</div>
+</body>
+</html>
