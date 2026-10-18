@@ -401,8 +401,19 @@ function hasWinInstallerAsset(assets) {
   // Exact pair only: FanBox-<ver>-win-<arch>.exe + -portable.exe. Fuzzy names fail closed.
   return Array.isArray(assets) && assets.length > 0;
 }
+// 失败原因存成结构化记录，弹窗时才按界面语言拼（D5）：中文与上游 latestReleaseError 的文案逐字一致，英文模式给英文。
+// 不复用上游的 latestReleaseError——它在 fetchLatestRelease 里写死了中文。
+let winUpdateFail = null; // { api: 'rate' | 'http' | 'net', apiStatus, pageStatus }
+function winUpdateReason() {
+  const f = winUpdateFail;
+  if (!f) return '';
+  const api = f.api === 'rate' ? M(`GitHub API限流（HTTP ${f.apiStatus}）`, `GitHub API rate limited (HTTP ${f.apiStatus})`)
+    : f.api === 'http' ? `GitHub API HTTP ${f.apiStatus}`
+      : M('GitHub API网络连接失败或超时', 'GitHub API network connection failed or timed out');
+  return api + (f.pageStatus ? M(`；发布页HTTP ${f.pageStatus}`, `; release page HTTP ${f.pageStatus}`) : '');
+}
 async function fetchLatestReleaseWin() {
-  latestReleaseError = '';
+  winUpdateFail = null;
   // 先走 API（信息全，含 assets）；代理共享出口 IP 很容易吃 GitHub API 的未认证限流（60 次/小时/IP，403），
   // 失败就退回抓 releases/latest 网页重定向——重定向后的 URL 自带 tag，且不占 API 配额（无 assets 列表）
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
@@ -422,10 +433,10 @@ async function fetchLatestReleaseWin() {
         return { tag: rel.tag_name, url: rel.html_url || WIN_REL_PAGE, assets: verified };
       }
     }
-    latestReleaseError = (res.status === 429 || (res.status === 403 && res.headers.get('x-ratelimit-remaining') === '0')) ? `GitHub API限流（HTTP ${res.status}）` : `GitHub API HTTP ${res.status}`;
-  } catch { latestReleaseError = 'GitHub API网络连接失败或超时'; }
+    winUpdateFail = { api: (res.status === 429 || (res.status === 403 && res.headers.get('x-ratelimit-remaining') === '0')) ? 'rate' : 'http', apiStatus: res.status };
+  } catch { winUpdateFail = { api: 'net' }; }
   const res = await net.fetch(WIN_REL_PAGE, { headers: { 'User-Agent': 'fanbox-app' }, signal: AbortSignal.timeout(12000) });
-  if (!res.ok) { latestReleaseError += `；发布页HTTP ${res.status}`; return null; }
+  if (!res.ok) { if (winUpdateFail) winUpdateFail.pageStatus = res.status; return null; }
   const m = String(res.url || '').match(/\/releases\/tag\/([^/?#]+)/);
   if (!m) return null;
   const tag = decodeURIComponent(m[1]);
@@ -442,7 +453,7 @@ async function fetchLatestReleaseWin() {
 function winUpdateFailureDialog() {
   const choice = dialog.showMessageBoxSync(win && !win.isDestroyed() ? win : undefined, {
     type: 'warning', buttons: [M('打开下载页', 'Open download page'), M('关闭', 'Close')], defaultId: 0, cancelId: 1, message: M('检查更新失败', 'Update check failed'),
-    detail: `${latestReleaseError || M('网络连接失败或超时', 'Network connection failed or timed out')}\n${WIN_REL_PAGE}`,
+    detail: `${winUpdateReason() || M('网络连接失败或超时', 'Network connection failed or timed out')}\n${WIN_REL_PAGE}`,
   });
   if (choice === 0) shell.openExternal(WIN_REL_PAGE);
 }
