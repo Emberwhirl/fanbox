@@ -12,6 +12,19 @@ core JS files falls into an accepted golden-rule category:
 - **(b)** pure addition (new win-only helper, new dict keys)
 - **(c)** whitelisted one-liner rewrite whose only behavioral branch is behind a platform/sep guard
 
+Two stricter checks sit beside the heuristic (v2.17.0):
+
+- **`lib/claude-statusline.cjs`** is upstream's status-line bridge, copied verbatim into `~/.fanbox/hooks`
+  and run on every status refresh. Its diff against `master` must be **pure additions**: a removed or
+  rewritten upstream line is a hard failure (exit 1). Every added behavioral line must be gated, i.e. sit
+  inside `winBash()` / `winLang()` (win32-only helpers), inside the `if (bash && …) { … }` block, or itself
+  contain `process.platform === 'win32'`, `winBash()` or `winLang()`. The gates are checked too:
+  `winBash()` must start with the platform guard, and `winLang()` may only be called on a line that
+  tests `process.platform === 'win32'`.
+- **`FANBOX_DICT_RULES`** in `public/i18n-dict.js`: a single-line `[/regex/, (m) => …]` tuple counts as a
+  pure addition (b) only when its line number falls between `window.FANBOX_DICT_RULES = [` and the closing
+  `];` of the working-tree file. Anything else added to the dictionary file is still judged by the old rules.
+
 ### Accepted shared edits (v2.16.1) — PR #60 sanitizer deviation retired
 
 Upstream v2.15+ shipped the DOMPurify `mdHtml()` chokepoint, so the v2.12.1 PR #60
@@ -22,6 +35,37 @@ this round (classified in `verify.js` whitelist, listed in CHANGELOG `### Window
 2. inert `<template>` `semanticSig()` — a `<div>` would load `<img>` and fire `onerror`.
 3. platform-ternary `fsp.rm` `{ maxRetries, retryDelay }` — Windows file locks vs un-awaited `git gc`.
 4. optional third parameter on `run()` — Windows thumbnails share the 4-way concurrency gate.
+
+### Accepted shared edits (v2.17.0) — classified in `verify.js`, listed in CHANGELOG `### Windows port`
+
+Upstream 2.17.0 added the Claude Code status-line bridge, the Codex official-quota call and a rewritten
+update-failure dialog. The Windows lines went in as parallel branches; the shared text that differs from
+`master` is exactly this (plan §6.7, plus two update-code rewrites that predate 2.17.0 and are listed here
+for the first time):
+
+1. `lib/claude-statusline.cjs` — **inserted** lines only, all behind `process.platform === 'win32'`. Claude Code
+   runs status lines through Git Bash on Windows, never cmd, so the user's own `statusLine` runs via
+   `bash -c` (`winBash()`), and the weekly label follows FanBox's language (`7d` in English, `winLang()`).
+   Upstream's `shell: true` line stays as the fallback and every upstream statement is unchanged.
+2. `electron/main.js` `checkUpdate` — dispatches `IS_WIN ? fetchLatestReleaseWin() : fetchLatestRelease()` and, on a
+   failed manual check, `winUpdateFailureDialog()`. Upstream's `REL_PAGE` / `latestReleaseError` /
+   `fetchLatestRelease` are **verbatim** (upstream's test slices main.js between `const REL_PAGE` and
+   `let pendingUpdate`), so the fork's `WIN_REL_REPO` / `WIN_REL_PAGE` / `hasWinInstallerAsset` live after
+   `let pendingUpdate`. This replaces the larger inline divergence 2.16.1 carried at `fetchLatestRelease`.
+3. `server.js` `usageRequest` — one platform ternary for the curl path (`winFindExe('curl')`, else
+   `System32\curl.exe`, an absolute path because the request's stdin carries the OAuth token), plus
+   `env: winSpawnEnv()` (returns `undefined` off Windows) and `windowsHide: true` (no-op off Windows).
+   Same pattern the fork already used in this spot before 2.17.0.
+4. `public/i18n-dict.js` — 33 new keys and 8 `FANBOX_DICT_RULES` tuples for the usage panel and quota
+   errors. Additive; macOS English users would get the translations if upstream adopted them.
+5. `electron/main.js` `checkUpdate` tail *(from 2.16.1, first listed now)* — `if (newer)` became
+   `if (newer && winAssetOk)`, `latestAssets` falls back to `[]` instead of `null` on Windows, and the manual
+   "new version" dialog is split into an `IS_WIN` branch and an `else` branch holding the macOS dialog
+   unchanged (re-indented).
+6. `electron/main.js` `update:download` + `updateAssetCandidates` *(from 2.16.1, first listed now)* — master's
+   single-dmg `name` / `url` / `dest` flow became a candidate loop. Off Windows `updateAssetCandidates` returns the
+   same one dmg URL and the asset-list guard compares the same basename; on Windows the loop covers the
+   exact installer pair behind a fail-closed `exactWinAssetNames` gate.
 
 `preview-guard.test.js` pins the preview server's win32 path gate — the boundary that
 keeps a malicious previewed HTML (which runs `allow-same-origin` against the preview

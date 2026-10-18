@@ -9,6 +9,7 @@
  * This is not a full AST proof — it flags suspicious hunks for human review.
  */
 const { execSync } = require('child_process');
+const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '../..');
@@ -77,6 +78,22 @@ const WHITELIST_RES = [
 
 const WIN_GUARD = /IS_WIN|IS_MAC|isWin\(|isWindows\(|isMacOS\(|PLATFORM === ['"]win32['"]|PLATFORM === ['"]darwin['"]|process\.platform === ['"]win32['"]|state\.sep === ['"]\\\\['"]|state\.platform === ['"]win32['"]|winPlat|applyPlatformChrome|fanboxEnv\.platform/;
 
+// v2.17.0 (b): single-line rule tuples added inside the FANBOX_DICT_RULES array of the dictionary.
+// Narrow on purpose: the line must sit between `window.FANBOX_DICT_RULES = [` and its closing `];`
+// in the working-tree file (hunk line numbers are checked, not just context), and must be exactly
+// one `[/regex/, (m) => ...]` tuple. A multi-line or differently shaped addition is still flagged.
+const RULES_FILE = 'public/i18n-dict.js';
+const RULES_ENTRY = /^\s*\[\/.+\/[a-z]*,\s*\(m\)\s*=>\s*.+\],?\s*$/;
+function dictRulesRange() {
+  let lines;
+  try { lines = fs.readFileSync(path.join(ROOT, RULES_FILE), 'utf8').split('\n'); } catch { return null; }
+  const start = lines.findIndex((l) => /^window\.FANBOX_DICT_RULES = \[\s*$/.test(l));
+  if (start < 0) return null;
+  const end = lines.findIndex((l, i) => i > start && /^\];\s*$/.test(l));
+  return end < 0 ? null : { from: start + 2, to: end }; // 1-based line numbers strictly between the brackets
+}
+const RULES_RANGE = dictRulesRange();
+
 function diffUnified(file) {
   try {
     return execSync(`git diff master -- ${file}`, { cwd: ROOT, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
@@ -91,13 +108,16 @@ function analyze(file, diff) {
   const lines = diff.split('\n');
   let inHunk = false;
   let ctx = [];
+  let newLine = 0; // line number in the working-tree file of the next ' ' / '+' line
   for (const line of lines) {
-    if (line.startsWith('@@')) { inHunk = true; ctx = []; continue; }
+    if (line.startsWith('@@')) { inHunk = true; ctx = []; newLine = +((line.match(/\+(\d+)/) || [])[1] || 0); continue; }
     if (!inHunk) continue;
     if (line.startsWith(' ') || line.startsWith('+') || line.startsWith('-')) {
       ctx.push(line);
       if (ctx.length > 40) ctx.shift();
     }
+    const here = newLine;
+    if (line.startsWith(' ') || (line.startsWith('+') && !line.startsWith('+++'))) newLine++;
     if (!line.startsWith('+') || line.startsWith('+++')) continue;
     const body = line.slice(1);
     if (!body.trim() || body.trim().startsWith('//') || body.trim().startsWith('*')) continue;
@@ -107,6 +127,8 @@ function analyze(file, diff) {
     if (WHITELIST_RES.some((re) => re.test(body) || re.test(window))) continue;
     // pure i18n dict key additions
     if (file.includes('i18n') && /['"][^'"]+['"]\s*:/.test(body)) continue;
+    // (b) v2.17.0: a one-line rule tuple inside the FANBOX_DICT_RULES array (position-checked)
+    if (file === RULES_FILE && RULES_RANGE && here >= RULES_RANGE.from && here <= RULES_RANGE.to && RULES_ENTRY.test(body)) continue;
     // require powerSaveBlocker import etc.
     if (/powerSaveBlocker|titleBarOverlay|mergeWinUserPath/.test(body)) continue;
     // Generic control-flow leftovers adjacent to a Windows arm (heuristic window).
@@ -118,14 +140,62 @@ function analyze(file, diff) {
   return { file, ok: uniq.length === 0, suspicious: uniq, addedHints: (diff.match(/^\+[^+]/gm) || []).length };
 }
 
+// ---- v2.17.0: lib/claude-statusline.cjs (upstream's status-line bridge, copied verbatim to ~/.fanbox/hooks) ----
+// Stricter than analyze(): the file is tiny and runs on every status refresh on macOS/Linux, so
+//  - any removed or rewritten upstream line is a HARD failure (exit 1);
+//  - every added behavioral line must be gated: inside winBash()/winLang() (win32-only helpers),
+//    inside an `if (bash && …) { … }` block, or itself containing process.platform === 'win32',
+//    winBash() or winLang();
+//  - the gates themselves are checked: winBash() starts with the platform guard, and winLang() is
+//    only ever called on a line that also tests process.platform === 'win32'.
+const STATUSLINE = 'lib/claude-statusline.cjs';
+const SL_GATE = /process\.platform\s*===\s*['"]win32['"]|\bwinBash\(\)|\bwinLang\(\)|^\s*if \(bash &&/;
+const stripStrings = (t) => t.replace(/'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|`(?:[^`\\]|\\.)*`/g, '""');
+function analyzeStatusline(diff, source) {
+  const out = { file: STATUSLINE, removed: [], suspicious: [], added: 0 };
+  if (!diff.trim()) { out.notes = ['no diff vs master']; return out; }
+  let inHunk = false, depth = 0, gatedAt = null;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('@@')) { inHunk = true; depth = 0; gatedAt = null; continue; }
+    if (!inHunk) continue;
+    if (line.startsWith('-')) { out.removed.push(line.slice(1).trim().slice(0, 140)); continue; }
+    if (!line.startsWith('+')) continue;
+    const body = line.slice(1), t = body.trim();
+    out.added++;
+    if (!t || t.startsWith('//')) continue;
+    const code = stripStrings(t.replace(/\s\/\/.*$/, ''));
+    const net = (code.match(/\{/g) || []).length - (code.match(/\}/g) || []).length;
+    const gatedLine = gatedAt !== null || SL_GATE.test(body);
+    if (!gatedLine) out.suspicious.push(t.slice(0, 140));
+    if (gatedAt === null && net > 0 && SL_GATE.test(body)) gatedAt = depth;
+    depth += net;
+    if (gatedAt !== null && depth <= gatedAt) gatedAt = null;
+  }
+  if (source != null) {
+    const m = source.match(/function winBash\(\) \{\n\s*([^\n]+)/);
+    if (!m || !/^if \(process\.platform !== 'win32'\) return null;/.test(m[1])) out.suspicious.push('gate: winBash() must start with `if (process.platform !== \'win32\') return null;`');
+    source.split('\n').forEach((l) => {
+      if (/\bwinLang\(\)/.test(l) && !/^function winLang\(\)/.test(l.trim()) && !/process\.platform === 'win32'/.test(l)) out.suspicious.push('gate: winLang() called outside a win32 test: ' + l.trim().slice(0, 100));
+    });
+  }
+  return out;
+}
+function statuslineSource() { try { return fs.readFileSync(path.join(ROOT, STATUSLINE), 'utf8'); } catch { return null; } }
+
 function main() {
-  console.log('Classified accepted shared edits (plan §6.4); PR #60 sanitizer deviation retired:');
+  console.log('Classified accepted shared edits (v2.16.1 round; PR #60 sanitizer deviation retired):');
   console.log('  (1) autoUpdater.on(\'error\')');
   console.log('  (2) inert <template> semanticSig()');
   console.log('  (3) fsp.rm maxRetries/retryDelay platform ternary');
   console.log('  (4) optional third parameter on run()');
+  console.log('Classified accepted shared edits (v2.17.0 round, plan §6.7 + earlier update-code rewrites):');
+  console.log('  (5) lib/claude-statusline.cjs: win32-only inserted lines (bash -c chaining, 7d label) — pure additions, checked below');
+  console.log('  (6) electron/main.js checkUpdate dispatch + Windows tail: fetchLatestReleaseWin / winUpdateFailureDialog (upstream fetchLatestRelease verbatim)');
+  console.log('  (7) server.js usageRequest: platform ternary for the curl path, env: winSpawnEnv(), windowsHide');
+  console.log('  (8) public/i18n-dict.js: new keys + single-line FANBOX_DICT_RULES tuples (additive, position-checked)');
+  console.log('  (9) electron/main.js update:download + updateAssetCandidates (pre-existing 2.16.1 rewrite, now listed)');
   const results = FILES.map((f) => analyze(f, diffUnified(f)));
-  let bad = 0;
+  let bad = 0, hard = 0;
   for (const r of results) {
     if (r.ok) {
       console.log(`OK  ${r.file}${r.notes ? ' — ' + r.notes.join('; ') : ''}`);
@@ -135,9 +205,25 @@ function main() {
       for (const s of r.suspicious) console.log('   +', s);
     }
   }
+  const sl = analyzeStatusline(diffUnified(STATUSLINE), statuslineSource());
+  if (sl.removed.length) {
+    hard++;
+    console.log(`FAIL ${sl.file} — ${sl.removed.length} upstream line(s) removed or rewritten (must be pure additions):`);
+    for (const s of sl.removed) console.log('   -', s);
+  }
+  if (sl.suspicious.length) {
+    bad++;
+    console.log(`CHK ${sl.file} — ${sl.suspicious.length} ungated added line(s) (review):`);
+    for (const s of sl.suspicious) console.log('   +', s);
+  }
+  if (!sl.removed.length && !sl.suspicious.length) {
+    console.log(`OK  ${sl.file} — ${sl.notes ? sl.notes.join('; ') : `${sl.added} added line(s), 0 removed, all behind win32 / winBash() / winLang() gates`}`);
+  }
+  if (hard) { console.log(`\n${hard} file(s) violate the golden rule (removed upstream lines) — hard failure.`); process.exit(1); }
   console.log(bad ? `\n${bad} file(s) need human review (heuristic, not hard fail).` : '\nAll files pass heuristic golden-rule scan.');
-  // Always exit 0 for heuristic — hard fail only if git missing
+  // The heuristic part always exits 0; only removed statusline lines (above) fail hard
   process.exit(0);
 }
 
-main();
+if (require.main === module) main();
+module.exports = { analyze, analyzeStatusline };
