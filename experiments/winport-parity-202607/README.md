@@ -12,18 +12,51 @@ core JS files falls into an accepted golden-rule category:
 - **(b)** pure addition (new win-only helper, new dict keys)
 - **(c)** whitelisted one-liner rewrite whose only behavioral branch is behind a platform/sep guard
 
-Two stricter checks sit beside the heuristic (v2.17.0):
+The scan above is a heuristic: it prints `CHK` lines for a human to review and still exits 0. It only looks
+at *added* lines near a guard, so a one-token edit to a line that `master` also has can pass it. v2.17.0 adds
+stricter checks beside it; what is **hard** (exit 1) and what stays **heuristic** (exit 0, `CHK`) is exactly this:
 
-- **`lib/claude-statusline.cjs`** is upstream's status-line bridge, copied verbatim into `~/.fanbox/hooks`
-  and run on every status refresh. Its diff against `master` must be **pure additions**: a removed or
-  rewritten upstream line is a hard failure (exit 1). Every added behavioral line must be gated, i.e. sit
-  inside `winBash()` / `winLang()` (win32-only helpers), inside the `if (bash && …) { … }` block, or itself
-  contain `process.platform === 'win32'`, `winBash()` or `winLang()`. The gates are checked too:
-  `winBash()` must start with the platform guard, and `winLang()` may only be called on a line that
-  tests `process.platform === 'win32'`.
-- **`FANBOX_DICT_RULES`** in `public/i18n-dict.js`: a single-line `[/regex/, (m) => …]` tuple counts as a
-  pure addition (b) only when its line number falls between `window.FANBOX_DICT_RULES = [` and the closing
-  `];` of the working-tree file. Anything else added to the dictionary file is still judged by the old rules.
+**Hard checks (exit 1).** The master compares need a local `master` ref (`git show master:<file>`) and fail
+closed without one; CRLF is normalised on both sides.
+
+1. **`lib/claude-statusline.cjs` is pure additions.** It is upstream's status-line bridge, copied verbatim into
+   `~/.fanbox/hooks` and run on every status refresh. Any removed or rewritten upstream line is a hard failure.
+2. **`electron/main.js` `const REL_PAGE` … `let pendingUpdate` is byte-identical to `master`.** That slice holds
+   upstream's `REL_PAGE`, `latestReleaseError` and `fetchLatestRelease` and is the one upstream's own test runs in a vm.
+3. **`checkUpdate`'s failure branch equals `master`'s except for the two Windows insertions.** The compared text
+   runs from `let info = null;` to `updRetry = 0;`. The expected text is `master`'s segment with the fetch line
+   replaced by `IS_WIN ? fetchLatestReleaseWin() : fetchLatestRelease()` and `winUpdateFailureDialog()` placed in
+   front of `master`'s `if (manual) {` (which becomes `} else if (manual) {`). The whole POSIX dialog and the
+   retry line must match `master` byte for byte.
+4. **`server.js` `usageRequest`: the curl selection is pinned and the rest of the function equals `master`.** The
+   `const curlExe = …;` line must read exactly
+   `PLATFORM === 'win32' ? (winFindExe('curl.exe') || path.join(WIN_SYS32, 'curl.exe')) : 'curl'` (it must begin
+   with `PLATFORM === 'win32' ?` and end with `: 'curl'`). With that line removed, the function must equal `master`'s
+   after two substitutions: `execFile('curl', ` → `execFile(curlExe, ` and `{ timeout: 14000, maxBuffer: 1024 * 1024 }`
+   → the same object plus `env: winSpawnEnv(), windowsHide: true`.
+5. **`FANBOX_DICT_RULES` in `public/i18n-dict.js` is anchored.** The dictionary is run in a vm and every regex rule
+   must start with `^`, end with an unescaped `$`, carry no `m` flag and have no top-level `|` (`^a|b$` is
+   anchored text but matches `b` anywhere before the end). A non-RegExp (legacy string) rule is accepted only if
+   `master` already has it. This is stricter than the old position check and also covers rules that were not added
+   by this fork.
+
+**Heuristic checks (exit 0, a human reviews each `CHK`).**
+
+- The per-line scan of every added line in the six core files (`electron/main.js`, `server.js`, `public/app.js`,
+  `public/i18n-dict.js`, `electron/wechat/driver.js`, `electron/wechat/env.js`) described above. Inside
+  `public/i18n-dict.js`, a single-line `[/regex/, (m) => …]` tuple counts as a pure addition (b) only when its line
+  number falls between `window.FANBOX_DICT_RULES = [` and the closing `];` of the working-tree file; anything
+  else added to the dictionary is still judged by the old rules.
+- In `lib/claude-statusline.cjs`, every added behavioral line should be gated: inside `winBash()` / `winLang()`
+  (win32-only helpers), inside the `if (bash && …) { … }` block, or itself contain `process.platform === 'win32'`,
+  `winBash()` or `winLang()`. The gates are checked too (`winBash()` must start with the platform guard, `winLang()`
+  may only be called on a line that tests `process.platform === 'win32'`). A violation is a `CHK` line, not a failure.
+
+`mutation-proof.js` proves the hard checks (see Run). The first four mutations are the ones a reviewer applied to
+a clone while the pre-follow-up scanner still printed "All files pass": `} else if (manual) {` →
+`} else if (manual && updRetry >= 0) {` in the POSIX failure dialog, a `console.log('x')` inside
+`fetchLatestRelease`, the curl ternary changed to `PLATFORM !== 'darwin'`, and an unanchored catch-all rule
+`[/已记录/, (m) => "Recorded"]` in `FANBOX_DICT_RULES`.
 
 ### Accepted shared edits (v2.16.1) — PR #60 sanitizer deviation retired
 
@@ -52,7 +85,7 @@ for the first time):
    `fetchLatestRelease` are **verbatim** (upstream's test slices main.js between `const REL_PAGE` and
    `let pendingUpdate`), so the fork's `WIN_REL_REPO` / `WIN_REL_PAGE` / `hasWinInstallerAsset` live after
    `let pendingUpdate`. This replaces the larger inline divergence 2.16.1 carried at `fetchLatestRelease`.
-3. `server.js` `usageRequest` — one platform ternary for the curl path (`winFindExe('curl')`, else
+3. `server.js` `usageRequest` — one platform ternary for the curl path (`winFindExe('curl.exe')`, the exact name, else
    `System32\curl.exe`, an absolute path because the request's stdin carries the OAuth token), plus
    `env: winSpawnEnv()` (returns `undefined` off Windows) and `windowsHide: true` (no-op off Windows).
    Same pattern the fork already used in this spot before 2.17.0.
@@ -79,7 +112,8 @@ sailed straight through the "segment starts with `.`" check.
 ## Run
 
 ```bash
-node experiments/winport-parity-202607/verify.js            # golden-rule heuristic scan
+node experiments/winport-parity-202607/verify.js            # golden-rule scan: heuristic CHK lines + hard checks (exit 1)
+node experiments/winport-parity-202607/mutation-proof.js    # clones the repo to a temp dir, applies 10 mutations, each must exit 1
 node experiments/winport-parity-202607/preview-guard.test.js # exits non-zero on regression
 ```
 
