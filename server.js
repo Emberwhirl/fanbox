@@ -555,10 +555,22 @@ ${ORGANIZE_TRASH_LINE}
 
 // codex 各版本旗标常变（0.139 移除了 --full-auto）：按 --help 实测有什么用什么，
 // 全不认识就裸跑——退化成多几次审批确认，但不会因 unexpected argument 拉不起来
-async function codexOrganizeFlags(bin) {
-  const help = await new Promise((resolve) => {
-    execFile(bin, ['--help'], { timeout: 8000 }, (err, stdout) => resolve(err ? '' : String(stdout)));
+// --help 探测统一入口（POSIX 语义不变：裸路径仍然 execFile(bin, ['--help'])）。
+// findAgentBin 的 Windows 兜底（resolveWinCli 的 npm .ps1 残留）返回的是 {file, preArgs, extraEnv}
+// 规格（node/Electron + CLI 入口）：--help 必须打到 CLI 入口上，打解释器本体等于没探测
+// （整理旗标静默退化，Electron 下还会拿 FanBox.exe 的输出当 codex 的）。
+function agentHelp(bin) {
+  const spec = bin && typeof bin === 'object' ? bin : { file: bin, preArgs: [] };
+  return new Promise((resolve) => {
+    execFile(spec.file, [...(spec.preArgs || []), '--help'], {
+      timeout: 8000,
+      env: spec.extraEnv ? { ...process.env, ...spec.extraEnv } : undefined,
+    }, (err, stdout) => resolve(err ? '' : String(stdout)));
   });
+}
+async function codexOrganizeFlags(bin) {
+  // findAgentBin 规格（resolveWinCli .ps1 残留）也走这里：agentHelp 把 --help 打到 CLI 入口
+  const help = await agentHelp(bin);
   if (help.includes('--full-auto')) return ' --full-auto';
   let flags = '';
   if (help.includes('--sandbox')) flags += ' --sandbox workspace-write';
@@ -573,10 +585,19 @@ async function findAgentBin(name) {
     // sanitize only on win32; pure Node PATH walk (winFindExe) — no where.exe OEM mojibake
     const safe = String(name || '').replace(/[^A-Za-z0-9._-]/g, '');
     if (!safe) return null;
-    return winFindExe(safe, [
+    const hit = winFindExe(safe, [
       process.env.APPDATA && path.join(process.env.APPDATA, 'npm'),
       process.env.USERPROFILE && path.join(process.env.USERPROFILE, '.local', 'bin'),
     ].filter(Boolean));
+    if (hit) return hit;
+    if (safe !== 'codex') return null;
+    // winFindExe 没命中才走 resolveWinCli 兜底。npm 只剩 .ps1 残留时它给的是
+    // {file: node|Electron, preArgs:[entry]}：只回 .file 的话 --help 探测会打在解释器上
+    // （整理旗标静默退化，Electron 下还会探测 FanBox.exe 本体）。有 preArgs 就把整个规格
+    // 带回（含 extraEnv），探测端用 agentHelp() 打到 CLI 入口；真 .exe 兜底仍返回裸路径。
+    const spec = winPortHelpers.resolveWinCli(safe, process.env, process.execPath);
+    if (!spec) return null;
+    return spec.preArgs && spec.preArgs.length ? spec : spec.file;
   }
   return new Promise((resolve) => {
     execFile('/bin/zsh', ['-lc', `command -v ${name}`], { timeout: 8000 }, (err, stdout) => {
@@ -690,9 +711,8 @@ ${history || '（还没有历史记录）'}
   // Windows Codex: renderer argv-spawns the PTY (prompt is one extraArgs slot, not in a shell string)
   if (PLATFORM === 'win32' && engine === 'codex') {
     const extra = [];
-    const help = await new Promise((resolve) => {
-      execFile(bin, ['--help'], { timeout: 8000 }, (err, stdout) => resolve(err ? '' : String(stdout)));
-    });
+    // findAgentBin 规格（resolveWinCli .ps1 残留）时 agentHelp 把 --help 打到 CLI 入口而不是解释器
+    const help = await agentHelp(bin);
     if (help.includes('--full-auto')) extra.push('--full-auto');
     else {
       if (help.includes('--sandbox')) extra.push('--sandbox', 'workspace-write');

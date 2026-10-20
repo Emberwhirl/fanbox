@@ -13,11 +13,12 @@
  *   S1  stand-in `claude` runs the hook file's statusLine through the real Git Bash (zh + en)
  *   S2  (optional, --soak N) the same stand-in refreshing every 5 s for N minutes: no second window / process
  *   S5  Git hidden from FanBox: no statusLine in the hook file, one-click still works
- *   S6  home path with a space + CJK works; a home with an apostrophe gets no statusLine
+ *   S6  home paths with space + CJK or an apostrophe run the status line safely
  *   U1/U2/U3/U5/U7  usage panel driven with fixtures and with generated Codex logs (zh, then en)
  *   U6  large Claude log tree: panel stays responsive while stats are computed
  *   W1/W2/W4  2,000-file burst, 100 identical rewrites, Recycle Bin delete, node_modules, sub\a.ts
  *   R1  update check failure dialog, both languages, button 0 opens the fork's release page
+ *       (startup setProxy({mode:'system'}) is rewritten to a closed proxy, loopback bypassed)
  *   X1  cheap regression subset (hook file shape, hooks round trip, Codex notify argv, Ctrl+Alt+M)
  *   everything else in plan section 3 is printed as MANUAL with the exact steps;
  *   `--launch` starts the dev app in a persistent isolated profile for those manual cases.
@@ -138,8 +139,8 @@ function csvObjects(text) {
   const head = rows[0];
   return rows.slice(1).map((r) => Object.fromEntries(head.map((h, i) => [h, r[i]])));
 }
-// Process table (Pid, Ppid, Name, Typed) -> FanBox/electron processes below mainPid that are NOT
-// Chromium children (no --type=): a second app instance started by a status-line refresh.
+// Process table (Pid, Ppid, Name, CmdKnown, Typed, Bridge) -> known FanBox/electron processes below mainPid that are NOT
+// Chromium children (no --type=) or the copied status-line bridge: a second app instance started by a refresh.
 function strayMains(table, mainPid) {
   const kids = new Map();
   for (const p of table) { const k = Number(p.Ppid); if (!kids.has(k)) kids.set(k, []); kids.get(k).push(p); }
@@ -148,10 +149,65 @@ function strayMains(table, mainPid) {
     const cur = q.shift();
     for (const p of kids.get(cur) || []) {
       const pid = Number(p.Pid); if (seen.has(pid)) continue; seen.add(pid); q.push(pid);
-      if (/^(electron|fanbox)\.exe$/i.test(p.Name || '') && String(p.Typed) === '0') out.push(p);
+      // node-pty's conout worker is Electron re-executing the parent argv, with no --type=
+      // and no extra script path. A status-line launch is a child of bash and has its own
+      // command line, so it still counts.
+      if (/^(electron|fanbox)\.exe$/i.test(p.Name || '') && String(p.CmdKnown) === '1' && String(p.Typed) === '0' && String(p.Bridge) !== '1' && String(p.ConptyAgent) !== '1' && String(p.ConoutWorker) !== '1' && String(p.SameAsParent) !== '1') out.push(p);
     }
   }
   return out;
+}
+function bridgeMains(table, mainPid) {
+  const kids = new Map();
+  for (const p of table) { const k = Number(p.Ppid); if (!kids.has(k)) kids.set(k, []); kids.get(k).push(p); }
+  const out = []; const seen = new Set(); const q = [Number(mainPid)];
+  while (q.length) {
+    const cur = q.shift();
+    for (const p of kids.get(cur) || []) {
+      const pid = Number(p.Pid); if (seen.has(pid)) continue; seen.add(pid); q.push(pid);
+      if (String(p.Bridge) === '1') out.push(p);
+    }
+  }
+  return out;
+}
+function unknownMains(table, mainPid) {
+  const kids = new Map();
+  for (const p of table) { const k = Number(p.Ppid); if (!kids.has(k)) kids.set(k, []); kids.get(k).push(p); }
+  const out = []; const seen = new Set(); const q = [Number(mainPid)];
+  while (q.length) {
+    const cur = q.shift();
+    for (const p of kids.get(cur) || []) {
+      const pid = Number(p.Pid); if (seen.has(pid)) continue; seen.add(pid); q.push(pid);
+      if (/^(electron|fanbox)\.exe$/i.test(p.Name || '') && String(p.CmdKnown) !== '1') out.push(p);
+    }
+  }
+  return out;
+}
+// Full-table scan (NOT tree-scoped): the walks above only reach descendants of the app main pid,
+// so a hung bridge or runaway full-app image whose intermediate ancestors (the stand-in
+// claude.cmd / node, bash -c) exited BEFORE the census becomes an orphan row (Ppid = a pid no
+// longer in the table) that the walk never reaches — exactly the hang scenario the bridge-exit
+// and persistent-stray checks target. Attribution is strict so unrelated system Electron
+// processes (other apps' electron.exe, VS Code, ...) never fail the run: (a) any row whose
+// command line matches the COPIED bridge script path — slash-normalized, case-insensitive, the
+// same matching procIdentity uses (BridgeExact from the census query) — wherever it sits in the
+// table; (b) any no-type row of the app's own executable carrying the app's script dir / server
+// path or the hook script path (AppAttr: exe match + needle in CommandLine) whose parent process
+// is gone. A bridge row is attributed by definition, so an orphaned bridge counts in both. The
+// app's own main pid is never a stray. Orphan = Ppid > 0 and absent from the table (a pid-0
+// parent means "no parent recorded", not "parent exited").
+function fullTableStrays(table, mainPid) {
+  const live = new Set(table.map((p) => Number(p.Pid)));
+  const bridges = [], orphans = [];
+  for (const p of table) {
+    if (Number(p.Pid) === Number(mainPid)) continue;
+    const bridge = String(p.BridgeExact) === '1';
+    const attributed = bridge || (String(p.Typed) === '0' && String(p.AppAttr) === '1');
+    if (bridge) bridges.push(p);
+    const ppid = Number(p.Ppid);
+    if (attributed && Number.isFinite(ppid) && ppid > 0 && !live.has(ppid)) orphans.push(p);
+  }
+  return { bridges, orphans };
 }
 function dirHasGit(dir, exists, P) {
   const d = String(dir || '').replace(/^"(.*)"$/, '$1');
@@ -449,16 +505,64 @@ note({ at: Date.now(), kind: 'loaded', pid: process.pid });
 `;
 }
 
+// Loaded into the Electron main process with `-r` (R1 only). FanBox's first proxy call is
+// setProxy({ mode: 'system', proxyBypassRules }) and it is not awaited. Rewriting that call to a
+// closed proxy, before any GitHub request, is what makes net.fetch fail. Doing the same setProxy
+// later does not: a session that has already fetched successfully keeps using the direct connection.
+// The bypass rules are kept, so http://localhost still reaches the FanBox server. No --proxy-bypass-list
+// on the command line: cmd.exe treats "<" as redirection and an empty bypass list sends loopback
+// through the dead proxy, which leaves the window on an error page.
+function offlineUpdatePreloadSrc() {
+  return `'use strict';
+const fs = require('fs');
+const { app, session } = require('electron');
+const LOG = process.env.FANBOX_R1_PROXY_LOG;
+const note = (o) => { try { if (LOG) fs.appendFileSync(LOG, JSON.stringify(o) + '\\n'); } catch (e) { /* log is best effort */ } };
+function wrap(ses) {
+  if (!ses || ses.__fbOfflineWrapped) return false;
+  const orig = ses.setProxy.bind(ses);
+  const wrapped = function (config) {
+    if (config && config.mode === 'system') {
+      const next = Object.assign({}, config, { mode: 'fixed_servers', proxyRules: 'http://127.0.0.1:9' });
+      note({ at: Date.now(), kind: 'rewritten-system' });
+      return orig(next);
+    }
+    note({ at: Date.now(), kind: 'passthrough', mode: config && config.mode || '' });
+    return orig(config);
+  };
+  let ok = false;
+  try { ses.setProxy = wrapped; ok = ses.setProxy === wrapped; } catch (e) { /* read-only: try defineProperty */ }
+  if (!ok) { try { Object.defineProperty(ses, 'setProxy', { value: wrapped, configurable: true, writable: true }); ok = ses.setProxy === wrapped; } catch (e) { /* still read-only */ } }
+  if (!ok) { note({ at: Date.now(), kind: 'wrap-failed' }); return false; }
+  try { Object.defineProperty(ses, '__fbOfflineWrapped', { value: true }); } catch (e) { ses.__fbOfflineWrapped = true; }
+  note({ at: Date.now(), kind: 'wrapped' });
+  return true;
+}
+function arm() {
+  try { wrap(session.defaultSession); }
+  catch (e) { note({ at: Date.now(), kind: 'arm-error', message: String(e && e.message || e) }); }
+}
+note({ at: Date.now(), kind: 'loaded', pid: process.pid });
+if (app.isReady()) arm(); else app.on('ready', arm);
+`;
+}
+
 // Page-side helpers: frame-gap sampler, PTY echo probe, card watcher. Installed with win.evaluate().
 const PAGE_LIB_SRC = `(() => {
   const L = window.__fbLib = window.__fbLib || {};
   L.startFrames = () => {
-    const s = L.frames = { gaps: [], max: 0, frames: 0, last: performance.now(), running: true, t0: performance.now() };
-    const loop = (t) => { if (!s.running) return; const g = t - s.last; s.last = t; s.frames++; if (g > s.max) s.max = g; if (g > 50) s.gaps.push({ at: Math.round(t - s.t0), ms: Math.round(g) }); requestAnimationFrame(loop); };
+    // Keep a tiny visible paint workload and record visibility/focus on slow
+    // frames, to distinguish frame scheduling from log-scanning work. This
+    // diagnostic does not relax the frame-gap acceptance threshold.
+    const marker = document.createElement('div');
+    marker.style.cssText = 'position:fixed;top:0;left:0;width:3px;height:3px;background:#0d6b5a;z-index:2147483647;pointer-events:none';
+    document.body.appendChild(marker);
+    const s = L.frames = { gaps: [], max: 0, frames: 0, last: performance.now(), running: true, t0: performance.now(), marker };
+    const loop = (t) => { if (!s.running) return; marker.style.transform = 'translateX(' + (s.frames % 2) + 'px)'; const g = t - s.last; s.last = t; s.frames++; if (g > s.max) s.max = g; if (g > 50) s.gaps.push({ at: Math.round(t - s.t0), ms: Math.round(g), visibility: document.visibilityState, focused: document.hasFocus() }); requestAnimationFrame(loop); };
     requestAnimationFrame(loop);
     return true;
   };
-  L.stopFrames = () => { const s = L.frames; if (!s) return null; s.running = false; return { max: Math.round(s.max), frames: s.frames, seconds: +((performance.now() - s.t0) / 1000).toFixed(1), over50: s.gaps.length, gaps: s.gaps.slice(0, 40) }; };
+  L.stopFrames = () => { const s = L.frames; if (!s) return null; s.running = false; s.marker.remove(); return { max: Math.round(s.max), frames: s.frames, seconds: +((performance.now() - s.t0) / 1000).toFixed(1), over50: s.gaps.length, gaps: s.gaps.slice(0, 40) }; };
   L.probe = async (id, ms, every) => {
     const sess = term.sessions.find((x) => x.id === id);
     if (!sess) return { error: 'no session ' + id };
@@ -523,15 +627,39 @@ function runPs(script, env, timeout) {
   return new Promise((resolve) => execFile(PS_EXE, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
     { windowsHide: true, timeout: timeout || 20000, maxBuffer: 16 * 1024 * 1024, env: env || process.env }, (e, out) => resolve(e ? '' : String(out))));
 }
-const PROC_SCRIPT = "Get-CimInstance Win32_Process | ForEach-Object { [pscustomobject]@{ Pid=$_.ProcessId; Ppid=$_.ParentProcessId; Name=$_.Name; Typed=[int]([bool]($_.CommandLine -match '--type=')) } } | ConvertTo-Csv -NoTypeInformation";
-async function procTable() {
-  let rows = csvObjects(await runPs(PROC_SCRIPT, undefined, 30000));
+// Bridge / ConptyAgent / ConoutWorker are marked by SCRIPT PATH in the command line, for every app
+// image name: under FANBOX_V2170_EXE the bridge runs as FanBox.exe, and the old ^electron\.exe$
+// name gate made the packaged bridge invisible to the bridge-exit check. They mark only the
+// expected copied script and node-pty helpers, never an arbitrary child. It contains no token.
+// BridgeExact / AppAttr are the strict full-table attribution marks (env-driven needles, no
+// command lines in the output): BridgeExact matches the COPIED bridge script path the same
+// slash-normalized way procIdentity does; AppAttr is "same executable as the running app image
+// AND the command line carries the app's script dir / server path or the hook script path", so
+// unrelated system Electron processes are never attributed. Exe is a safe identity field.
+const PROC_SCRIPT = "$all=@(Get-CimInstance Win32_Process); $cmd=@{}; foreach($p in $all){ $cmd[[int]$p.ProcessId]=[string]$p.CommandLine }; $bridge=[string]$env:FANBOX_CENSUS_BRIDGE; $appExe=[string]$env:FANBOX_CENSUS_APP_EXE; $needles=@(($env:FANBOX_CENSUS_NEEDLES -split [char]10) | Where-Object { $_ }); $all | ForEach-Object { $parent=[string]$cmd[[int]$_.ParentProcessId]; $cl=[string]$_.CommandLine; $ncl=$cl.Replace([char]92,[char]47); $hit=$false; foreach($n in $needles){ if($n -and ($ncl.IndexOf($n.Replace([char]92,[char]47),[System.StringComparison]::OrdinalIgnoreCase) -ge 0)){ $hit=$true; break } }; [pscustomobject]@{ Pid=$_.ProcessId; Ppid=$_.ParentProcessId; Name=$_.Name; CmdKnown=[int](-not [string]::IsNullOrEmpty($_.CommandLine)); Typed=[int]([bool]($_.CommandLine -match '--type=')); Bridge=[int]([bool](($_.CommandLine -match '(?i)[\\\\/]\\.fanbox[\\\\/]hooks[\\\\/]claude-statusline\\.cjs(?:\\\"|\\s|$)'))); ConptyAgent=[int]([bool](($_.CommandLine -match '(?i)[\\\\/]node-pty[\\\\/]lib[\\\\/]conpty_console_list_agent(?:\\.js)?(?:\\\"|\\s|$)'))); ConoutWorker=[int]([bool](($_.CommandLine -match '(?i)[\\\\/]node-pty[\\\\/]lib[\\\\/]worker[\\\\/]conoutSocketWorker(?:\\.js)?(?:\\\"|\\s|$)'))); SameAsParent=[int]([bool]($parent -and $_.CommandLine -and $_.CommandLine -eq $parent)); BridgeExact=[int]([bool]($bridge -and $cl -and ($ncl.IndexOf($bridge.Replace([char]92,[char]47),[System.StringComparison]::OrdinalIgnoreCase) -ge 0))); AppAttr=[int]([bool]($appExe -and $_.ExecutablePath -and ($_.ExecutablePath -ieq $appExe) -and $hit)); Exe=$_.ExecutablePath } } | ConvertTo-Csv -NoTypeInformation";
+async function procTable(attr) {
+  // Full-table attribution needles travel via env (like procIdentity's bridge needle): no path
+  // is ever baked into the script and no command line comes back into the evidence.
+  const env = Object.assign({}, process.env, {
+    FANBOX_CENSUS_BRIDGE: String((attr && attr.bridgeScript) || ''),
+    FANBOX_CENSUS_APP_EXE: String((attr && attr.appExe) || ''),
+    FANBOX_CENSUS_NEEDLES: ((attr && attr.needles) || []).map(String).filter(Boolean).join('\n'),
+  });
+  let rows = csvObjects(await runPs(PROC_SCRIPT, env, 30000));
   if (!rows.length) { // CIM unavailable: fall back to tasklist (names and pids only, no parent links)
     const out = await new Promise((resolve) => execFile(TASKLIST, ['/FO', 'CSV', '/NH'], { windowsHide: true, timeout: 20000 }, (e, o) => resolve(e ? '' : String(o))));
     rows = parseCsv(out).map((r) => ({ Name: r[0], Pid: r[1], Ppid: '0', Typed: '1' }));
     rows.degraded = true;
   }
   return rows;
+}
+// Re-query just suspicious no-type descendants without recording their full command lines:
+// Electron renderer argv can contain the control token. The evidence records only safe identity fields.
+async function procIdentity(pids, bridgeScript) {
+  const wanted = (pids || []).map((p) => Number(p)).filter(Number.isFinite);
+  if (!wanted.length) return [];
+  const script = "$ids=@(" + wanted.join(',') + "); $needle=$env:FANBOX_CENSUS_BRIDGE; $all=@(Get-CimInstance Win32_Process); $cmd=@{}; foreach($p in $all){ $cmd[[int]$p.ProcessId]=[string]$p.CommandLine }; $all | Where-Object { $ids -contains [int]$_.ProcessId } | ForEach-Object { $parent=[string]$cmd[[int]$_.ParentProcessId]; [pscustomobject]@{ Pid=$_.ProcessId; Ppid=$_.ParentProcessId; Name=$_.Name; HasCommandLine=[int](-not [string]::IsNullOrEmpty($_.CommandLine)); Typed=[int]([bool]($_.CommandLine -match '--type=')); ExactBridgeScript=[int]([bool]($needle -and $_.CommandLine -and $_.CommandLine.Replace([char]92,[char]47).IndexOf($needle.Replace([char]92,[char]47),[System.StringComparison]::OrdinalIgnoreCase) -ge 0)); ExactConptyAgent=[int]([bool]($_.CommandLine -match '(?i)[\\\\/]node-pty[\\\\/]lib[\\\\/]conpty_console_list_agent(?:\\.js)?(?:\\\"|\\s|$)')); ExactConoutWorker=[int]([bool]($_.CommandLine -match '(?i)[\\\\/]node-pty[\\\\/]lib[\\\\/]worker[\\\\/]conoutSocketWorker(?:\\.js)?(?:\\\"|\\s|$)')); SameAsParent=[int]([bool]($parent -and $_.CommandLine -and $_.CommandLine -eq $parent)); Exe=$_.ExecutablePath } } | ConvertTo-Csv -NoTypeInformation";
+  return csvObjects(await runPs(script, Object.assign({}, process.env, { FANBOX_CENSUS_BRIDGE: String(bridgeScript || '') }), 10000));
 }
 function killTreeSync(pid) { try { execFileSync(TASKKILL, ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 20000 }); } catch { /* already gone */ } }
 const killTree = (pid) => new Promise((resolve) => execFile(TASKKILL, ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: 20000 }, () => resolve()));
@@ -573,7 +701,7 @@ class Ctx {
     return f;
   }
   async port() { const p = await freePorts(this.nextPortFrom); this.nextPortFrom = p + 2; return p; }
-  killAll() { for (const h of this.live) killTreeSync(h.pid); this.live.clear(); }
+  killAll() { for (const h of this.live) killTreeSync(h.wrapperPid || h.pid); this.live.clear(); }
 }
 
 function installStandIn(home, extraDirs) {
@@ -610,32 +738,54 @@ async function launchApp(ctx, o) {
       FANBOX_STANDIN_NODE: process.execPath, FANBOX_STANDIN_HELPERS: path.join(ROOT, 'win-port-helpers.js'),
       FANBOX_STANDIN_RESULT: path.join(home, 'standin-result.json'), FANBOX_STANDIN_RUNS: o.runs || 3,
       FANBOX_CODEX_DUMP: path.join(home, 'codex-argdump.json'), FANBOX_HIDEGIT_LOG: hideLog,
+      FANBOX_R1_PROXY_LOG: o.offlineUpdate ? path.join(home, 'r1-proxy.log') : undefined,
     }, o.env || {}),
   });
-  let preload = null;
-  if (o.hideGit) { preload = path.join(home, 'hide-git-preload.cjs'); fs.writeFileSync(preload, hideGitPreloadSrc()); }
+  const preloads = [];
+  if (o.hideGit) { const p = path.join(home, 'hide-git-preload.cjs'); fs.writeFileSync(p, hideGitPreloadSrc()); preloads.push(p); }
+  if (o.offlineUpdate) { const p = path.join(home, 'offline-update-preload.cjs'); fs.writeFileSync(p, offlineUpdatePreloadSrc()); preloads.push(p); }
   const args = ['--user-data-dir=' + userData, '--disable-features=CalculateNativeWinOcclusion', '--disable-renderer-backgrounding', '--disable-background-timer-throttling'];
-  if (preload) args.push('-r', preload);
-  args.push(ROOT);
-  const electronExe = require(path.join(ROOT, 'node_modules', 'electron'));
+  // Block non-loopback traffic before the app's own setProxy runs. The bypass list is NOT passed
+  // here: cmd.exe eats "<...>", and an empty bypass list forces localhost through the proxy.
+  if (o.offlineUpdate) args.push('--proxy-server=http://127.0.0.1:9');
+  for (const p of preloads) args.push('-r', p);
+  if (!process.env.FANBOX_V2170_EXE) args.push(ROOT);
+  const electronExe = process.env.FANBOX_V2170_EXE || require(path.join(ROOT, 'node_modules', 'electron'));
   const app = await ctx.pw._electron.launch({ executablePath: electronExe, args, cwd: ROOT, env, timeout: 90000 });
-  const h = { app, pid: app.process().pid, home, port, env, dropped, standinDir, codexDir, hideLog, errors: [], label: o.label || '' };
+  const wrapperPid = app.process().pid;
+  // Playwright launches Electron through `cmd.exe /c` on Windows, so app.process().pid is
+  // that wrapper. The census has to start at the real Electron process, or the app itself
+  // looks like a second instance.
+  const electronPid = await app.evaluate(() => process.pid);
+  const h = { app, pid: electronPid, wrapperPid, home, port, env, dropped, standinDir, codexDir, hideLog, errors: [], label: o.label || '' };
   ctx.live.add(h);
   h.win = await app.firstWindow();
   h.win.on('pageerror', (e) => h.errors.push(String(e && e.message || e)));
   await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; w.setSize(1500, 940); w.center(); w.show(); w.focus(); });
   await sleep(2200);
-  await h.win.evaluate((c) => {
+  const seedArg = { lang: o.lang || 'zh', usage: !!o.usage };
+  const seedStorage = () => h.win.evaluate((c) => {
     localStorage.setItem('fb_guided', '1'); localStorage.setItem('fb_term_open', '1'); localStorage.setItem('fb_term_dock', 'bottom');
     localStorage.setItem('fb_lang', c.lang); localStorage.setItem('fb_usage_open', c.usage ? '1' : '0');
-  }, { lang: o.lang || 'zh', usage: !!o.usage });
+  }, seedArg);
+  try {
+    await seedStorage();
+  } catch (e) {
+    // A dead proxy can leave the first paint on a chrome-error page, which has no localStorage.
+    // FanBox retries loadURL every 150 ms once loopback is reachable.
+    await h.win.waitForFunction(() => { try { return location.hostname === 'localhost' || location.hostname === '127.0.0.1'; } catch (err) { return false; } }, null, { timeout: 20000 });
+    await seedStorage();
+  }
   await h.win.evaluate(() => location.reload()).catch(() => {});
   await sleep(2500);
   await h.win.waitForFunction(() => typeof term !== 'undefined' && typeof usagePanel !== 'undefined' && !!window.fanboxEnv && !!document.querySelector('#usage-body'), null, { timeout: 40000 });
   await h.win.evaluate(() => { try { window.playChime = () => {}; } catch { /* none */ } });
   await h.win.evaluate(PAGE_LIB_SRC);
   if (o.perf) {
-    await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; w.setAlwaysOnTop(true); w.webContents.setBackgroundThrottling(false); w.focus(); });
+    // Keep the shipped rendering settings. Foreground validity is sampled from
+    // BrowserWindow, since document.visibilityState can lie under test flags.
+    await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; w.setAlwaysOnTop(true); w.focus(); });
+    await h.win.evaluate(() => { const n = document.createElement('div'); n.textContent = 'Performance test — keep this window focused and uncovered until it closes'; n.style.cssText = 'position:fixed;top:40px;left:50%;transform:translateX(-50%);padding:6px 12px;background:#ffe6a6;color:#241b00;border-radius:6px;z-index:2147483646;pointer-events:none;font:13px Segoe UI'; document.body.appendChild(n); });
   }
   if (standinDir) await putFirstOnPath(app, standinDir);
   if (codexDir) await putFirstOnPath(app, codexDir);
@@ -652,11 +802,29 @@ async function putFirstOnPath(app, dir) {
   }, dir);
 }
 async function mainEnvOf(app) { return app.evaluate(() => Object.assign({}, process.env)); }
+async function startNativeFrameProbe(app) {
+  await app.evaluate(({ BrowserWindow }) => {
+    global.__frameNative = [];
+    const sample = () => { const w = BrowserWindow.getAllWindows()[0]; if (w) global.__frameNative.push({ at: Date.now(), visible: w.isVisible(), minimized: w.isMinimized(), focused: w.isFocused() }); };
+    sample(); global.__frameNativeTimer = setInterval(sample, 250);
+  });
+}
+async function stopNativeFrameProbe(app) {
+  return app.evaluate(() => { clearInterval(global.__frameNativeTimer); return global.__frameNative; });
+}
+function frameWindowValid(samples) {
+  return samples.length > 0 && samples.every(s => s.visible && !s.minimized && s.focused);
+}
+function validFrameWindow(id, samples) {
+  const invalid = samples.filter(s => !s.visible || s.minimized || !s.focused);
+  check(id, samples.length > 0 && invalid.length === 0, 'Performance window stayed visible, focused and not minimized', invalid.length ? 'INVALID MEASUREMENT: keep the test window foreground and uncovered; samples ' + JSON.stringify(invalid.slice(0, 3)) : samples.length + ' native window samples');
+  return frameWindowValid(samples);
+}
 async function closeApp(ctx, h) {
   if (!h) return;
   try { await h.win.evaluate(() => { try { window.__fbLib.stopFrames(); window.__fbLib.stopCard(); } catch { /* none */ } }); } catch { /* window gone */ }
   await Promise.race([h.app.close().catch(() => {}), sleep(8000)]);
-  await killTree(h.pid); // app.close() can hang while a ConPTY child is alive
+  await killTree(h.wrapperPid || h.pid); // app.close() can hang while a ConPTY child is alive
   ctx.live.delete(h);
   await sleep(800);
 }
@@ -718,19 +886,28 @@ async function statusLineCase(ctx, o) {
     check(id, token.length >= 16 && !hook.raw.includes(token), label + ': hook file contains no token literal', `token length ${token.length}`);
     const execPath = await app.evaluate(() => process.execPath);
     const wantCmd = H.winStatusLineCommand(execPath, hook.script);
+    // Full-table census attribution: the COPIED bridge script path (the slash-normalized needle
+    // procIdentity uses) plus the app's script dir / server path and the running app image.
+    // Unrelated system Electron processes carry neither, so they can never be attributed.
+    const censusAttr = { bridgeScript: hook.script, appExe: execPath, needles: [hook.script, ROOT, path.join(ROOT, 'server.js')] };
     if (o.expectStatusLine) {
       check(id, !!hook.json && !!hook.json.statusLine && hook.json.statusLine.type === 'command', label + ': hook file has a statusLine', JSON.stringify(hook.json && hook.json.statusLine));
       check(id, !!wantCmd && hook.json.statusLine.command === wantCmd, label + ': statusLine.command = ELECTRON_RUN_AS_NODE=1 \'<FanBox exe>\' \'<hooks>/claude-statusline.cjs\' (forward slashes, single quotes)', hook.json.statusLine && hook.json.statusLine.command);
+      if (o.apostrophe) check(id, !!wantCmd && wantCmd.includes("'\"'\"'"), label + ': winStatusLineCommand escapes an apostrophe with a Bash single-quote splice', String(wantCmd));
       check(id, fs.existsSync(hook.script) && fs.readFileSync(hook.script, 'utf8') === fs.readFileSync(path.join(ROOT, 'lib', 'claude-statusline.cjs'), 'utf8'), label + ': bridge script copied byte for byte to ~/.fanbox/hooks', hook.script);
     } else {
       check(id, !!hook.json && !('statusLine' in hook.json), label + ': hook file has no statusLine', JSON.stringify(Object.keys(hook.json || {})));
       check(id, !fs.existsSync(hook.script), label + ': bridge script was not copied', hook.script);
-      if (o.apostrophe) check(id, wantCmd === null, label + ': winStatusLineCommand returns null for a path with an apostrophe (cannot be single-quoted safely)', String(wantCmd));
     }
 
     // ---- one-click launch of the stand-in ----
-    const before = { windows: app.windows().length, bw: await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), table: await procTable() };
+    const before = { windows: app.windows().length, bw: await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), table: await procTable(censusAttr) };
     const strayBefore = strayMains(before.table, h.pid);
+    // Census honesty: the tasklist fallback has no parent links and no Bridge/SameAsParent fields,
+    // so a tree walk finds no descendants and every "nothing found" claim would be vacuous. Any
+    // census check whose underlying table is degraded is recorded FAIL with this reason below,
+    // never a green PASS.
+    const degradedReason = 'RECORDED FAIL: process census degraded to tasklist (names and pids only, no parent links, no command lines, no Bridge/SameAsParent fields); the tree walk finds no descendants and the full-table scan cannot attribute any row, so these claims cannot be verified';
     const { cmd, termId } = await oneClick(h, project);
     const wantFlag = ' --settings "' + expectedHookPath(home) + '"';
     check(id, cmd === 'claude --dangerously-skip-permissions' + wantFlag, label + ': one-click command = claude --dangerously-skip-permissions --settings "<abs hook file>"', cmd);
@@ -743,8 +920,13 @@ async function statusLineCase(ctx, o) {
       if (r && (r.statusDone || r.bashMissing)) { finished = r; break; }
       if (o.soak && Date.now() >= nextCensus) { // once a minute: no stray main process, no window growth, process count stable
         nextCensus += 60000;
-        const tbl = await procTable();
-        census.push({ minute: Math.round((Date.now() - tWait) / 60000), refreshes: r ? r.runs.length : 0, stray: strayMains(tbl, h.pid).length, electronProcs: tbl.filter((p) => /^(electron|fanbox)\.exe$/i.test(p.Name || '')).length, windows: app.windows().length });
+        const tbl = await procTable(censusAttr);
+        // Tree-scoped stray counts miss rows whose ancestors already exited; the full-table orphan
+        // count closes that gap per minute. A bridge row may legitimately be alive mid-refresh
+        // here (refreshes run every 5 s), so per-minute bridge counts are evidence only — the
+        // bridge-exit claim ("none alive at all") is asserted once, at the after-census below.
+        const fullMinute = fullTableStrays(tbl, h.pid);
+        census.push({ minute: Math.round((Date.now() - tWait) / 60000), refreshes: r ? r.runs.length : 0, stray: strayMains(tbl, h.pid).length, fullBridge: fullMinute.bridges.length, fullOrphan: fullMinute.orphans.length, electronProcs: tbl.filter((p) => /^(electron|fanbox)\.exe$/i.test(p.Name || '')).length, windows: app.windows().length, degraded: !!tbl.degraded });
         console.log('INFO: [' + id + '] soak minute ' + census[census.length - 1].minute + ': ' + JSON.stringify(census[census.length - 1]));
       }
       await sleep(400);
@@ -784,7 +966,8 @@ async function statusLineCase(ctx, o) {
         const baseline = before.table.filter((p) => /^(electron|fanbox)\.exe$/i.test(p.Name || '')).length;
         info(id, label + ': soak refresh distribution', JSON.stringify({ refreshes: ms.length, median: sorted[Math.floor(sorted.length / 2)], p95: sorted[Math.floor(sorted.length * 0.95)], max: sorted[sorted.length - 1], over1s: ms.filter((x) => x >= 1000).length }));
         check(id, ms.length >= soakRuns - 1, label + ': the stand-in completed its ' + soakRuns + ' scheduled refreshes over ' + o.soak + ' minutes', ms.length + ' done');
-        check(id, census.length >= Math.max(1, o.soak - 1) && census.every((c) => c.stray === 0), label + ': every minute: no extra FanBox / electron main process below the app', JSON.stringify(census.map((c) => c.stray)));
+        const soakDegraded = !!before.table.degraded || census.some((c) => c.degraded);
+        check(id, !soakDegraded && census.length >= Math.max(1, o.soak - 1) && census.every((c) => c.stray === 0 && c.fullOrphan === 0), label + ': every minute: no extra FanBox / electron main process below the app and no orphaned app row in the full process table', soakDegraded ? degradedReason : JSON.stringify(census.map((c) => ({ stray: c.stray, orphan: c.fullOrphan }))));
         check(id, census.every((c) => c.windows === before.windows), label + ': every minute: no second FanBox window', JSON.stringify(census.map((c) => c.windows)));
         check(id, census.every((c) => c.electronProcs <= baseline + 3), label + ': electron process count did not grow (baseline ' + baseline + ', +3 allowed for Chromium helpers)', JSON.stringify(census.map((c) => c.electronProcs)));
       }
@@ -808,17 +991,58 @@ async function statusLineCase(ctx, o) {
       check(id, !!off && off.source !== 'statusline' && !!off.error, label + ': Claude quota comes from the official-API path (no live bridge), here an error because the sandbox has no login', JSON.stringify(off && { source: off.source, error: off.error }));
       await win.evaluate(() => { localStorage.setItem('fb_usage_open', '1'); usagePanel.apply(); });
       const t = await waitFor(async () => { await win.evaluate(() => usagePanel.refresh()); const x = await win.evaluate(() => document.querySelector('#usage-body').innerText); return /Claude Code/.test(x) ? x : null; }, 15000, 1000);
-      check(id, !!t && !t.includes('CLI实时回传') && !/live from cli/i.test(t), label + ': panel does not claim a live CLI source', trunc(String(t).replace(/\s+/g, ' '), 160));
+      const claimsLive = /CLI实时回传(?:\s*[·•]|\s*$)/.test(t) || /\bLive from CLI(?:\s*[·•]|\s*$)/i.test(t);
+      check(id, !!t && !claimsLive, label + ': panel does not claim a live CLI source', trunc(String(t).replace(/\s+/g, ' '), 160));
     }
 
     // ---- no second FanBox: windows and processes ----
-    await sleep(1200);
-    const afterTable = await procTable();
+    // The expected copied bridge is Electron-as-Node and therefore deliberately has no --type=.
+    // Give its final callback a bounded grace period, then require that it has exited; all other
+    // no-type Electron descendants still fail the second-app check.
+    await sleep(3200);
+    const afterTable = await procTable(censusAttr);
     const after = { windows: app.windows().length, bw: await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), stray: strayMains(afterTable, h.pid) };
+    // A process can exit between the snapshot and CIM's detail query. Treat that as a vanished
+    // snapshot entry, but retain a persistent non-bridge no-type Electron descendant as a failure.
+    const firstStray = after.stray;
+    const firstUnknown = unknownMains(afterTable, h.pid);
+    await sleep(250);
+    const identities = await procIdentity(firstStray.concat(firstUnknown).map((p) => p.Pid), hook.script);
+    const sameExe = (p) => String(p.Exe || '').toLowerCase() === String(execPath || '').toLowerCase();
+    // Expected node-pty helpers are identified by executable path (the app image re-executes its own
+    // argv as the conout worker), never by image name, so a FANBOX_V2170_EXE run is classified
+    // exactly like dev Electron and only the app's own helpers are whitelisted.
+    const isExpectedPtyHelper = (p) => sameExe(p) && (String(p.ExactConptyAgent) === '1' || String(p.ExactConoutWorker) === '1' || String(p.SameAsParent) === '1');
+    const persistentStray = identities.filter((p) => Number(p.Pid) !== Number(h.pid) && String(p.HasCommandLine) === '1' && String(p.ExactBridgeScript) !== '1' && !isExpectedPtyHelper(p));
+    const unknownPersistent = identities.filter((p) => String(p.HasCommandLine) !== '1');
     check(id, after.windows === before.windows && after.bw === before.bw, label + ': no second FanBox window (Playwright windows / BrowserWindow count unchanged)', `windows ${before.windows} -> ${after.windows}, BrowserWindow ${before.bw} -> ${after.bw}`);
-    if (afterTable.degraded) warn(id, label + ': process census degraded to tasklist (no parent links); stray-main check is weaker', 'CIM query returned nothing');
-    check(id, strayBefore.length === 0 && after.stray.length === 0, label + ': no extra FanBox / electron main process below the app after the refreshes', JSON.stringify(after.stray.map((p) => ({ pid: p.Pid, name: p.Name }))));
-    ctx.evidence(`processes-${label.replace(/\W+/g, '_')}.json`, { before: before.table.length, after: afterTable.length, stray: after.stray });
+    const censusDegraded = !!(afterTable.degraded || before.table.degraded);
+    if (censusDegraded) warn(id, label + ': process census degraded to tasklist (no parent links); the census checks below are recorded FAIL, never a vacuous PASS', 'CIM query returned nothing');
+    // The bridge is marked by script path for every app image name, so a live bridge — and the
+    // historical runaway-full-app regression, which carries the same argv — is seen here instead of
+    // vanishing from the checks. Non-vacuous: a bridge launch must be observed (the stand-in's
+    // statusLine runs are bridge launches), the census must see the app's own main process, and no
+    // marked process may survive the bounded grace.
+    // Full-table scan (NOT tree-scoped): the walks above only reach descendants of the app main,
+    // so a hung bridge or runaway app image whose ancestors (the stand-in claude.cmd / node,
+    // bash -c) exited before this census is an orphan row they never reach. (a) any row carrying
+    // the copied bridge script path fails the bridge-exit claim wherever it sits in the table;
+    // (b) any orphaned no-type row of this app's executable carrying its script path fails the
+    // stray claim. The tasklist fallback has no command lines to attribute, so censusDegraded
+    // below turns both claims into a recorded FAIL instead of a vacuous pass.
+    const full = fullTableStrays(afterTable, h.pid);
+    const fullBridges = full.bridges.map((p) => ({ pid: p.Pid, ppid: p.Ppid, name: p.Name, exe: p.Exe }));
+    const fullOrphans = full.orphans.map((p) => ({ pid: p.Pid, ppid: p.Ppid, name: p.Name, typed: p.Typed, exe: p.Exe }));
+    const afterBridges = bridgeMains(afterTable, h.pid);
+    const censusSawMain = afterTable.some((p) => Number(p.Pid) === Number(h.pid));
+    const bridgeLaunched = !!(o.expectStatusLine && rec && Array.isArray(rec.runs) && rec.runs.length >= 1);
+    const s5NothingRan = !o.expectStatusLine && Array.isArray(rec.runs) && rec.runs.length === 0;
+    check(id, !censusDegraded && afterBridges.length === 0 && full.bridges.length === 0 && censusSawMain && (bridgeLaunched || s5NothingRan),
+      label + (o.expectStatusLine ? ': status-line bridge launch observed and the marked bridge process is gone after its bounded callback grace period (tree walk and full process table)' : ': no status line expected: the stand-in ran nothing and no process carries the bridge script path (tree walk and full process table)'),
+      censusDegraded ? degradedReason : JSON.stringify({ bridgeLaunched, s5NothingRan, runs: Array.isArray(rec.runs) ? rec.runs.length : null, censusSawMain, fullTableBridges: fullBridges, alive: afterBridges.map((p) => ({ pid: p.Pid, name: p.Name })) }));
+    if (unknownPersistent.length) warn(id, label + ': process census saw persistent descendants with unavailable command lines', JSON.stringify(unknownPersistent.map((p) => ({ pid: p.Pid, ppid: p.Ppid, name: p.Name, hasCommandLine: p.HasCommandLine, exe: p.Exe }))));
+    check(id, !censusDegraded && strayBefore.length === 0 && persistentStray.length === 0 && full.orphans.length === 0, label + ': no persistent extra FanBox / electron main process below the app and no orphaned app process in the full process table after the refreshes', censusDegraded ? degradedReason : JSON.stringify({ snapshot: firstStray.map((p) => ({ pid: p.Pid, name: p.Name })), fullTableOrphans: fullOrphans, requery: identities.map((p) => ({ pid: p.Pid, ppid: p.Ppid, name: p.Name, hasCommandLine: p.HasCommandLine, typed: p.Typed, exactBridgeScript: p.ExactBridgeScript, exe: p.Exe })) }));
+    ctx.evidence(`processes-${label.replace(/\W+/g, '_')}.json`, { mainPid: h.pid, before: before.table.length, after: afterTable.length, bridgeLaunched, s5NothingRan, censusSawMain, censusDegraded, fullTableBridges: fullBridges, fullTableOrphans: fullOrphans, snapshotStray: firstStray.map((p) => ({ pid: p.Pid, name: p.Name, conout: p.ConoutWorker, conpty: p.ConptyAgent, sameAsParent: p.SameAsParent })), snapshotUnknown: firstUnknown.map((p) => ({ pid: p.Pid, name: p.Name })), requery: identities.map((p) => ({ pid: p.Pid, ppid: p.Ppid, name: p.Name, hasCommandLine: p.HasCommandLine, typed: p.Typed, exactBridgeScript: p.ExactBridgeScript, exactConptyAgent: p.ExactConptyAgent, exactConoutWorker: p.ExactConoutWorker, sameAsParent: p.SameAsParent, expectedPtyHelper: isExpectedPtyHelper(p), exe: p.Exe })) });
 
     await win.evaluate((i) => term.input(i, 'q\r'), termId).catch(() => {});
     await sleep(800);
@@ -846,7 +1070,7 @@ async function caseS5(ctx) {
 async function caseS6(ctx) {
   // homes below <base>\fanbox test\ : a space in the parent, CJK in the home itself; and an apostrophe
   await statusLineCase(ctx, { id: 'S6', label: 'S6 space+CJK home', lang: 'zh', homeName: path.join('fanbox test', '用户'), expectStatusLine: true });
-  await statusLineCase(ctx, { id: 'S6', label: 'S6 apostrophe home', lang: 'zh', homeName: path.join('fanbox test', "o'brien"), expectStatusLine: false, apostrophe: true });
+  await statusLineCase(ctx, { id: 'S6', label: 'S6 apostrophe home', lang: 'zh', homeName: path.join('fanbox test', "o'brien"), expectStatusLine: true, apostrophe: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -1028,6 +1252,7 @@ async function caseU6(ctx) {
     const ready = await win.evaluate((i) => window.__fbLib.waitPrompt(i, 30000), termId);
     if (!ready) warn(id, 'U6: no shell prompt detected in the terminal before the probes started (first echo samples may be slow)', '');
     await win.evaluate(() => { window.__u6 ={ seenPending: null, firstTrio: null, t0: performance.now() }; clearInterval(window.__u6timer); window.__u6timer = setInterval(() => { const b = document.querySelector('#usage-body'); const s = window.__u6; const now = Math.round(performance.now() - s.t0); const txt = b ? b.innerText : ''; if (s.seenPending === null && txt.includes('正在统计本地token')) s.seenPending = now; if (s.firstTrio === null && b && b.querySelector('.usage-trio')) s.firstTrio = now; }, 100); });
+    await startNativeFrameProbe(h.app);
     await win.evaluate(() => window.__fbLib.startFrames());
     const probeP = win.evaluate(([i]) => { window.__probeP = window.__fbLib.probe(i, 75000, 600); return true; }, [termId]);
     await probeP;
@@ -1036,8 +1261,9 @@ async function caseU6(ctx) {
     const timing = await win.evaluate(() => window.__u6);
     const probe = await win.evaluate(() => window.__probeP);
     const frames = await win.evaluate(() => window.__fbLib.stopFrames());
+    const nativeWindow = await stopNativeFrameProbe(h.app);
     await win.evaluate(() => clearInterval(window.__u6timer));
-    ctx.evidence('u6-perf.json', { fixture: { mb: ctx.opts.claudeMb, files: cm.files, messages: cm.uniqueMessages }, timing, frames, probe });
+    ctx.evidence('u6-perf.json', { fixture: { mb: ctx.opts.claudeMb, files: cm.files, messages: cm.uniqueMessages }, timing, frames, probe, nativeWindow });
     check(id, timing.seenPending !== null, 'U6: panel showed 正在统计本地token… while counting', `first seen at ${timing.seenPending} ms after the panel opened`);
     if (timing.seenPending === null) warn(id, 'U6: the pending text never appeared (stats finished before the first paint, or the tree is too small)', `numbers after ${timing.firstTrio} ms`);
     check(id, !!numbers, 'U6: token numbers arrived', `numbers at ${timing.firstTrio} ms`);
@@ -1048,7 +1274,8 @@ async function caseU6(ctx) {
     else check(id, c.week && c.week.total > 0, 'U6: week total is non-zero', JSON.stringify(c.week && c.week.total));
     info(id, 'renderer frame gaps', JSON.stringify({ maxMs: frames.max, over50ms: frames.over50, seconds: frames.seconds, frames: frames.frames }));
     // 500 ms = a visible freeze (30 frames at 60 Hz); a main-thread scan of this size, as before the worker, produces multi-second gaps
-    if (frames.max <= 250) check(id, true, 'U6: worst requestAnimationFrame gap while stats were computed', frames.max + ' ms (limit 500)');
+    if (!validFrameWindow(id, nativeWindow)) info(id, 'Frame timing is invalid due to native window state; raw measurements retained', frames.max + ' ms');
+    else if (frames.max <= 250) check(id, true, 'U6: worst requestAnimationFrame gap while stats were computed', frames.max + ' ms (limit 500)');
     else if (frames.max <= 500) warn(id, 'U6: worst requestAnimationFrame gap between 250 and 500 ms', frames.max + ' ms (limit 500)');
     else check(id, false, 'U6: worst requestAnimationFrame gap over 500 ms (renderer froze)', frames.max + ' ms; gaps ' + JSON.stringify(frames.gaps.slice(0, 6)));
     check(id, probe && !probe.error && probe.n >= 10, 'U6: terminal echo probes ran', JSON.stringify(probe && { n: probe.n, timeouts: probe.timeouts }));
@@ -1108,6 +1335,7 @@ async function caseW(ctx) {
     const gens = path.join(__dirname, 'gen-fixtures.js');
 
     // ---- W1: 2,000 files in ~8 s from a child process ----
+    await startNativeFrameProbe(h.app);
     await win.evaluate(([dir, i]) => { window.__fbLib.startFrames(); window.__fbLib.watchCard(dir); window.__w1Probe = window.__fbLib.probe(i, 11500, 600); return true; }, [burstDir, termId]);
     const t0 = Date.now();
     const burst = await runChild(gens, ['burst', '--dir', burstDir, '--count', '2000', '--seconds', '8', '--dirs', '8', '--sentinel', sentinel]);
@@ -1121,11 +1349,13 @@ async function caseW(ctx) {
     else check('W1', false, 'W1: file list caught up after the burst', catchMs === null ? 'burst-done.txt card never appeared' : catchMs + ' ms');
     const probe = await win.evaluate(() => window.__w1Probe);
     const frames = await win.evaluate(() => window.__fbLib.stopFrames());
+    const nativeWindow = await stopNativeFrameProbe(h.app);
     const card = await win.evaluate(() => window.__fbLib.stopCard());
     const nmsgs = await win.evaluate(() => window.__fbw.msgs.length);
-    ctx.evidence('w1-perf.json', { burst: burst.json, catchUpMs: catchMs, frames, probe, card, rendererNotifications: nmsgs, burstWallMs: tEnd - t0 });
+    ctx.evidence('w1-perf.json', { burst: burst.json, catchUpMs: catchMs, frames, probe, card, nativeWindow, rendererNotifications: nmsgs, burstWallMs: tEnd - t0 });
     info('W1', 'renderer frame gaps during the burst', JSON.stringify({ maxMs: frames.max, over50: frames.over50, frames: frames.frames, seconds: frames.seconds }));
-    if (frames.max <= 250) check('W1', true, 'W1: worst requestAnimationFrame gap during the burst', frames.max + ' ms (limit 500)');
+    if (!validFrameWindow('W1', nativeWindow)) info('W1', 'Frame timing is invalid due to native window state; raw measurements retained', frames.max + ' ms');
+    else if (frames.max <= 250) check('W1', true, 'W1: worst requestAnimationFrame gap during the burst', frames.max + ' ms (limit 500)');
     else if (frames.max <= 500) warn('W1', 'W1: worst requestAnimationFrame gap between 250 and 500 ms', frames.max + ' ms');
     else check('W1', false, 'W1: worst requestAnimationFrame gap over 500 ms', frames.max + ' ms; gaps ' + JSON.stringify(frames.gaps.slice(0, 6)));
     if (probe && probe.max !== null && probe.n >= 5) {
@@ -1176,11 +1406,10 @@ async function caseW(ctx) {
 // ---------------------------------------------------------------------------
 async function caseR1(ctx) {
   const home = ctx.freshHome('r1', 'zh');
-  const h = await launchApp(ctx, { home, lang: 'zh', usage: false, label: 'R1' });
+  const h = await launchApp(ctx, { home, lang: 'zh', usage: false, label: 'R1', offlineUpdate: true });
   try {
     const { app, win } = h;
-    const patched = await app.evaluate(async ({ session, dialog, shell }) => {
-      await session.defaultSession.setProxy({ proxyRules: 'http://127.0.0.1:9', proxyBypassRules: 'localhost;127.0.0.1;[::1]' });
+    const patched = await app.evaluate(({ dialog, shell }) => {
       global.__r1 = { dialogs: [], opened: [], ret: 1 };
       const patch = (obj, key, fn) => {
         try { obj[key] = fn; if (obj[key] === fn) return true; } catch (e) { /* read-only: try defineProperty */ }
@@ -1194,7 +1423,7 @@ async function caseR1(ctx) {
       const ext = patch(shell, 'openExternal', (u) => { global.__r1.opened.push(String(u)); return Promise.resolve(); });
       return { dialog: dlg, shell: ext };
     });
-    check('R1', patched.dialog && patched.shell, 'R1: main-process spies installed (offline proxy, dialog.showMessageBoxSync, shell.openExternal)', JSON.stringify(patched));
+    check('R1', patched.dialog && patched.shell, 'R1: main-process spies installed (dialog.showMessageBoxSync, shell.openExternal)', JSON.stringify(patched));
     if (!(patched.dialog && patched.shell)) return;
     const all = [];
     for (const lang of ctx.langs()) {
@@ -1233,6 +1462,8 @@ async function caseR1(ctx) {
       }
     }
     ctx.evidence('r1-dialogs.json', all);
+    const proxyLog = path.join(home, 'r1-proxy.log');
+    if (fs.existsSync(proxyLog)) ctx.evidence('r1-proxy.log', fs.readFileSync(proxyLog));
     await win.evaluate(() => apiPost('/api/lang', { lang: 'zh' })).catch(() => {});
   } finally { await closeApp(ctx, h); }
 }
@@ -1388,7 +1619,7 @@ const CASES = [
   { id: 'S1', group: 'S', plan: ['S1'], run: caseS1, desc: 'stand-in claude + real Git Bash status line (zh and en)' },
   { id: 'S2', group: 'S', plan: ['S2'], run: caseS2, optional: true, desc: 'stand-in status-line soak (--soak N minutes, default 10 when named): no second window / process, refreshes < 1 s' },
   { id: 'S5', group: 'S', plan: ['S5'], run: caseS5, desc: 'Git hidden: no statusLine, one-click still works' },
-  { id: 'S6', group: 'S', plan: ['S6'], run: caseS6, desc: 'space+CJK home works, apostrophe home gets no statusLine' },
+  { id: 'S6', group: 'S', plan: ['S6'], run: caseS6, desc: 'space+CJK and apostrophe homes run the quoted status line' },
   { id: 'UF', group: 'U', plan: ['U1', 'U2', 'U3', 'U5', 'U7'], run: caseUF, desc: 'usage panel: generated Codex logs, fixtures, expanders, English' },
   { id: 'U6', group: 'U', plan: ['U6'], run: caseU6, desc: 'large Claude log tree, renderer responsiveness' },
   { id: 'W', group: 'W', plan: ['W1', 'W2', 'W4'], run: caseW, desc: '2,000-file burst, identical rewrites, Recycle Bin, node_modules, sub\\a.ts' },
@@ -1419,12 +1650,38 @@ async function runDry(opts) {
     check(D, parseCli(['--soak', '3'], {}).soak === 3 && parseCli(['--soak', '999'], {}).bad.length === 1, 'args: --soak is validated', '');
 
     // --- pure helpers
-    const csv = 'Pid,Ppid,Name,Typed\r\n"10","1","electron.exe","0"\r\n"11","10","electron.exe","1"\r\n"12","10","powershell.exe","0"\r\n"13","12","bash.exe","0"\r\n"14","13","electron.exe","0"\r\n"15","13","node.exe","0"\r\n"20","1","electron.exe","0"\r\n';
+    const csv = 'Pid,Ppid,Name,CmdKnown,Typed\r\n"10","1","electron.exe","1","0"\r\n"11","10","electron.exe","1","1"\r\n"12","10","powershell.exe","1","0"\r\n"13","12","bash.exe","1","0"\r\n"14","13","electron.exe","1","0"\r\n"15","13","node.exe","1","0"\r\n"20","1","electron.exe","1","0"\r\n';
     const table = csvObjects(csv);
     check(D, table.length === 7 && table[0].Name === 'electron.exe' && parseCsv('a,"b ""q"", c",d\n').flat().join('|') === 'a|b "q", c|d', 'csv: quoted fields and CRLF parse', JSON.stringify(parseCsv('a,"b ""q"", c",d\n')));
     const stray = strayMains(table, 10);
     check(D, stray.length === 1 && stray[0].Pid === '14', 'process census: the electron main spawned under bash is found, Chromium children and unrelated mains are not', JSON.stringify(stray));
     check(D, strayMains(table.filter((p) => p.Pid !== '14'), 10).length === 0, 'process census: no stray when the status-line child is gone', '');
+    const withHelper = table.concat([{ Pid: '16', Ppid: '10', Name: 'electron.exe', CmdKnown: '1', Typed: '0', Bridge: '0', ConptyAgent: '1', ConoutWorker: '0' }]);
+    check(D, strayMains(withHelper, 10).length === 1 && strayMains(withHelper, 10)[0].Pid === '14', 'process census: node-pty console-list helper is not a second app', '');
+    const withConout = table.concat([{ Pid: '17', Ppid: '10', Name: 'electron.exe', CmdKnown: '1', Typed: '0', Bridge: '0', ConptyAgent: '0', ConoutWorker: '1', SameAsParent: '0' }]);
+    check(D, strayMains(withConout, 10).length === 1 && strayMains(withConout, 10)[0].Pid === '14', 'process census: node-pty conout worker is not a second app', '');
+    const relaunch = table.concat([{ Pid: '18', Ppid: '10', Name: 'electron.exe', CmdKnown: '1', Typed: '0', Bridge: '0', ConptyAgent: '0', ConoutWorker: '0', SameAsParent: '1' }]);
+    check(D, strayMains(relaunch, 10).length === 1 && strayMains(relaunch, 10)[0].Pid === '14', 'process census: an Electron child with its parent argv is the conout worker, not a second app', '');
+    // Full-table scan (not tree-scoped): a hung bridge or runaway app image whose ancestors exited
+    // is an orphan row (Ppid points at a pid no longer in the table) that no tree walk reaches.
+    // Attribution is strict: BridgeExact (copied bridge script path) or AppAttr (app exe + the
+    // app's script path in the command line), so unrelated Electron processes never flag.
+    const fullTable = table.concat([
+      { Pid: '30', Ppid: '29', Name: 'electron.exe', CmdKnown: '1', Typed: '0', BridgeExact: '1' }, // hung bridge, orphaned (29 gone)
+      { Pid: '31', Ppid: '29', Name: 'electron.exe', CmdKnown: '1', Typed: '0', AppAttr: '1' }, // runaway app image, orphaned
+      { Pid: '32', Ppid: '29', Name: 'electron.exe', CmdKnown: '1', Typed: '0', AppAttr: '0' }, // unrelated Electron process: unattributed
+      { Pid: '33', Ppid: '10', Name: 'electron.exe', CmdKnown: '1', Typed: '0', AppAttr: '1' }, // attributed, parent alive: not an orphan
+      { Pid: '34', Ppid: '29', Name: 'electron.exe', CmdKnown: '1', Typed: '1', AppAttr: '1' }, // Chromium child (--type=): not an app main
+      { Pid: '35', Ppid: '0', Name: 'electron.exe', CmdKnown: '1', Typed: '0', AppAttr: '1' }, // no parent recorded (pid 0): not "parent exited"
+    ]);
+    const full = fullTableStrays(fullTable, 10);
+    check(D, full.bridges.map((p) => p.Pid).join() === '30' && full.orphans.map((p) => p.Pid).join() === '30,31',
+      'process census: full-table scan finds the orphaned bridge and the orphaned app main anywhere in the table (an orphaned bridge counts in both claims)', JSON.stringify(full.orphans.map((p) => p.Pid)));
+    check(D, fullTableStrays(fullTable, 31).orphans.map((p) => p.Pid).join() === '30' && fullTableStrays(fullTable.filter((p) => p.Pid !== '30'), 31).orphans.length === 0,
+      'process census: the app main itself is never reported as a stray', '');
+    const withoutStrays = fullTableStrays(fullTable.filter((p) => p.Pid !== '30' && p.Pid !== '31'), 10);
+    check(D, withoutStrays.bridges.length === 0 && withoutStrays.orphans.length === 0,
+      'process census: unattributed Electron processes, live attributed children, Chromium children and pid-0 parents are never flagged', JSON.stringify(withoutStrays));
     const present = new Set(['c:\\program files\\git\\cmd\\git.exe', 'c:\\windows\\system32\\bash.exe', 'd:\\tools\\mygit\\git.exe', 'e:\\portablegit\\cmd\\git.exe']);
     const exists = (f) => present.has(f.toLowerCase());
     const pw = path.win32;
@@ -1481,7 +1738,7 @@ async function runDry(opts) {
     check(D, cli.code === 0 && cli.json && cli.json.count === 40, 'gen-fixtures CLI: child-process burst prints a JSON summary', cli.out.trim());
 
     // --- generated sources are valid JavaScript
-    const srcs = { 'claude-standin.js': STANDIN_SRC, 'hide-git-preload.cjs': hideGitPreloadSrc() };
+    const srcs = { 'claude-standin.js': STANDIN_SRC, 'hide-git-preload.cjs': hideGitPreloadSrc(), 'offline-update-preload.cjs': offlineUpdatePreloadSrc() };
     for (const [n, s] of Object.entries(srcs)) {
       const f = path.join(tmp, n); fs.writeFileSync(f, s);
       const r = spawnSync(process.execPath, ['--check', f], { encoding: 'utf8' });
@@ -1503,6 +1760,25 @@ async function runDry(opts) {
     const logText = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '';
     check(D, got === 'C:\\Windows;D:\\keep' && /"kind":"registry-path"/.test(logText) && /"dropped":1/.test(logText), 'hide-Git preload: the registry-PATH PowerShell call comes back without the Git directory (and logs it)', JSON.stringify({ got, log: trunc(logText.replace(/\s+/g, ' '), 140) }));
     check(D, other === 'passed through: git.exe' && calls.length === 2, 'hide-Git preload: other execFile calls pass through untouched', String(other));
+
+    // --- the offline-update preload: mode "system" becomes a closed proxy and keeps the bypass rules
+    const r1log = path.join(tmp, 'r1-proxy.log');
+    try { fs.unlinkSync(r1log); } catch { /* none */ }
+    const origConfigs = [];
+    const ses = { setProxy(config) { origConfigs.push(config); return Promise.resolve('orig'); } };
+    let readyFn = null;
+    const fakeElectron = {
+      app: { isReady: () => false, on: (ev, fn) => { if (ev === 'ready') readyFn = fn; } },
+      session: { defaultSession: ses },
+    };
+    new Function('require', 'process', offlineUpdatePreloadSrc())((n) => (n === 'electron' ? fakeElectron : n === 'fs' ? fs : require(n)), { env: { FANBOX_R1_PROXY_LOG: r1log }, pid: 7 });
+    check(D, typeof readyFn === 'function', 'offline-update preload: registers a ready handler before the app sets its proxy', '');
+    readyFn();
+    const rewritten = ses.setProxy({ mode: 'system', proxyBypassRules: 'localhost;127.0.0.1;[::1]' });
+    const passed = ses.setProxy({ mode: 'fixed_servers', proxyRules: 'http://10.1.2.3:9' });
+    const r1text = fs.existsSync(r1log) ? fs.readFileSync(r1log, 'utf8') : '';
+    const first = origConfigs[0] || {};
+    check(D, origConfigs.length === 2 && first.mode === 'fixed_servers' && first.proxyRules === 'http://127.0.0.1:9' && first.proxyBypassRules === 'localhost;127.0.0.1;[::1]' && origConfigs[1].proxyRules === 'http://10.1.2.3:9' && rewritten && typeof rewritten.then === 'function' && passed && typeof passed.then === 'function' && /"kind":"rewritten-system"/.test(r1text) && /"kind":"wrapped"/.test(r1text), 'offline-update preload: setProxy({ mode: "system" }) is a closed proxy that still bypasses loopback', JSON.stringify({ origConfigs, log: trunc(r1text.replace(/\s+/g, ' '), 180) }));
 
     // --- stand-in against the real bridge, bash and a local HTTP server standing in for FanBox
     const bashOk = spawnSync('bash', ['-c', 'exit 0']).status === 0;
@@ -1547,7 +1823,7 @@ async function runDry(opts) {
           const ms = fin.runs.map((r) => Math.round(r.ms));
           check(D, ms.every((m) => m < 2000), 'stand-in: refresh timings measured (limit here 2 s; Windows target < 1 s)', ms.join(' / ') + ' ms');
         } else {
-          check(D, fin.hasStatusLine === false && fin.runs.length === 0 && posts.every((p) => p.url !== '/api/agent/usage'), 'stand-in (no statusLine, as in S5/S6-apostrophe): nothing runs, no usage POST, hooks still flow', JSON.stringify({ runs: fin.runs.length }));
+          check(D, fin.hasStatusLine === false && fin.runs.length === 0 && posts.every((p) => p.url !== '/api/agent/usage'), 'stand-in (no statusLine, as in S5): nothing runs, no usage POST, hooks still flow', JSON.stringify({ runs: fin.runs.length }));
         }
       }
     }
@@ -1592,6 +1868,7 @@ function envInfo(ctx) {
   const o = {
     candidateCommit: git(['rev-parse', 'HEAD']), dirty: git(['status', '--porcelain']).length > 0, branch: git(['rev-parse', '--abbrev-ref', 'HEAD']),
     windows: os.release() + ' ' + os.arch(), node: process.version, electron: electronVersion,
+    executable: process.env.FANBOX_V2170_EXE || require(path.join(ROOT, 'node_modules', 'electron')),
     gitForWindows: gitExe ? (() => { try { return execFileSync(gitExe, ['--version'], { encoding: 'utf8', timeout: 8000, windowsHide: true }).trim(); } catch { return gitExe; } })() : 'not found on PATH',
     gitBash: H.winGitBash(process.env), base: ctx.base, evidence: ctx.out, appVersion: require(path.join(ROOT, 'package.json')).version,
     claudeCode: cliVersion('claude', ctx), codex: cliVersion('codex', ctx),
@@ -1672,4 +1949,4 @@ function finish(opts, ctx) {
 if (require.main === module) {
   main().then((code) => process.exit(code)).catch((e) => { console.error('FAIL: exception', e && e.stack || e); process.exit(1); });
 }
-module.exports = { parseCli, parseCsv, csvObjects, strayMains, dirHasGit, hideGitFromPath, buildEnv, assertSafeFakeHome, loadDict, usageFixtures, runFixturePass, runExpanders, quietPanel, switchLang, STANDIN_SRC, PAGE_LIB_SRC, hideGitPreloadSrc };
+module.exports = { frameWindowValid, parseCli, parseCsv, csvObjects, strayMains, fullTableStrays, dirHasGit, hideGitFromPath, buildEnv, assertSafeFakeHome, loadDict, usageFixtures, runFixturePass, runExpanders, quietPanel, switchLang, STANDIN_SRC, PAGE_LIB_SRC, hideGitPreloadSrc, offlineUpdatePreloadSrc };

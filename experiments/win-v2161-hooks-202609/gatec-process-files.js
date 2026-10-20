@@ -207,13 +207,13 @@ async function waitFor(fn, ms, step = 250) { const t0 = Date.now(); while (Date.
   check(!/electron\.exe|powershell\.exe/.test(left), 'A2/A3: no orphan electron/powershell from this instance', left.trim());
 
   // ---- A5: second instance with the port occupied → dialog after the retry budget; the occupier survives ----
-  const holder = spawn(process.execPath, [path.join(ROOT, 'server.js')], { env: Object.assign({}, process.env, { FANBOX_NO_OPEN: '1', FANBOX_PORT: PORT, USERPROFILE: FAKE_HOME, HOME: FAKE_HOME }), stdio: 'ignore', windowsHide: true });
+  const holder = spawn(process.execPath, [path.join(ROOT, 'server.js')], { env: Object.assign({}, process.env, { FANBOX_NO_OPEN: '1', FANBOX_PORT: PORT, USERPROFILE: FAKE_HOME, HOME: FAKE_HOME, APPDATA: path.join(FAKE_HOME, 'AppData', 'Roaming'), LOCALAPPDATA: path.join(FAKE_HOME, 'AppData', 'Local'), CLAUDE_CONFIG_DIR: path.join(FAKE_HOME, '.claude'), CODEX_HOME: path.join(FAKE_HOME, '.codex') }), stdio: 'ignore', windowsHide: true });
   await sleep(2000);
   const holderOk = await new Promise((r) => http.get({ hostname: '127.0.0.1', port: PORT, path: '/api/skills/builtin' }, (res) => r(res.statusCode)).on('error', () => r(0)));
   // Launch the second instance raw (the matrix launcher would block on the modal); stub its dialog
   // before the retry budget (~5 s) runs out, then read what it recorded.
   const { _electron } = require('playwright-core');
-  const env2 = Object.assign({}, process.env, { USERPROFILE: FAKE_HOME, HOME: FAKE_HOME, APPDATA: path.join(FAKE_HOME, 'AppData', 'Roaming'), LOCALAPPDATA: path.join(FAKE_HOME, 'AppData', 'Local'), FANBOX_PORT: PORT });
+  const env2 = Object.assign({}, process.env, { USERPROFILE: FAKE_HOME, HOME: FAKE_HOME, APPDATA: path.join(FAKE_HOME, 'AppData', 'Roaming'), LOCALAPPDATA: path.join(FAKE_HOME, 'AppData', 'Local'), CLAUDE_CONFIG_DIR: path.join(FAKE_HOME, '.claude'), CODEX_HOME: path.join(FAKE_HOME, '.codex'), FANBOX_PORT: PORT });
   delete env2.NoDefaultCurrentDirectoryInExePath; delete env2.SHELL;
   const second = await _electron.launch({ executablePath: require(path.join(ROOT, 'node_modules/electron')), args: [ROOT], cwd: ROOT, env: env2 }).catch(() => null);
   let dlg2 = null;

@@ -43,6 +43,7 @@ function winFindOnPath(name, env) {
 // 好处一次讲清：stdin 字节透明（中文不被 PS 按控制台代码页重编码成 ???）、参数是真 argv
 //（人格带引号/换行不会被 .cmd/PS 的再引用规则拆碎）、kill 杀得到本体（不会留孤儿烧 token）
 function resolveWinCli(name, env) {
+  if (isWin()) return require('../../win-port-helpers').resolveWinCli(name, env, process.execPath);
   // D5: probe real .exe first (standalone installs), then npm-shim → node entry. No shell string fallback.
   const hit = winFindOnPath(name, env);
   if (!hit) return null;
@@ -192,7 +193,8 @@ function which(bin) {
     // 纯 Node PATH 走查（用复刻后的完整 PATH，含注册表合并的用户目录）：
     // 不起 PowerShell，也避开它输出的代码页乱码
     const safe = String(bin).replace(/[^A-Za-z0-9._-]/g, '');
-    return fullEnv().then((env) => !!winFindOnPath(safe, env)).catch(() => !!winFindOnPath(safe, null));
+    const installed = (env) => safe === 'codex' ? !!resolveWinCli(safe, env) : !!winFindOnPath(safe, env);
+    return fullEnv().then(installed).catch(() => installed(null));
   }
   return run(`command -v ${bin} || true`, '', null, { idleMs: 8000, maxMs: 10000 }).then((r) => !!(r.out || '').trim());
 }

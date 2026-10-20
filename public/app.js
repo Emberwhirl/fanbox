@@ -235,6 +235,26 @@ function isMacOS() {
 function isWindows() {
   return state.platform === 'win32' || (window.fanboxEnv && window.fanboxEnv.platform === 'win32');
 }
+// Windows：真实文件名/目录名可能正好等于词典词（如「输出」），标成用户内容让 i18n 跳过翻译。
+// 只在 isWindows() 下产标记，POSIX 与上游行为一致；模板字符串里的名字用同款内联写法
+// ${isWindows() ? ' data-fanbox-user-content' : ''}，DOM 节点用 markUserText(el)。
+function markUserText(el) { if (isWindows() && el && el.dataset) el.dataset.fanboxUserContent = ''; return el; }
+// round-sel 的 <option> 文本是「回合 · 名字」：只有名字是用户内容。option 里直接写 <span> 会被
+// HTML 解析器（select 模式）丢弃，所以挂载后在 DOM 里重包——名字段单独标成用户内容，其余照常翻译。
+function markRoundSelNames(sel, snaps) {
+  if (!isWindows() || !sel || !sel.options) return;
+  for (const o of sel.options) {
+    const lab = ((snaps || [])[Number(o.value)] || {}).label || '';
+    const txt = o.textContent || '';
+    const at = lab ? txt.lastIndexOf(lab) : -1;
+    const nm = lab.startsWith('回合 · ') ? lab.slice('回合 · '.length) : lab;
+    if (at < 0 || !nm) continue;
+    const span = markUserText(document.createElement('span'));
+    span.textContent = nm;
+    o.textContent = '';
+    o.append(document.createTextNode(txt.slice(0, at) + lab.slice(0, lab.length - nm.length)), span);
+  }
+}
 function edStr(zh) {
   if (isWindows() && window.fanboxLang === 'en' && typeof window.t === 'function') return window.t(zh);
   return zh;
@@ -437,7 +457,7 @@ function renderBreadcrumb() {
     const el = document.createElement('span');
     el.className = 'crumb' + (i === arr.length - 1 ? ' last' : '');
     if (c.name === '/') el.innerHTML = ic('monitor', 'currentColor', 15);
-    else el.textContent = c.name;
+    else { markUserText(el); el.textContent = c.name; } // isWindows() 下标记为用户内容：目录名是真实路径段，不参与翻译
     el.onclick = () => navigate(c.path);
     bc.appendChild(el);
   });
@@ -654,7 +674,7 @@ function gridItem(e, i) {
   el.className = 'item' + (e.isDir ? ' is-dir' : ' is-file') + (e.hidden ? ' hidden-file' : '');
   el.dataset.path = e.path;
   el.dataset.sig = itemSig(e);
-  el.innerHTML = `<div class="icon" style="--tint:${iconColorFor(e)}">${thumbHtml(e)}${projBadge(e)}</div><div class="fname">${escapeHtml(e.name)}</div>${favBtn(e)}`;
+  el.innerHTML = `<div class="icon" style="--tint:${iconColorFor(e)}">${thumbHtml(e)}${projBadge(e)}</div><div class="fname"${isWindows() ? ' data-fanbox-user-content' : ''}>${escapeHtml(e.name)}</div>${favBtn(e)}`;
   bindItem(el, e);
   decorateItem(el, e, i);
   return el;
@@ -667,7 +687,7 @@ function listRow(e, i) {
   // 最近修改是跨目录列表，名称后缀显示来源目录，方便区分同名文件
   const dirHint = state.recentMode ? ` <span class="row-dir">· ${escapeHtml(tilde(e.dir || dirOf(e.path)))}</span>` : '';
   el.innerHTML = `<div class="icon">${(e.kind === 'image' || e.kind === 'video') ? `<img class="thumb-sm" loading="lazy" decoding="async" src="${thumbUrl(e.path, 96, e.mtime)}" data-fb='${escapeHtml(iconSvg(e, 18))}'>` : `<span class="svg-icon">${iconSvg(e, 18)}</span>`}</div>
-    <div class="fname">${escapeHtml(e.name)}${projBadge(e)}${dirHint}</div>
+    <div class="fname"${isWindows() ? ' data-fanbox-user-content' : ''}>${escapeHtml(e.name)}${projBadge(e)}${dirHint}</div>
     <div class="meta">${fmtTime(e.mtime)}</div>
     <div class="meta">${e.isDir ? '' : fmtSize(e.size)}</div>
     ${favBtn(e)}`;
@@ -797,6 +817,10 @@ async function openPreview(e) {
   mona.disposeIfAny(); crepe.disposeIfAny(); imgEditState = null; // 离开编辑态时回收编辑器（连带 worker），避免泄漏
   showPreviewPanel();
   $('#preview-title').textContent = e.name;
+  if (isWindows()) {
+    const name = document.createElement('span'); name.dataset.fanboxUserContent = ''; name.textContent = e.name;
+    $('#preview-title').replaceChildren(name);
+  }
   const body = $('#preview-body');
   body.innerHTML = '<div class="cmdk-loading">加载中…</div>';
   renderPreviewActions(e);
@@ -1540,6 +1564,10 @@ async function enterEditMode(e) {
   showPreviewPanel();
   state.selected = e.path;
   $('#preview-title').textContent = e.name;
+  if (isWindows()) {
+    const name = document.createElement('span'); name.dataset.fanboxUserContent = ''; name.textContent = e.name;
+    $('#preview-title').replaceChildren(name);
+  }
   renderPreviewActions(e);
   renderPreviewFoot(e);
   const body = $('#preview-body');
@@ -2095,7 +2123,7 @@ const shotTray = {
     el.className = 'shot-card';
     el.innerHTML = `
       <img class="shot-thumb" draggable="true" src="/api/thumb?path=${encodeURIComponent(m.path)}&w=480&v=${m.size}" title="新截图 · 可拖进终端" data-retry="0">
-      <div class="shot-info"><div class="shot-name">${escapeHtml(m.name)}</div>
+      <div class="shot-info"><div class="shot-name"${isWindows() ? ' data-fanbox-user-content' : ''}>${escapeHtml(m.name)}</div>
       <div class="shot-acts">
         <button data-act="term" title="把路径喂给终端里的 agent">→ 终端</button>
         <button data-act="save" title="移动到当前文件夹的 素材/ 子目录">收进素材</button>
@@ -2159,7 +2187,7 @@ async function memoryPanel(dirPath) {
         <button class="ghost-btn mem-resume" data-i="${i}" title="在内嵌终端里接上这段会话的上下文继续">▶ 续上</button>
       </div>
       <div class="mem-meta">${fmtTime(s.lastT)}${s.userMsgs != null ? ` · ${s.userMsgs} 条消息` : ''}${s.files.length ? ` · 改了 ${s.files.length} 个文件` : ''}${s.skills.length ? ' · ' + s.skills.map((k) => `<i class="mem-skill">${escapeHtml(k)}</i>`).join(' ') : ''}</div>
-      ${s.files.length ? `<div class="mem-files hidden">${s.files.map((f) => `<div class="mem-file" data-p="${escapeHtml(f)}" title="${escapeHtml(f)}">${escapeHtml(pathInDir(f, dirPath) ? splitRel(f, dirPath) : f.replace(state.home, '~'))}</div>`).join('')}</div>` : ''}
+      ${s.files.length ? `<div class="mem-files hidden">${s.files.map((f) => `<div class="mem-file" data-p="${escapeHtml(f)}" title="${escapeHtml(f)}"${isWindows() ? ' data-fanbox-user-content' : ''}>${escapeHtml(pathInDir(f, dirPath) ? splitRel(f, dirPath) : f.replace(state.home, '~'))}</div>`).join('')}</div>` : ''}
     </div>`).join('');
   body.querySelectorAll('.mem-head').forEach((h) => {
     h.onclick = (ev) => {
@@ -2354,7 +2382,7 @@ async function diskPanel(dirPath) {
     body.innerHTML = `<div class="disk-total">共 ${fmtSize(d.total)}${d.more ? ` · 只显示前 ${d.items.length} 项` : ''}</div>` + up +
       d.items.map((it) => `<div class="disk-row${it.isDir ? ' is-dir' : ''}" data-dir="${it.isDir ? escapeHtml(joinChild(it.name)) : ''}">
         <i class="disk-bar" style="width:${it.size == null ? 0 : Math.max(1, Math.round(it.size / max * 100))}%"></i>
-        <span class="disk-name">${it.isDir ? '📁 ' : ''}${escapeHtml(it.name)}</span><span class="disk-size"${it.size == null ? ' title="没算出来（超时或无权限）"' : ''}>${it.size == null ? '—' : fmtSize(it.size)}</span></div>`).join('');
+        <span class="disk-name"${isWindows() ? ' data-fanbox-user-content' : ''}>${it.isDir ? '📁 ' : ''}${escapeHtml(it.name)}</span><span class="disk-size"${it.size == null ? ' title="没算出来（超时或无权限）"' : ''}>${it.size == null ? '—' : fmtSize(it.size)}</span></div>`).join('');
     body.querySelectorAll('.disk-row[data-dir]').forEach((r) => {
       if (r.dataset.dir) r.onclick = () => load(r.dataset.dir);
     });
@@ -2419,7 +2447,8 @@ function popupMenu(ev, items) {
 
 // ---------- 侧边栏 ----------
 // 侧栏目录树：目录项带展开箭头，点箭头逐级懒加载子目录（只列文件夹），点行本身仍是跳转
-function navDirLi(name, p) {
+// synthetic=主目录/桌面等合成 UI 标签（词典要翻它们）；其余调用点传的是真实文件系统名
+function navDirLi(name, p, synthetic) { // isWindows() 下只给真实文件名打用户内容标记，合成标签和 tooltip 保持可翻译
   const li = document.createElement('li');
   li.dataset.path = p;
   const twirl = document.createElement('span');
@@ -2432,7 +2461,13 @@ function navDirLi(name, p) {
   ico.innerHTML = svgWrap(SVG.folder, 'currentColor', 16, true);
   const label = document.createElement('span');
   label.className = 'label';
-  label.textContent = name;
+  if (isWindows() && !synthetic) {
+    // 只标记名字文本本身：label 的 title（路径 / agent 项目 tooltip）保持可翻译，走 i18n-dict 的捕获规则
+    const nm = document.createElement('span');
+    markUserText(nm);
+    nm.textContent = name;
+    label.append(nm);
+  } else label.textContent = name;
   label.title = p;
   li.append(twirl, ico, label);
   li.onclick = () => navigate(p);
@@ -2461,7 +2496,7 @@ async function loadRoots() {
   applyPlatformChrome();
   const ul = $('#roots-list');
   ul.innerHTML = '';
-  data.roots.forEach((r) => ul.appendChild(navDirLi(r.name, r.path)));
+  data.roots.forEach((r) => ul.appendChild(navDirLi(r.name, r.path, true))); // 快速入口是合成标签，不打用户内容标记
 }
 function renderRootsActive() {
   // 快速入口 / 收藏 / agent 项目 三个列表统一高亮「当前所在目录」，让用户清楚自己点开/身处哪一项
@@ -2486,7 +2521,7 @@ function renderFavs() {
       li = navDirLi(f.name, f.path);
     } else {
       li = document.createElement('li');
-      li.innerHTML = `<span class="ico">${svgWrap(SVG.file, 'currentColor', 16)}</span><span class="label" title="${escapeHtml(f.path)}">${escapeHtml(f.name)}</span>`;
+      li.innerHTML = `<span class="ico">${svgWrap(SVG.file, 'currentColor', 16)}</span><span class="label" title="${escapeHtml(f.path)}"${isWindows() ? ' data-fanbox-user-content' : ''}>${escapeHtml(f.name)}</span>`;
       li.onclick = () => navigate(dirOf(f.path)).then(() => { const e = state.entries.find((x) => x.path === f.path); if (e) { state.selected = f.path; openPreview(e); renderFiles(); } });
       makeDraggablePath(li, f.path);
     }
@@ -2630,7 +2665,7 @@ const cmdk = {
       if (r.content && r.hits) hits = r.hits.map((h) => `<div class="r-hit">L${h.line}: ${hlTerm(h.text, this.term)}</div>`).join('');
       li.innerHTML = `<span class="r-icon">${iconSvg(r, 18)}</span>
         <div class="r-main">
-          <div class="r-name">${this.isContent ? escapeHtml(r.name) : hlFuzzy(r.name, this.term)}</div>
+          <div class="r-name"${isWindows() ? ' data-fanbox-user-content' : ''}>${this.isContent ? escapeHtml(r.name) : hlFuzzy(r.name, this.term)}</div>
           <div class="r-path">${escapeHtml(tilde(r.path))}</div>${hits}
         </div>`;
       li.onclick = () => this.choose(i, false);
@@ -3622,7 +3657,7 @@ const player = {
       const when = new Date(it.startedAt || it.mtime);
       const title = (it.cwd ? baseOf(it.cwd) : '') || it.name.replace(/\.cast$/, '');
       const dur = it.duration ? fmtDur(it.duration) + ' · ' : '';
-      el.innerHTML = `<div class="rp-item-top">${it.recording ? '<span class="rp-dot-live" title="正在录"></span>' : ''}<span>${escapeHtml(title)}</span><span class="rp-item-del" title="删除">✕</span></div>`
+      el.innerHTML = `<div class="rp-item-top">${it.recording ? '<span class="rp-dot-live" title="正在录"></span>' : ''}<span${isWindows() ? ' data-fanbox-user-content' : ''}>${escapeHtml(title)}</span><span class="rp-item-del" title="删除">✕</span></div>`
         + `<div class="rp-item-sub">${dur}${when.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · ${fmtSize(it.size)}</div>`;
       el.querySelector('.rp-item-del').onclick = async (ev) => { ev.stopPropagation(); if (await confirmDialog('删除这段录像？')) { await window.fanboxRec.remove(it.path); this.loadList(); } };
       el.onclick = () => this.select(it);
@@ -4767,7 +4802,7 @@ const term = {
       t.title = followed ? '文件跟随正盯着这个终端 · 双击跳到它所在目录' : '双击：文件区跳到该终端所在目录';
       const eye = followed ? `<span class="tab-eye" title="文件跟随盯着它">${ic('eye', 'currentColor', 11)}</span>` : '';
       const zap = s.agentTouch && Date.now() - s.agentTouch < 8000 ? '<span class="tab-zap" title="正被 agent 控制">⚡</span>' : ''; // 被 agent 遥控过闪 8 秒：审计 + 围观
-      t.innerHTML = `<span class="tab-dot ${dotState}" title="${dotTitle}"></span>${eye}${zap}${ic('term', `hsl(${hue} 62% 48%)`, 12)}<span>${escapeHtml(s.title)}</span><span class="tab-x" title="关闭">✕</span>`;
+      t.innerHTML = `<span class="tab-dot ${dotState}" title="${dotTitle}"></span>${eye}${zap}${ic('term', `hsl(${hue} 62% 48%)`, 12)}<span${isWindows() ? ' data-fanbox-user-content' : ''}>${escapeHtml(s.title)}</span><span class="tab-x" title="关闭">✕</span>`;
       t.onclick = (e) => { if (e.target.classList.contains('tab-x')) { this.closeTab(s.id); return; } this.activate(s.id); };
       t.ondblclick = (e) => { if (e.target.classList.contains('tab-x')) return; this.locateCwd(); };
       bar.appendChild(t);
@@ -4836,7 +4871,7 @@ const roster = {
     const fresh = st === 'idle' && s._fresh ? '<span class="tr-tag">刚完成</span>' : '';
     const n = this.changed(s);
     return `<div class="tr-row st-${st}${s.id === term.active ? ' active' : ''}" data-id="${s.id}" title="点击切到该标签">
-      <span class="tr-shape" title="${this.LABEL[st]}">${this.SHAPE[st]}</span><span class="tr-agent">${icon}</span><span class="tr-name">${escapeHtml(s.title || 'shell')}</span>
+      <span class="tr-shape" title="${this.LABEL[st]}">${this.SHAPE[st]}</span><span class="tr-agent">${icon}</span><span class="tr-name"${isWindows() && s.title ? ' data-fanbox-user-content' : ''}>${escapeHtml(s.title || 'shell')}</span>
       <span class="tr-st">${this.LABEL[st]}</span>${fresh}<span class="tr-say">${this.say(s, st)}</span><span class="tr-files"${n ? ` title="本回合改动 ${n} 个文件"` : ''}>${n ? n + ' 文件' : ''}</span></div>`;
   },
   render() {
@@ -4962,6 +4997,8 @@ const usagePanel = {
     if (d.claude) {
       const c = d.claude, o = c.official;
       h += '<div class="usage-agent">Claude Code</div>';
+      const bridge = isWindows() && window.fanboxEnv && window.fanboxEnv.statusLineBridge;
+      if (bridge && !bridge.ready) h += `<div class="usage-sub">CLI实时回传未启用：${escapeHtml(bridge.reason || '状态栏桥准备失败')}；仍会尝试官方数据和本地会话日志</div>`;
       if (o) {
         h += this.limit('5h窗口', o.fiveHour, o.stale) + this.limit('周额度', o.sevenDay, o.stale);
         if (o.capturedAt) h += `<div class="usage-sub">${o.source === 'statusline' ? 'CLI实时回传' : '官方数据'} · ${this.ago(o.capturedAt)}</div>`;
@@ -5091,7 +5128,7 @@ const skillsView = {
       h += `<div class="sk-row ${this.open.has(key) ? 'expanded' : ''} ${it.disabled ? 'off' : ''}" data-dir="${escapeHtml(key)}" draggable="true">
         <span class="sk-dot ${dot}"></span>
         <div class="sk-name">
-          <div class="nm">${escapeHtml(it.name)}${it.copies ? ` <i class="sk-dup">${it.copies.length} 处副本</i>` : ''}${it.disabled ? ' <i class="sk-offtag">已停用</i>' : ''}</div>
+          <div class="nm"><span${isWindows() ? ' data-fanbox-user-content' : ''}>${escapeHtml(it.name)}</span>${it.copies ? ` <i class="sk-dup">${it.copies.length} 处副本</i>` : ''}${it.disabled ? ' <i class="sk-offtag">已停用</i>' : ''}</div>
           <div class="ds">${escapeHtml(it.issues[0] || it.desc || '')}</div>
         </div>
         ${this.srcTag(it)}
@@ -5429,10 +5466,10 @@ function mountReplay(host, tl) {
     const done = lastIdx + 1;
     q('#sreplay-fill').style.width = (frac * 100) + '%';
     q('#sreplay-playhead').style.left = (frac * 100) + '%';
-    q('#sreplay-now').textContent = lastIdx >= 0 ? tl[lastIdx].name : '—';
+    markUserText(q('#sreplay-now')).textContent = lastIdx >= 0 ? tl[lastIdx].name : '—'; // isWindows() 下当前文件名标为用户内容，不翻译
     q('#sreplay-count').textContent = `${done}/${tl.length}`;
     const recent = tl.slice(Math.max(0, lastIdx - 5), lastIdx + 1).reverse();
-    q('#sreplay-list').innerHTML = recent.map((e, i) => `<div class="rl-row${i === 0 ? ' rl-now' : ''}"><span>${escapeHtml(e.name)}</span><span class="rl-t">${fmtClock(e.ts)}</span></div>`).join('');
+    q('#sreplay-list').innerHTML = recent.map((e, i) => `<div class="rl-row${i === 0 ? ' rl-now' : ''}"><span${isWindows() ? ' data-fanbox-user-content' : ''}>${escapeHtml(e.name)}</span><span class="rl-t">${fmtClock(e.ts)}</span></div>`).join('');
   };
   const stop = () => { playing = false; if (raf) cancelAnimationFrame(raf); raf = null; playBtn.textContent = '▶ 播放'; };
   const step = () => {
@@ -5526,7 +5563,7 @@ async function openRoundPanel() {
           const dn = done.get(f.path);
           return `<div class="round-row${dn ? ' rr-done' : ''}" data-path="${escapeHtml(f.path)}">
             <span class="rr-ic">${iconSvg(e, 16)}</span>
-            <span class="rr-path" title="${escapeHtml(f.path)}">${escapeHtml(rel)}${f.count > 1 ? ` <em class="rr-n">×${f.count}</em>` : ''}</span>
+            <span class="rr-path" title="${escapeHtml(f.path)}"${isWindows() ? ' data-fanbox-user-content' : ''}>${escapeHtml(rel)}${f.count > 1 ? ` <em class="rr-n">×${f.count}</em>` : ''}</span>
             <span class="rr-stat" title="悬停算 +/- 行数">${dn ? escapeHtml(dn) : ''}</span>
             <span class="rr-time">${fmtClock(f.ts)}</span>
             ${dn ? '' : `<button class="ghost-btn snap-restore" data-act="diff">查看改动</button><button class="ghost-btn snap-restore" data-act="restore" title="只把这一个文件退回本回合开工前（git 项目退回 HEAD）；本回合新建的文件会移入${trashName()}">还原此文件</button>`}
@@ -5537,6 +5574,7 @@ async function openRoundPanel() {
       `<div class="round-replay"><div class="round-replay-head">回放 · ${tl.length} 次写入${tl.length >= 2 ? ' · 跨 ' + fmtDur((tl[tl.length - 1].ts - tl[0].ts) / 1000) : ''}</div><div class="round-replay-mount">${tl.length < 2 ? '<div class="round-empty">写入太少，没法回放</div>' : ''}</div></div>`;
     if (tl.length >= 2) replay = mountReplay(body.querySelector('.round-replay-mount'), tl);
     const selEl = body.querySelector('select.round-sel');
+    markRoundSelNames(selEl, snaps); // isWindows() 内部处理：option 文本里重挂文件名标记
     if (selEl) selEl.onchange = () => { cur = Number(selEl.value); render(); };
     body.querySelector('.round-manage').onclick = () => { close(); snapshotPanel(dirPath); };
     body.querySelector('.round-rollback').onclick = async () => {
@@ -5777,8 +5815,8 @@ function followArtifactCard(e) {
 }
 function followBadge(e) {
   const art = isFollowArtifact(e.name);
-  const where = follow.label ? `<span class="live-where">${escapeHtml(follow.label)}</span>` : '';
-  $('#preview-title').innerHTML = `<span class="live-badge${art ? ' done' : ''}"><i></i>${art ? '已生成' : '跟随中'}</span>${where}${escapeHtml(e.name)}`;
+  const where = follow.label ? `<span class="live-where"${isWindows() ? ' data-fanbox-user-content' : ''}>${escapeHtml(follow.label)}</span>` : '';
+  $('#preview-title').innerHTML = `<span class="live-badge${art ? ' done' : ''}"><i></i>${art ? '已生成' : '跟随中'}</span>${where}<span${isWindows() ? ' data-fanbox-user-content' : ''}>${escapeHtml(e.name)}</span>`;
 }
 // ===== 阶段二「过程旁白」：结果是主视图，底部一行实时说 agent 此刻在干嘛 =====
 // 工具调用动词 → 人话（Claude Code 2.x 工具行：「⏺ Update(file)」「⏺ Bash(cmd)」「⏺ Web Search(q)」…）
@@ -6232,13 +6270,16 @@ const cronPanel = {
     const d = this.data || {}; const tasks = d.tasks || [];
     body.innerHTML = `${d.desktop === false ? '<div class="cron-note">浏览器版只能管理任务；到点开窗执行需要 FanBox 桌面版开着</div>' : ''}
       <div class="cron-list">${tasks.map((t) => {
-        const meta = `${this.schedLabel(t.schedule)} · ${this.agentLabel(t)} · ${baseOf(t.cwd || '') || '~'}${t.enabled && t.nextRun ? ` · 下次 ${this.fmtAbs(t.nextRun)}` : ''}`;
+        const metaHead = `${this.schedLabel(t.schedule)} · ${this.agentLabel(t)}`; // isWindows() 下名字段单独标记，meta 拼法不变
+        const cwdName = baseOf(t.cwd || '') || '~';
+        const metaTail = t.enabled && t.nextRun ? `下次 ${this.fmtAbs(t.nextRun)}` : '';
+        const meta = `${metaHead} · ${cwdName}${metaTail ? ` · ${metaTail}` : ''}`;
         return `
         <div class="cron-row ${t.enabled ? '' : 'off'}" data-id="${t.id}">
           <label class="pw-switch ${t.enabled ? 'on' : ''}" data-act="toggle" title="${t.enabled ? '停用（保留任务，不再到点执行）' : '启用'}"><i></i></label>
           <div class="cron-main">
             <div class="cron-name"><span class="cron-name-text" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</span>${t.createdBy === 'agent' ? '<i class="cron-src">agent 设的</i>' : ''}${t.full ? '<i class="cron-full" title="全自动：执行时跳过所有确认">全自动</i>' : ''}</div>
-            <div class="cron-meta" title="${escapeHtml(meta)}">${escapeHtml(meta)} ${this.lastBadge(t)}</div>
+            <div class="cron-meta" title="${escapeHtml(meta)}"><span>${escapeHtml(metaHead)}</span> · <span${isWindows() ? ' data-fanbox-user-content' : ''}>${escapeHtml(cwdName)}</span>${metaTail ? ` · <span>${escapeHtml(metaTail)}</span>` : ''} ${this.lastBadge(t)}</div>
           </div>
           <button class="cron-btn" data-act="run" title="立即执行一次（新开终端窗口）">▶</button>
           <button class="cron-btn" data-act="edit" title="编辑">编辑</button>

@@ -51,7 +51,9 @@ const termFacts = new Map();
 // 所以文件内容对所有终端相同。--noproxy：用户开着系统代理时 curl 127.0.0.1 会被拦掉（实测）。
 const HOOKS_DIR = () => path.join(os.homedir(), '.fanbox', 'hooks');
 const HOOK_CURL = `curl -s --noproxy '*' -m 3 -X POST "$FANBOX_CTL/event" -H "x-fanbox-token: $FANBOX_CTL_TOKEN" -H "x-fanbox-term: $FANBOX_TERM_ID" -H 'content-type: application/json' --data-binary`;
+let winStatusLineBridge = null;
 function writeHookFiles() {
+  if (IS_WIN) winStatusLineBridge = { ready: false, reason: '状态栏桥准备失败' };
   try {
     const dir = HOOKS_DIR();
     fs.mkdirSync(dir, { recursive: true });
@@ -66,6 +68,7 @@ function writeHookFiles() {
       // Claude Code also honors CLAUDE_CODE_GIT_BASH_PATH from the `env` block of its own settings.json
       // (${CLAUDE_CONFIG_DIR || ~/.claude}); read-only, and only when the process env does not set it.
       let statusLine = null;
+      winStatusLineBridge = { ready: false, reason: 'Git Bash 未找到' };
       try {
         const script = path.join(dir, 'claude-statusline.cjs');
         let gitEnv = process.env;
@@ -75,15 +78,19 @@ function writeHookFiles() {
             if (fromSettings) gitEnv = { ...process.env, CLAUDE_CODE_GIT_BASH_PATH: fromSettings };
           } catch { /* no readable Claude Code settings: the process env and PATH decide */ }
         }
-        const cmd = winHelpers.winGitBash(gitEnv) ? winHelpers.winStatusLineCommand(process.execPath, script) : null;
+        const bash = winHelpers.winGitBash(gitEnv);
+        const cmd = bash ? winHelpers.winStatusLineCommand(process.execPath, script) : null;
         if (cmd) {
           // read+write (not copyFileSync) so the source may live inside app.asar
           fs.writeFileSync(script, fs.readFileSync(path.join(__dirname, '..', 'lib', 'claude-statusline.cjs')));
           statusLine = cmd;
+        } else if (bash) {
+          winStatusLineBridge = { ready: false, reason: '状态栏命令无法生成' };
         }
-      } catch (e) { console.error('[fanbox] status-line bridge skipped:', e.message); }
+      } catch (e) { winStatusLineBridge = { ready: false, reason: '状态栏桥准备失败' }; console.error('[fanbox] status-line bridge skipped:', e.message); }
       fs.writeFileSync(path.join(dir, 'claude-settings.json'), JSON.stringify(winHelpers.claudeHttpHookSettings(PORT, { statusLine }), null, 2) + '\n');
       fs.writeFileSync(path.join(dir, 'codex-notify.js'), winHelpers.buildCodexNotifyJs());
+      if (statusLine) winStatusLineBridge = { ready: true, reason: null };
       return;
     }
     // async：hook 在后台跑、不等返回，绝不拖慢 agent；timeout 5s 兜底
@@ -109,7 +116,7 @@ function writeHookFiles() {
     const shPath = path.join(dir, 'codex-notify.sh');
     fs.writeFileSync(shPath, sh);
     fs.chmodSync(shPath, 0o755);
-  } catch (e) { console.error('[fanbox] hooks 文件写入失败：', e.message); }
+  } catch (e) { if (IS_WIN) winStatusLineBridge = { ready: false, reason: '状态栏桥准备失败' }; console.error('[fanbox] hooks 文件写入失败：', e.message); }
 }
 // 只读 ~/.codex/config.toml 顶层的 notify = ["程序", "参数"…]，粗解析够用（不动这个文件）
 function codexUserNotify() {
@@ -421,7 +428,10 @@ let lastAutoCheck = 0;
 const WIN_REL_REPO = 'Emberwhirl/fanbox';
 const WIN_REL_PAGE = `https://github.com/${WIN_REL_REPO}/releases/latest`;
 function hasWinInstallerAsset(assets) {
-  // Exact pair only: FanBox-<ver>-win-<arch>.exe + -portable.exe. Fuzzy names fail closed.
+  // No name/arch checking here (ver/arch are not in this signature): the exact pair
+  // FanBox-<ver>-win-<arch>.exe + -portable.exe — fuzzy names rejected — is enforced
+  // upstream in winHelpers.verifiedWinAssetList and re-checked by exact name before the
+  // download starts (update:download). This only confirms a non-empty verified list.
   return Array.isArray(assets) && assets.length > 0;
 }
 // 失败原因存成结构化记录，弹窗时才按界面语言拼（D5）：中文与上游 latestReleaseError 的文案逐字一致，英文模式给英文。
@@ -1450,6 +1460,7 @@ ipcMain.on('env:hooksReady', (e) => {
   try { e.returnValue = IS_WIN && fs.existsSync(path.join(HOOKS_DIR(), 'claude-settings.json')); }
   catch { e.returnValue = false; }
 });
+ipcMain.on('env:statusLineBridge', (e) => { e.returnValue = IS_WIN ? winStatusLineBridge : null; });
 
 ipcMain.handle('drop:pick-images', async (e, { defaultPath } = {}) => {
   try {

@@ -126,6 +126,12 @@ async function waitFor(fn, ms, step = 250) { const t0 = Date.now(); while (Date.
   // claude honours NO_PROXY). Node on PATH is required by the shim, so put its dir after the shim dir.
   const nodeDir = path.dirname(process.execPath);
   const { app, win } = await launch({ FANBOX_SHIM_DUMP: DUMP, FANBOX_CODEX_DUMP: DUMP_CODEX, HTTP_PROXY: 'http://127.0.0.1:9', HTTPS_PROXY: 'http://127.0.0.1:9' }, { port: PORT, toolsPath: SHIM + ';' + nodeDir + ';' });
+  // Startup merges registry PATH ahead of inherited PATH. Put the stand-ins
+  // first again before creating PTYs, so installed CLIs cannot replace them.
+  await app.evaluate((_electron, dirs) => {
+    const key = Object.keys(process.env).find(k => k.toLowerCase() === 'path') || 'Path';
+    process.env[key] = dirs + ';' + process.env[key];
+  }, SHIM + ';' + nodeDir);
   // Main-process spies: dialog (never block on a modal), taskbar badge + flash (D6)
   await app.evaluate(({ dialog, BrowserWindow }) => {
     global.__dlg = []; global.__badge = []; global.__flash = [];
@@ -235,6 +241,11 @@ async function waitFor(fn, ms, step = 250) { const t0 = Date.now(); while (Date.
   check(!!st4.change && st4.change.termId === termId && st4.change.agent === 'claude' && st4.change.name === 'hooked-note.md' && st4.inProj && st4.change.path.indexOf(SEP) > 0, 'C4: 本回合 attributes the hook-reported file (backslash path) to this terminal + claude', JSON.stringify(st4.change));
   check(fs.existsSync(path.join(PROJ, 'hooked-note.md')), 'the fake claude really wrote the file');
   check(st4.fresh && st4.rows.some((r) => r.indexOf(termId) === 0 && /刚完成|Just finished/.test(r)), 'C3: 指挥台 shows 刚完成 for the unseen finished turn', JSON.stringify(st4.rows));
+  // The setup's spare shell can also finish unseen. Acknowledge those other
+  // idle tabs through the UI before asserting that the entire roster empties.
+  await win.evaluate((id) => {
+    for (const s of term.sessions) if (s.id !== id && s._fresh && roster.stateOf(s) === 'idle') term.activate(s.id);
+  }, termId);
   await win.evaluate((id) => term.activate(id), termId);
   await win.evaluate(() => window.dispatchEvent(new Event('focus')));
   await sleep(600);

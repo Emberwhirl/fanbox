@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>FanBox 2.17.0 · Windows implementation plan</title>
+<style>
+:root{--bg:#f6f5ef;--paper:#fffef9;--ink:#202b28;--muted:#596861;--line:#d9dfd6;--accent:#17644e;--tint:#e8f1e9;--warn:#835014;--code:#edf0e9}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:20px}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 "Segoe UI",system-ui,sans-serif}main{max-width:1120px;margin:auto;padding:56px 32px 88px}a{color:var(--accent);text-underline-offset:3px}.eyebrow{font-size:12px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--accent)}h1{font:clamp(36px,5vw,60px)/1.08 Georgia,serif;letter-spacing:-.035em;max-width:850px;margin:16px 0 22px}h2{font:32px/1.2 Georgia,serif;margin:52px 0 18px;letter-spacing:-.02em}h3{font-size:20px;line-height:1.35;margin:12px 0}h4{font-size:16px;margin:18px 0 6px}p{margin:10px 0 16px}.intro{font-size:19px;max-width:850px}.meta,.small{font-size:13px;color:var(--muted)}.pills{display:flex;flex-wrap:wrap;gap:8px;margin:22px 0}.pill{border:1px solid var(--line);border-radius:30px;padding:5px 12px;font-size:13px;background:var(--paper)}nav{display:flex;gap:12px 24px;flex-wrap:wrap;border-block:1px solid var(--line);padding:16px 0;margin:28px 0}nav a{font-size:14px;font-weight:600}.notice{border-left:4px solid var(--accent);background:var(--tint);padding:16px 20px;margin:24px 0}.notice p:last-child{margin-bottom:0}.cards{display:grid;grid-template-columns:1fr 1fr;gap:18px}.card{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:22px;break-inside:avoid}.id{font-size:12px;letter-spacing:.1em;color:var(--accent);font-weight:700}.recommend{font-weight:650}.tradeoff{color:var(--muted);font-size:14px}.status{display:inline-block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;padding:2px 8px;border-radius:4px;background:var(--tint);color:var(--accent)}.pending{color:var(--warn);background:var(--code)}.table-wrap{overflow-x:auto;margin:18px 0}table{width:100%;border-collapse:collapse;font-size:14px;background:var(--paper)}th,td{text-align:left;vertical-align:top;padding:13px 15px;border-bottom:1px solid var(--line)}th{font-size:12px;text-transform:uppercase;letter-spacing:.05em;background:var(--tint)}td:first-child{font-weight:600}table.wide{min-width:790px}code{font:12.5px/1.5 Consolas,monospace;background:var(--code);padding:2px 5px;border-radius:4px;overflow-wrap:anywhere}pre{padding:20px;overflow:auto;border:1px solid var(--line);background:var(--code);font-size:13px;line-height:1.6;border-radius:9px}pre code{padding:0;background:none;overflow-wrap:normal}li{margin:7px 0}ol,ul{padding-left:24px}.phase{border-top:1px solid var(--line);padding:20px 0}.phase h3{margin-top:0}.engineering{border-top:3px solid var(--line);margin-top:55px;padding-top:5px}details{margin:16px 0;border:1px solid var(--line);border-radius:9px;background:var(--paper);padding:14px 18px}summary{cursor:pointer;font-weight:650}footer{border-top:1px solid var(--line);margin-top:40px;padding-top:18px;font-size:13px;color:var(--muted)}.divider{color:var(--muted);font-size:14px}
+@media(prefers-color-scheme:dark){:root{--bg:#141c19;--paper:#1c2722;--ink:#e5eae2;--muted:#acb9af;--line:#3a4a40;--accent:#8dd2b2;--tint:#263c31;--warn:#e7bc79;--code:#253029}}
+@media(max-width:720px){main{padding:30px 18px 54px}.cards{grid-template-columns:1fr}h2{font-size:28px}th,td{padding:10px}}
+@media print{body{background:white;color:#111;font-size:11px}main{max-width:none;padding:0}nav{display:none}.cards{gap:10px}.card{padding:14px}h1{font-size:36px}h2{font-size:24px}table{font-size:10px}th,td{padding:7px}.table-wrap{overflow:visible}table.wide{min-width:0}a{color:inherit}details{break-inside:avoid}pre{white-space:pre-wrap}footer{font-size:10px}}
+</style>
+</head>
+<body><main>
+<header>
+<div class="eyebrow">Implementation plan · reviewed 18 October 2026</div>
+<h1>FanBox 2.17.0<br>at home on Windows.</h1>
+<p class="intro">Bring upstream’s better usage reporting and smoother file tracking to Windows 11 x64, retaining the parts of the 2.16.1 port that already fit and reconsidering each feature on its own merits.</p>
+<div class="pills"><span class="pill">Windows 11 · x64</span><span class="pill">Private development on your server</span><span class="pill">Public delivery through windows</span><span class="pill">Review &amp; planning only</span></div>
+<p class="meta">Recommendations below are proposals for you to adjust. Your confirmed choices are the platform, function-by-function assessment, and keeping dev off GitHub.</p>
+</header>
+<nav aria-label="Plan contents"><a href="#decisions">Choices to tweak</a><a href="#features">Feature decisions</a><a href="#delivery">Delivery sequence</a><a href="#acceptance">What must work</a><a href="#engineering">Engineering appendix</a></nav>
+
+<section id="decisions">
+<h2>1. Choices you are most likely to tweak</h2>
+<p>Start here. Each choice explains the visible outcome, the recommended default, and what changing it would cost.</p>
+<div class="cards">
+<article class="card"><span class="id">D1 · CLAUDE QUOTA LINE</span><h3>Show live quota for sessions launched by FanBox</h3>
+<p class="recommend">Keep the new bridge enabled when Git Bash is available. Relay the quota to the usage panel while preserving the user’s own status-line output.</p>
+<p>With no custom line, show compact <code>5h 23% · 7d 42%</code> in English; use the existing Chinese wording in Chinese mode. Starting a new Claude session enables the bridge. A manually typed <code>claude</code> remains an ordinary session.</p>
+<p class="tradeoff"><b>Alternative:</b> omit the injected status line and use API data only. Less CLI integration, but live quota may be less available. Existing dev already implements the bridge; actual Claude behavior still needs a Windows run.</p></article>
+
+<article class="card"><span class="id">D2 · FALLBACK EXPERIENCE</span><h3>Explain missing live data without interrupting work</h3>
+<p class="recommend">Keep launching the agent if the bridge cannot be prepared. Show a small, localizable explanation in the usage panel, with the available data source.</p>
+<p>Use wording such as “Live quota unavailable; using official API data” when that source works. Give a specific reason only when known. A missing Git Bash must not break the HTTP hooks or Codex notifications.</p>
+<p class="tradeoff"><b>Current gap:</b> dev silently omits the bridge when Git Bash is missing or a path contains an apostrophe. Recommend supporting apostrophes through correct Bash quoting, plus a nonmodal explanation for real setup failures. You can retain silent fallback for a smaller release.</p></article>
+
+<article class="card"><span class="id">D3 · USAGE PANEL</span><h3>Keep the new detail, make its meaning clear</h3>
+<p class="recommend">Keep collapsible token details for both agents, including cache reads/writes and reasoning where recorded. Preserve expanded sections during refresh.</p>
+<p>Label official quota, live CLI quota, and local session totals distinctly. Keep the 5-hour, today, and rolling 7-day local views. Show expired quota as “Awaiting update”; retain stale successful values with their age and failure reason.</p>
+<p class="tradeoff"><b>Alternative:</b> simplify the default panel further, keeping the breakdown one click away. Do not estimate account bills, missing reasoning, reset-card expiry, or reset-card history. Reset cards show held and currently applicable counts only when returned.</p></article>
+
+<article class="card"><span class="id">D4 · UPDATES</span><h3>Retain download-and-run updates for this release</h3>
+<p class="recommend">Check Emberwhirl/fanbox releases and offer “Download update.” Keep the installer and portable EXE. Add upstream’s timeouts, useful error reasons, and “Open download page” fallback.</p>
+<p>Never offer the macOS upstream release as a Windows upgrade. Keep requiring both exact Windows asset names before offering the new version.</p>
+<p class="tradeoff"><b>Alternative:</b> implement automatic Windows installation. That is a separate product change requiring installer/portable policies, update metadata, signing decisions, restart behavior, and recovery tests. The upstream macOS auto-updater does not establish Windows readiness.</p></article>
+
+<article class="card"><span class="id">D5 · INSTALLATION &amp; DATA</span><h3>Keep installer and portable options</h3>
+<p class="recommend">Ship <code>FanBox-2.17.0-win-x64.exe</code> and <code>FanBox-2.17.0-win-x64-portable.exe</code>. Preserve existing user settings on upgrade and uninstall.</p>
+<p>Verify both packages from paths with spaces and Chinese characters, and portable launch from another drive. Explain that the current portable package still uses the normal user profile for settings and history.</p>
+<p class="tradeoff"><b>Alternative:</b> a self-contained portable profile next to the EXE. That needs deliberate migration, writable-location rules, and coexistence tests; defer unless carrying settings between PCs is a priority. Signing is optional scope to decide before release; the 2.16.1 notes record unsigned packages.</p></article>
+
+<article class="card"><span class="id">D6 · LANGUAGE &amp; WINDOWS CONTROLS</span><h3>Keep the Windows conventions already established</h3>
+<p class="recommend">Retain Chinese/English switching, Windows captions, Ctrl shortcuts, Recycle Bin wording, and <code>Ctrl+Alt+M</code> for terminal maximize.</p>
+<p>Translate the new quota details, dynamic window labels, errors, tooltips, and native update dialog. The terminal quota line should follow FanBox’s selected language, including on a fresh profile.</p>
+<p class="tradeoff"><b>Review point:</b> the existing dictionary translates the exact string “输出” globally. A file or folder with that name may display as “Output” in English. Recommend protecting user filenames/content from UI translation and adding a regression case.</p></article>
+
+<article class="card"><span class="id">D7 · LIVE FILE CHANGES</span><h3>Favor responsive typing and a list that catches up</h3>
+<p class="recommend">Adopt upstream’s batching and throttling first. Keep folder heat and change summaries, while allowing the complete file list to update after a short delay.</p>
+<p>Proposed acceptance: after a 2,000-file burst over 8 seconds, the final file appears within 2 seconds of the burst ending; another terminal stays usable. Three seconds is a warning to investigate.</p>
+<p class="tradeoff"><b>Alternative:</b> tune for faster list updates after measuring Windows. Reducing delays prematurely can restore the stalls this release fixes. Change tracking is a live summary, not an exhaustive filesystem audit.</p></article>
+
+<article class="card"><span class="id">D8 · SCOPE &amp; RELEASE</span><h3>Finish the existing candidate before broadening support</h3>
+<p class="recommend">Use the fetched dev candidate as the starting point. Keep the release target at Windows 11 x64; retain previously working editor, snapshots, agent control, and WeChat functionality.</p>
+<p>Develop against your server’s <code>origin/dev</code>. Publish the validated result through GitHub’s <code>windows</code> branch and versioned release. Keep GitHub <code>master</code> as the upstream mirror.</p>
+<p class="tradeoff"><b>Deferred scope:</b> Windows 10, ARM64, WSL-specific integration, automatic installation, and a new settings system. Existing ARM64 build switches are not evidence of supported ARM64 binaries.</p></article>
+</div>
+</section>
+
+<div class="notice"><b>The fetched dev is already a candidate.</b><p><code>origin/dev</code> contains the upstream merge, Windows bridge, translations, regression harness, and Linux handoff notes. The remaining work is targeted fixes and validation, not a fresh port. The original plan and notes remain untouched; this review adds a current plan.</p></div>
+
+<section id="features"><h2>2. Function-by-function disposition</h2>
+<div class="table-wrap"><table class="wide"><thead><tr><th>Function</th><th>2.16.1 Windows behavior / 2.17.0 change</th><th>Decision for this port</th></tr></thead><tbody>
+<tr><td>Agent launch &amp; notifications</td><td>Claude uses HTTP hooks in an injected settings file. FanBox-launched Codex gets real argv, including notify configuration; typed commands are left ordinary.</td><td><b>Retain.</b> Add the Claude status line beside those hooks. Recheck one-click, resume, scheduled tasks, and organize flows.</td></tr>
+<tr><td>Quota sources</td><td>2.17.0 adds Claude live status-line data and Codex official quota/reset-credit data, with local-snapshot fallback.</td><td><b>Adapt.</b> Keep the source hierarchy; verify real Windows curl, login locations, custom homes, and system proxy. Missing account data must leave local statistics usable.</td></tr>
+<tr><td>Token detail</td><td>Background incremental parsing adds subagent logs, streamed completion reconciliation, cache ratios, and Codex totals.</td><td><b>Adopt.</b> Keep upstream parsing initially. Verify local midnight, partial records, rotation/truncation, and reasoning as a subset of output.</td></tr>
+<tr><td>Custom Claude status line</td><td>The new bridge finds user/project settings and chains the configured command.</td><td><b>Adapt and test.</b> Preserve output, working directory, input JSON, and explicit disable. Exercise Bash and PowerShell scripts through the real CLI, including project and local overrides.</td></tr>
+<tr><td>Terminals &amp; process lifecycle</td><td>ConPTY, registry-PATH merging, PowerShell/cmd support, probe-based busy state, safe quit, and task-tree termination already exist.</td><td><b>Retain.</b> Test permission prompts, cancel quit, idle-shell quit, child cleanup, and a ten-minute bridge soak. Do not replace with POSIX process assumptions.</td></tr>
+<tr><td>Filesystem &amp; watcher</td><td>2.17.0 batches main-process notifications, drains renderer work in chunks, throttles refreshes, and removes forced layout in animations.</td><td><b>Adopt and measure.</b> Verify backslash paths, deletion, nested changes, overflow recovery, and navigation during refresh. Keep Windows path helpers.</td></tr>
+<tr><td>Editor, images &amp; preview</td><td>Windows port already handles drive/UNC paths, Markdown image destinations, cross-volume copies, thumbnails, native file dialogs, and isolated previews.</td><td><b>Retain.</b> Recheck external Markdown edits after the watcher change, unsaved edit protection, image insertion/export, and preview isolation.</td></tr>
+<tr><td>Snapshots &amp; Git</td><td>Windows-specific eligibility, junction/drive handling, directory sizes, cleanup retries, CRLF preservation, and safe executable discovery.</td><td><b>Retain.</b> Recheck rollback with CRLF and busy agents. A watcher improvement must not weaken snapshot protections.</td></tr>
+<tr><td>Window, taskbar &amp; wake</td><td>Native captions, pending-approval attention indicators, and task-scoped sleep prevention.</td><td><b>Retain.</b> Test captions at 100%/150% scaling. Keep Windows “keep awake” wording; do not promise control over the laptop’s lid policy.</td></tr>
+<tr><td>WeChat bridge</td><td>Windows CLI shim resolution, environment/proxy merging, Unicode handling, and process-tree shutdown.</td><td><b>Retain.</b> Smoke-test launch, response, cancel, and reconnect using a test profile; do not redesign it for this usage-focused release.</td></tr>
+<tr><td>Update checking</td><td>Windows currently offers manual downloads of the fork’s exact EXE pair. Upstream adds failure reasons and timeouts.</td><td><b>Adapt.</b> Keep fork release selection, asset verification, and manual flow while importing clearer failures. Test offline, rate limit, missing assets, and current-version behavior.</td></tr>
+<tr><td>Packaging &amp; publishing</td><td>NSIS + portable, node-pty unpacked, Windows manual release route. Package metadata still contains upstream’s publish owner.</td><td><b>Retain with audit.</b> Build using <code>--publish never</code>; explicitly target <code>fork</code> for Windows publication. Keep development refs off GitHub.</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="delivery"><h2>3. Delivery sequence</h2>
+<div class="phase"><span class="status">Next · private dev</span><h3>Stage A — Reconcile the candidate and product choices</h3><p>Start from fetched <code>424c8b9</code>, after preserving any local work. Apply your choices from D1–D8. Use the existing implementation rather than replaying its merge. Add a brief decision ledger to the candidate’s notes.</p><p class="small"><b>Complete when:</b> the exact source commit and supported scope are recorded, the old v2.16.1 behavior has a keep/change/defer decision, and no developer branch is pushed to GitHub.</p></div>
+<div class="phase"><span class="status">Targeted fixes</span><h3>Stage B — Close the review gaps</h3><p>Fix the cross-platform test fixtures described below. Implement robust apostrophe quoting if D2 is accepted; make bridge fallback understandable. Protect user content from translation if D6 is accepted. Keep the rest of the existing bridge, quota transport, and watcher merge unless a real test exposes a defect.</p><p class="small"><b>Complete when:</b> the unmodified candidate’s suites pass on Windows after committed fixes; all required bridge cases actually execute or have equivalent evidence. Re-run the upstream checks on Linux for shared-code changes.</p></div>
+<div class="phase"><span class="status">Windows validation</span><h3>Stage C — Prove the app behavior</h3><p>Run the existing v2.17.0 campaign in an isolated profile, then real Claude/Codex sessions. Re-run the affected 2.16.1 regression suites. Record the source commit, OS/tool versions, results, timing data, and screenshots. Diagnose a harness limitation separately from an application failure.</p><p class="small"><b>Complete when:</b> required acceptance cases below pass. A missing login or Git Bash makes the affected evidence incomplete; it does not establish product readiness.</p></div>
+<div class="phase"><span class="status">Package validation</span><h3>Stage D — Test the actual deliverables</h3><p>Build both x64 EXEs on Windows. Check packaged worker startup, native terminals, copied hook files, custom-path installation, portable execution, upgrade from 2.16.1, and uninstall/profile retention. Record SHA-256 hashes and ensure both files come from the same frozen source.</p><p class="small"><b>Complete when:</b> the installer and portable pass their own smoke checks. Development-mode or Linux-only passes cannot substitute for this stage.</p></div>
+<div class="phase"><span class="status pending">Future release step</span><h3>Stage E — Publish through windows</h3><p>When release work is requested, move the tested result to <code>windows</code>, push that branch to GitHub remote <code>fork</code>, and create a release with both assets attached before making it public. Verify public download hashes and the update offer from 2.16.1.</p><p class="small"><b>Complete when:</b> 2.16.1 offers the exact 2.17.0 Windows pair, 2.17.0 reports current, and GitHub has no dev branch. Release instructions must use explicit remote names; <code>origin</code> is your private server.</p></div>
+</section>
+
+<section id="acceptance"><h2>4. What must work before release</h2>
+<p>Reuse the campaign already on origin/dev. These are proposed release criteria; timing thresholds should be recorded on the target Windows PC, with warnings explained.</p>
+<div class="table-wrap"><table class="wide"><thead><tr><th>Area</th><th>Visible pass condition</th><th>Evidence</th></tr></thead><tbody>
+<tr><td>Claude live quota</td><td>One-click launch delivers quota to the panel. No extra app window. A ten-minute real session leaves no accumulating children; normal refresh aims for &lt;1 s, investigate ≥2 s.</td><td>S1, S2 stand-in + real CLI; process census.</td></tr>
+<tr><td>User configuration</td><td>Custom Bash/PowerShell output survives; user/project/local precedence and explicit null behave as intended. User settings are never rewritten. Hooks still work.</td><td>S3 plus new precedence cases and before/after file hashes.</td></tr>
+<tr><td>Paths &amp; fallback</td><td>Spaces, CJK, apostrophes, and another drive work per D2. With Git Bash missing, agent launch and HTTP hooks work; the quota source/failure is understandable.</td><td>S5, S6; adapt S6 if apostrophe support is added.</td></tr>
+<tr><td>Official quota</td><td>Real Codex account loads its correct plan windows and available reset-card fields. Missing auth falls back; offline preserves old values; reconnect recovers. Claude API fallback works.</td><td>U1–U4; real credentials only in the isolated test profile.</td></tr>
+<tr><td>Token reporting</td><td>Known fixtures match for both agents, reasoning is not double-counted, missing differs from zero, subagents count once, details survive the 60 s refresh.</td><td>Upstream unit tests, UF, U5/U6.</td></tr>
+<tr><td>Responsiveness</td><td>During a 500 MB log scan and file burst, echo stays ≤1 s and worst visible frame gap ≤500 ms; warn above 500 ms echo / 250 ms frame gap.</td><td>U6, W; foreground window and saved measurements.</td></tr>
+<tr><td>File correctness</td><td>2,000-file burst catches up; duplicates coalesce; delete and nested changes appear; ignored build noise stays quiet; reading alone does not mark a file changed; navigating never shows another directory’s results.</td><td>W1–W4 plus navigation/overflow case.</td></tr>
+<tr><td>English &amp; Chinese</td><td>Panel, native errors, terminal quota line, shortcuts, and tooltips match the language. Filenames and document text retain original spelling.</td><td>U7, R1, rendered UI review and filename regression.</td></tr>
+<tr><td>Existing safeguards</td><td>Permission attention, safe quit, Codex argv, snapshots/CRLF, Markdown images/XSS, and preview separation still work.</td><td>X1 + 2.16.1 hooks/process/files and image/preview suites.</td></tr>
+<tr><td>Actual packages</td><td>Both EXEs run; lib worker loads from app.asar; terminals/hook bridge work; installation/upgrade/uninstall preserve user data.</td><td>G1–G3 plus portable smoke and source/hash record.</td></tr>
+<tr><td>Release availability</td><td>Errors offer the fork’s download page; no offer for incomplete assets; old build offers the complete pair; new build offers nothing.</td><td>R1 before publication; R2 after publication.</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="engineering" class="engineering"><div class="eyebrow">Engineering appendix · implementation and evidence</div>
+<h2>5. Reviewed source and current state</h2>
+<p><code>git fetch origin master dev</code> completed successfully. Fetch updated the remote-tracking references; local branches and the application checkout were left in place.</p>
+<div class="table-wrap"><table><thead><tr><th>Reference</th><th>Reviewed commit</th><th>Meaning</th></tr></thead><tbody>
+<tr><td>origin/master</td><td><code>e8395cb3043c90715651f20073a27580673b467a</code></td><td>Upstream v2.17.0 release. Local master remains at 0394dae.</td></tr>
+<tr><td>windows</td><td><code>dbf40d839ed5085fd4342630aae937da0956a37d</code></td><td>Published v2.16.1 port; matches the already-present origin/windows and fork/windows tracking refs. Those two refs were not freshly fetched.</td></tr>
+<tr><td>origin/dev</td><td><code>424c8b9308d0d1e485b60a599550bd631ba3de9e</code></td><td>2.17.0 implementation + handoff notes. Local dev at a778a1f is 13 commits behind.</td></tr>
+</tbody></table></div>
+<p class="small">Remote map verified locally: <code>origin</code> = your SSH server; <code>fork</code> = Emberwhirl/fanbox on GitHub; <code>upstream</code> = alchaincyf/fanbox on GitHub. No push, checkout, merge, installation, or app build was performed for this review.</p>
+<p>Reviewed upstream’s v2.16.1→v2.17.0 delta, the v2.16.1 Windows delta against its merge base, and the fetched dev delta against both baselines. The upstream release touches 15 files (+687/−177). In dev, <code>lib/agent-tokens.js</code>, <code>lib/watch-batcher.js</code>, and <code>tests/</code> are unchanged from origin/master; the status-line bridge adds 34 lines, with no upstream lines removed. Preload retains the port’s earlier 16 added lines beside the upstream batching changes.</p>
+
+<h3>Existing evidence is useful, with limits</h3>
+<p>The 2.16.1 implementation notes record Windows 11 testing, native PTY/package smoke tests, and published hashes. They also explicitly leave some install/upgrade/uninstall checks and a live capsule upgrade manual. Treat them as a regression map, not proof of the 2.17.0 packages.</p>
+<p>The fetched 2.17.0 notes report a successful Linux gate, but leave real Git Bash/Claude behavior, Windows curl acceptance, app.asar worker startup, and timing thresholds for Windows. The campaign’s Windows result table is blank. This review does not infer Windows acceptance from those historical reports.</p>
+
+<h2>6. Review findings and changes to make</h2>
+<div class="table-wrap"><table class="wide"><thead><tr><th>Finding</th><th>Evidence / implication</th><th>Implementation action</th></tr></thead><tbody>
+<tr><td>R1 · Three tests fail on this Windows host</td><td>Fresh isolated run: 81 tests, 76 pass, 3 fail, 2 skipped. Snapshot fixture uses POSIX string keys with host-native path.join; two simulated POSIX bridge cases construct their fixture keys using Windows path.join.</td><td><b>Required:</b> use explicit path.posix for POSIX fixtures, retaining real Windows-path cases. Commit test-only fixes in dev, then run the original suites. The isolated diagnostic proves the causes without changing application code.</td></tr>
+<tr><td>R2 · Apostrophes disable live bridge</td><td><code>winStatusLineCommand()</code> returns null for either path containing a single quote. A unit test pins this behavior; writeHookFiles then omits statusLine.</td><td><b>Recommended D2 change:</b> use a Bash single-quote escape routine with forward-slash paths, not a blanket rejection. Test actual Git Bash with O’Brien, spaces, CJK, dollar signs, backticks, percent and exclamation marks; update old fallback expectations.</td></tr>
+<tr><td>R3 · Fallback is silent in the product</td><td>Missing Bash/unsupported paths produce hooks without statusLine; copy failures log a message. No bridge-readiness reason is exposed to the usage panel.</td><td><b>Recommended D2 change:</b> expose Windows readiness/reason locally and translate a small status message. Preserve launch success and the API fallback. Do not infer “Git missing” merely because no fresh quota arrived.</td></tr>
+<tr><td>R4 · Global dictionary can rename visible user text</td><td>The added exact “输出” → “Output” entry participates in a DOM-wide translator. A filename matching that UI term can be translated; the existing handoff accepts this limitation.</td><td><b>Recommended D6 change:</b> exclude filenames and user-content nodes from translation using the existing translation mechanism, then test the actual DOM. Keep translations on UI labels.</td></tr>
+<tr><td>R5 · Real CLI integration remains unproved here</td><td>Stand-ins execute the bridge but do not prove the installed Claude version’s settings precedence, Git Bash selection, or OAuth availability. The copied script has its own Bash lookup, separate from main’s helper.</td><td><b>Required validation:</b> user/project/local overrides, explicit disable, env-only and settings-only custom Git Bash, scripts on another drive, and repeated callbacks. Fix only Windows code if those cases fail.</td></tr>
+<tr><td>R6 · Packaged worker and transport need Windows evidence</td><td>Worker entry is a new lib file. Windows usage requests choose exact curl.exe through PATH/System32, use stdin for credentials, and reuse the port’s proxy environment.</td><td><b>Required validation:</b> official quota and system-proxy tests on real accounts; packaged worker + copied bridge from app.asar in both EXE forms. Authentication fixtures cannot establish upstream endpoint acceptance.</td></tr>
+</tbody></table></div>
+
+<h3>Fresh tests performed for this review</h3>
+<p>Node <code>v22.23.2</code>, Windows host. Exported selected files directly from <code>origin/dev</code> into an isolated temporary directory and ran the upstream usage suite plus both v2.17.0 contracts. No npm dependencies or Electron were needed for this run.</p>
+<pre><code>node --test tests/agent-usage.test.js experiments/win-v2170-usage-202610/contract-bridge.test.js experiments/win-v2170-usage-202610/contract-i18n.test.js
+
+Unmodified source/tests: 81 tests · 76 pass · 3 fail · 2 skipped
+Test-fixture-only diagnostic: 81 tests · 79 pass · 0 fail · 2 skipped</code></pre>
+<p>The diagnostic changes only the temporary test fixtures: the snapshot context gets <code>path.posix</code>; the two POSIX bridge fixtures use <code>path.posix.join</code>. All three failures disappear. This is strong evidence of test portability defects, not three demonstrated app defects. The application code is unchanged. Two real Bash execution tests remain skipped on Windows by their own guards; the Windows Electron campaign must supply that evidence.</p>
+<p class="small">Full unmodified output and the diagnostic output: <a href="win-port-review-evidence-v2.17.0.txt">review evidence log</a>. This is a targeted code review, not a full runtime audit or a Windows acceptance pass.</p>
+
+<h2>7. Implementation map</h2>
+<div class="table-wrap"><table class="wide"><thead><tr><th>Component</th><th>Existing candidate / intended work</th><th>Invariant</th></tr></thead><tbody>
+<tr><td>electron/main.js</td><td>Windows writeHookFiles prepares a copied status-line bridge after registry-PATH merge; upstream update code and parallel Windows release check coexist. Add readiness reporting if selected.</td><td>Keep HTTP hooks, fork exact-pair selection, native process lifecycle, and original POSIX behavior.</td></tr>
+<tr><td>win-port-helpers.js</td><td>Existing winGitBash, settings-env parser, status-line command builder, optional hook statusLine. Replace apostrophe rejection if selected.</td><td>Only generated executable/script paths are quoted. Do not feed project content to shell command construction.</td></tr>
+<tr><td>lib/claude-statusline.cjs</td><td>Existing Windows branch chains custom commands through bash argv and localizes weekly labels. Keep quota-only authenticated loopback POST, input to custom command, and explicit null behavior.</td><td>Do not persist control tokens or rewrite user settings. Preserve upstream lines/POSIX behavior. Test copied-file independence from helper imports.</td></tr>
+<tr><td>server.js</td><td>Retain official-cache success/failed backoff, concurrent-request coalescing, worker-based token scans, configured CLI homes, snapshot fallback, and valid-window filtering.</td><td>Use absolute Windows curl.exe, token in stdin rather than argv, loopback authentication, and existing proxy support. No new npm dependency in standalone server.</td></tr>
+<tr><td>public/app.js + i18n</td><td>Keep new usage rendering, stale labels, expander state, refresh race guard, and Windows join/containment helpers. Add fallback wording and protect user content if selected.</td><td>Chinese source strings with English coverage, matching native dialog language. Avoid a broad UI rewrite.</td></tr>
+<tr><td>watch-batcher + preload</td><td>Adopt upstream: 400 ms main batching, 256 pending entries plus directory overflow, at most 16 concurrent stats, 4,096 signatures. Preload drains 32 events per 16 ms; app refresh delay is 750 ms.</td><td>Overflow must still refresh affected directories. Verify rename/delete, eventual state, and editor safety on NTFS before tuning.</td></tr>
+<tr><td>package.json + release docs</td><td>Existing version is already 2.17.0. Keep lib/ in package, tests/docs/experiments out, node-pty unpacked, both x64 targets. Document supported Windows behavior and upgrade notes.</td><td>No duplicate version section or unnecessary version bump. Preserve upstream README body and separate Windows changelog section. Do not use inherited upstream publish metadata for a Windows release.</td></tr>
+</tbody></table></div>
+
+<details><summary>Private-server and local workflow</summary>
+<p>The checkout was clean before this report. Because the server is directly reachable, no bundle transfer is necessary. When implementation begins, review/preserve local changes, then fast-forward local dev to origin/dev if still possible. Fetching is already done; no ref reset is required.</p>
+<pre><code># Future implementation step, after handling local changes
+git switch dev
+git merge --ff-only origin/dev
+
+# Private synchronization, when requested
+git push origin dev
+
+# Future public release: name the GitHub remote explicitly
+# Push windows and the intended version tag to fork; never push --all.</code></pre>
+<p>Keep master as the mirror. If either remote advances after this review, pin and compare its new commit before relying on the acceptance evidence.</p>
+</details>
+
+<details><summary>Validation commands on the updated dev candidate</summary>
+<pre><code>npm install
+npm run rebuild
+npm test
+node --test experiments/win-v2170-usage-202610/contract-bridge.test.js experiments/win-v2170-usage-202610/contract-i18n.test.js
+node experiments/winport-parity-202607/verify.js
+node experiments/winport-parity-202607/mutation-proof.js
+node experiments/win-v213-images-202608/contract.test.js
+node experiments/winport-parity-202607/preview-guard.test.js
+node experiments/win-v2161-hooks-202609/contract.test.js
+
+# With playwright-core configured outside the repo, per campaign README
+node experiments/win-v2170-usage-202610/playwright-electron.js --dry
+node experiments/win-v2170-usage-202610/playwright-electron.js --only S1,S5,S6
+node experiments/win-v2170-usage-202610/playwright-electron.js --only UF,R1,X1
+node experiments/win-v2170-usage-202610/playwright-electron.js --only W
+node experiments/win-v2170-usage-202610/playwright-electron.js --only U6
+node experiments/win-v2170-usage-202610/playwright-electron.js --only S2 --soak 10
+
+# After source acceptance; does not publish
+npm run dist:win</code></pre>
+<p>Use an isolated profile and record actual CLI versions. Real-CLI/manual cases S2/S3/S4, U1/U3/U4, W3 and package G1–G3 are still required. Dry mode checks fixtures, not acceptance. Do not use an inherited ELECTRON_RUN_AS_NODE environment when launching Electron normally. Rebuild node-pty for the installed Electron ABI.</p>
+<p>The parity scanner compares against local master; first ensure its reference represents the pinned origin/master, or perform those comparisons explicitly against e8395cb. An outdated local master would make the check misleading. Syntax-check CommonJS application files; the src-vendor ESM build entries require their own build context.</p>
+</details>
+
+<details><summary>Source trail and review reproduction</summary>
+<pre><code>git log --oneline windows..origin/dev
+git diff 0394dae..e8395cb -- electron server.js public lib tests package.json
+git diff 0394dae..dbf40d8 -- electron server.js public win-port-helpers.js package.json
+git diff e8395cb..424c8b9 -- electron server.js public lib win-port-helpers.js
+git show origin/dev:docs/win-port-implementation-notes-v2.17.0.html
+git show origin/dev:experiments/win-v2170-usage-202610/README.md</code></pre>
+<p>Prior local reference: <a href="win-port-implementation-notes-v2.16.1.html">v2.16.1 implementation notes</a>. The newer plan/notes are on origin/dev and not yet in this older checkout. Their historical claims are distinguished from tests rerun above.</p>
+</details>
+</section>
+<footer>Prepared from fetched Git source on 18 October 2026. This document proposes work and release criteria. The only repository additions from this review are this HTML plan and its test evidence log.</footer>
+</main></body></html>

@@ -66,6 +66,12 @@
   const SKIP = '#preview-body, #ed-host, .xterm, .milkdown, .lightbox, .cp-name, .cp-dir, .snap-lb, .clog-md, .tip-md, .ts-preview';
   const ATTRS = ['title', 'placeholder'];
   const visit = (node) => {
+    // Windows filenames can equal a UI label such as “输出”. Nodes marked
+    // data-fanbox-user-content always bypass translation — the attribute is only
+    // ever emitted under isWindows() (app.js markUserText / the inline template
+    // attr), so POSIX never sees a marked node and keeps the upstream path.
+    const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+    if (el && el.closest && el.closest('[data-fanbox-user-content]')) return;
     if (node.nodeType === Node.TEXT_NODE) {
       const p = node.parentElement;
       if (p && p.closest(SKIP)) return;

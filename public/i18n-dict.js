@@ -496,6 +496,13 @@ window.FANBOX_DICT = {
   '缓存读取': 'Cache read',
   '缓存写入': 'Cache write',
   '输出': 'Output',
+  // 只在「CLI实时回传未启用：<reason>；…」整句里出现（app.js usagePanel），所以用小写衔接句中
+  '状态栏桥准备失败': 'the status-line bridge could not be prepared',
+  'Git Bash 未找到': 'Git Bash was not found',
+  '状态栏命令无法生成': 'the status-line command could not be prepared',
+  'CLI实时回传未启用：Git Bash 未找到；仍会尝试官方数据和本地会话日志': 'Live CLI updates are off: Git Bash was not found. FanBox will still try official data and local session logs.',
+  'CLI实时回传未启用：状态栏命令无法生成；仍会尝试官方数据和本地会话日志': 'Live CLI updates are off: the status-line command could not be prepared. FanBox will still try official data and local session logs.',
+  'CLI实时回传未启用：状态栏桥准备失败；仍会尝试官方数据和本地会话日志': 'Live CLI updates are off: the status-line bridge could not be prepared. FanBox will still try official data and local session logs.',
   '其中推理': 'Reasoning (part of output)',
   '日志未提供': 'Not in logs',
   '未提供': 'n/a',
@@ -768,6 +775,8 @@ window.FANBOX_DICT_RULES = [
   [/^(近5h|今日|近7天) · (.+) token$/, (m) => `${({ 近5h: 'Last 5h', 今日: 'Today', 近7天: 'Last 7 days' })[m[1]]} · ${m[2]} token`],
   [/^已记录 (.+)$/, (m) => `Recorded ${m[1]}`],
   [/^额度接口HTTP (.+)$/, (m) => `Quota API HTTP ${m[1]}`],
+  // 用量面板：CLI回传未启用兜底句——已知原因前面有整句词条，这条兜住未来新原因（reason 走 t()）
+  [/^CLI实时回传未启用：(.+)；仍会尝试官方数据和本地会话日志$/, (m) => `Live CLI updates are off: ${window.t ? window.t(m[1]) : m[1]}. FanBox will still try official data and local session logs.`],
   // Skills 透视
   [/^以下 (\d+) 个 45 天零触发——启用中的描述仍在每次会话占用预算$/, (m) => `The ${m[1]} below had zero hits in 45 days — enabled descriptions still eat budget every session`],
   [/^(\d+) 处副本$/, (m) => `${m[1]} copies`],

@@ -1,0 +1,1058 @@
+FanBox v2.17.0 review evidence, 2026-10-18
+Source: origin/dev 424c8b9308d0d1e485b60a599550bd631ba3de9e
+Host: Windows, Node v22.23.2
+Selected tracked files exported with git show, no checkout changes.
+
+SUPERSEDED-SECTIONS ANNOTATION — 2026-10-19 (docs/hygiene round; the historical record below is NOT rewritten, only marked)
+Two claims in the captured runs below no longer describe the working tree:
+(1) APOSTROPHE-PATH SEMANTICS — SUPERSEDED. The subtests "winStatusLineCommand: an apostrophe in either path, or an empty path, returns null" and "writeHookFiles (win32): home with an apostrophe gets no statusLine and no copy, hook file still written" attest the OLD contract (apostrophe => return null / no statusLine / no bridge copy). The contract-bridge.test.js now in the working tree replaced it: an apostrophe in a path is spliced safely into the Bash command via single-quote escaping (''"'"'' / doubled-quote form), winStatusLineCommand returns the bridge command instead of null, and writeHookFiles DOES emit the statusLine and copy the bridge script for an apostrophe home. Only an empty/undefined path still returns null. Treat those subtests as historical output, not current behavior.
+(2) "TEST-FIXTURE-ONLY DIAGNOSTIC / Temporary changes only: ... No repository tests modified." — SUPERSEDED. The tests/agent-usage.test.js change described there (vm-slice context path -> path.posix) is NOT temporary and NOT uncommitted: it is a permanent, ACCEPTED SHARED EDIT (fixture-only: explicit POSIX path joining for POSIX-layout fixtures, with an explanatory comment), required for Windows hosts. The "No repository tests modified" line is false for the current working tree.
+
+UNMODIFIED TEST RUN
+TAP version 13
+# Subtest: winStatusLineCommand: forward slashes, single quotes, ELECTRON_RUN_AS_NODE prefix
+ok 1 - winStatusLineCommand: forward slashes, single quotes, ELECTRON_RUN_AS_NODE prefix
+  ---
+  duration_ms: 1.5325
+  type: 'test'
+  ...
+# Subtest: winStatusLineCommand: space + CJK path stays whole inside single quotes
+ok 2 - winStatusLineCommand: space + CJK path stays whole inside single quotes
+  ---
+  duration_ms: 0.1209
+  type: 'test'
+  ...
+# Subtest: winStatusLineCommand: $ and backtick are literal inside single quotes (left untouched)
+ok 3 - winStatusLineCommand: $ and backtick are literal inside single quotes (left untouched)
+  ---
+  duration_ms: 0.0742
+  type: 'test'
+  ...
+# Subtest: winStatusLineCommand: an apostrophe in either path, or an empty path, returns null
+ok 4 - winStatusLineCommand: an apostrophe in either path, or an empty path, returns null
+  ---
+  duration_ms: 0.0717
+  type: 'test'
+  ...
+# Subtest: winStatusLineCommand: the real quoting survives bash with space, CJK, $ and backtick in the path
+ok 5 - winStatusLineCommand: the real quoting survives bash with space, CJK, $ and backtick in the path # SKIP
+  ---
+  duration_ms: 0.1149
+  type: 'test'
+  ...
+# Subtest: claudeHttpHookSettings: unchanged without the option (2.16.1 shape, hooks only)
+ok 6 - claudeHttpHookSettings: unchanged without the option (2.16.1 shape, hooks only)
+  ---
+  duration_ms: 0.9821
+  type: 'test'
+  ...
+# Subtest: claudeHttpHookSettings: statusLine option adds upstream-shaped { type: "command", command }
+ok 7 - claudeHttpHookSettings: statusLine option adds upstream-shaped { type: "command", command }
+  ---
+  duration_ms: 0.1922
+  type: 'test'
+  ...
+# Subtest: claudeHttpHookSettings: no token literal, only $FANBOX_CTL_TOKEN references
+ok 8 - claudeHttpHookSettings: no token literal, only $FANBOX_CTL_TOKEN references
+  ---
+  duration_ms: 0.1745
+  type: 'test'
+  ...
+# Subtest: winGitBash: CLAUDE_CODE_GIT_BASH_PATH wins when the file exists
+ok 9 - winGitBash: CLAUDE_CODE_GIT_BASH_PATH wins when the file exists
+  ---
+  duration_ms: 0.3863
+  type: 'test'
+  ...
+# Subtest: winGitBash: a stale override falls through to the PATH search
+ok 10 - winGitBash: a stale override falls through to the PATH search
+  ---
+  duration_ms: 0.5886
+  type: 'test'
+  ...
+# Subtest: winGitBash: git.exe in <root>\\cmd maps to <root>\\bin\\bash.exe
+ok 11 - winGitBash: git.exe in <root>\\cmd maps to <root>\\bin\\bash.exe
+  ---
+  duration_ms: 0.298
+  type: 'test'
+  ...
+# Subtest: winGitBash: git.exe in <root>\\bin maps to <root>\\bin\\bash.exe
+ok 12 - winGitBash: git.exe in <root>\\bin maps to <root>\\bin\\bash.exe
+  ---
+  duration_ms: 0.1454
+  type: 'test'
+  ...
+# Subtest: winGitBash: git.exe in <root>\\mingw64\\bin maps to <root>\\bin\\bash.exe
+ok 13 - winGitBash: git.exe in <root>\\mingw64\\bin maps to <root>\\bin\\bash.exe
+  ---
+  duration_ms: 0.4212
+  type: 'test'
+  ...
+# Subtest: winGitBash: non-default install root with CJK and spaces, quoted PATH entry, PATHEXT honored
+ok 14 - winGitBash: non-default install root with CJK and spaces, quoted PATH entry, PATHEXT honored
+  ---
+  duration_ms: 0.2223
+  type: 'test'
+  ...
+# Subtest: winGitBash: git on PATH without a sibling bash falls back to %ProgramFiles%\\Git
+ok 15 - winGitBash: git on PATH without a sibling bash falls back to %ProgramFiles%\\Git
+  ---
+  duration_ms: 0.1713
+  type: 'test'
+  ...
+# Subtest: winGitBash: %ProgramFiles% fallback, ProgramW6432 fallback, case-insensitive env names
+ok 16 - winGitBash: %ProgramFiles% fallback, ProgramW6432 fallback, case-insensitive env names
+  ---
+  duration_ms: 0.4182
+  type: 'test'
+  ...
+# Subtest: winGitBash: not found returns null (no git, no ProgramFiles Git, no override)
+ok 17 - winGitBash: not found returns null (no git, no ProgramFiles Git, no override)
+  ---
+  duration_ms: 0.8699
+  type: 'test'
+  ...
+# Subtest: winFindOnPath without io keeps its real-filesystem behavior (lower-case PATHEXT: Linux fs is case-sensitive)
+ok 18 - winFindOnPath without io keeps its real-filesystem behavior (lower-case PATHEXT: Linux fs is case-sensitive)
+  ---
+  duration_ms: 2.014
+  type: 'test'
+  ...
+# Subtest: claudeSettingsGitBashPath: reads CLAUDE_CODE_GIT_BASH_PATH from the env block, as written
+ok 19 - claudeSettingsGitBashPath: reads CLAUDE_CODE_GIT_BASH_PATH from the env block, as written
+  ---
+  duration_ms: 0.1858
+  type: 'test'
+  ...
+# Subtest: claudeSettingsGitBashPath: invalid JSON, empty, non-JSON values, missing or malformed env all give an empty string
+ok 20 - claudeSettingsGitBashPath: invalid JSON, empty, non-JSON values, missing or malformed env all give an empty string
+  ---
+  duration_ms: 0.1514
+  type: 'test'
+  ...
+# Subtest: claudeSettingsGitBashPath: pure (no fs, no process.env access)
+ok 21 - claudeSettingsGitBashPath: pure (no fs, no process.env access)
+  ---
+  duration_ms: 0.1089
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32) with Git Bash: copies the bridge and writes a Git Bash safe statusLine
+ok 22 - writeHookFiles (win32) with Git Bash: copies the bridge and writes a Git Bash safe statusLine
+  ---
+  duration_ms: 1.2594
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32): uses process.execPath, never PORTABLE_EXECUTABLE_FILE
+ok 23 - writeHookFiles (win32): uses process.execPath, never PORTABLE_EXECUTABLE_FILE
+  ---
+  duration_ms: 0.4619
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32) without Git Bash: no statusLine, no bridge copy, 2.16.1 shape
+ok 24 - writeHookFiles (win32) without Git Bash: no statusLine, no bridge copy, 2.16.1 shape
+  ---
+  duration_ms: 0.2906
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32): home with an apostrophe gets no statusLine and no copy, hook file still written
+ok 25 - writeHookFiles (win32): home with an apostrophe gets no statusLine and no copy, hook file still written
+  ---
+  duration_ms: 0.4036
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32): space + CJK home gets a quoted, forward-slash command
+ok 26 - writeHookFiles (win32): space + CJK home gets a quoted, forward-slash command
+  ---
+  duration_ms: 0.7882
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32): a failed bridge copy degrades to the 2.16.1 file and does not throw
+ok 27 - writeHookFiles (win32): a failed bridge copy degrades to the 2.16.1 file and does not throw
+  ---
+  duration_ms: 0.305
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32): no generated file contains the token, only $FANBOX_CTL_TOKEN references
+ok 28 - writeHookFiles (win32): no generated file contains the token, only $FANBOX_CTL_TOKEN references
+  ---
+  duration_ms: 0.5756
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32): Git Bash set only in ~/.claude/settings.json env still yields the statusLine and the bridge copy
+ok 29 - writeHookFiles (win32): Git Bash set only in ~/.claude/settings.json env still yields the statusLine and the bridge copy
+  ---
+  duration_ms: 0.4503
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32): the same machine without that settings entry has no statusLine (so the entry is what matters)
+ok 30 - writeHookFiles (win32): the same machine without that settings entry has no statusLine (so the entry is what matters)
+  ---
+  duration_ms: 1.1076
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32): a settings path that does not exist falls through to PATH / ProgramFiles like any stale override
+ok 31 - writeHookFiles (win32): a settings path that does not exist falls through to PATH / ProgramFiles like any stale override
+  ---
+  duration_ms: 0.5317
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32): CLAUDE_CONFIG_DIR moves the settings file; the default ~/.claude one is then not read
+ok 32 - writeHookFiles (win32): CLAUDE_CONFIG_DIR moves the settings file; the default ~/.claude one is then not read
+  ---
+  duration_ms: 0.5162
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32): CLAUDE_CODE_GIT_BASH_PATH in the process env wins and the settings file is not even read
+ok 33 - writeHookFiles (win32): CLAUDE_CODE_GIT_BASH_PATH in the process env wins and the settings file is not even read
+  ---
+  duration_ms: 0.6106
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32): the value goes into a copy of the env, process.env is untouched, and the user settings file is never written
+ok 34 - writeHookFiles (win32): the value goes into a copy of the env, process.env is untouched, and the user settings file is never written
+  ---
+  duration_ms: 0.9001
+  type: 'test'
+  ...
+# Subtest: writeHookFiles: Git Bash is looked up in process.env (the env the PTYs inherit after the registry PATH merge)
+ok 35 - writeHookFiles: Git Bash is looked up in process.env (the env the PTYs inherit after the registry PATH merge)
+  ---
+  duration_ms: 0.9713
+  type: 'test'
+  ...
+# Subtest: bridge win32 + Git Bash: the user statusLine runs as spawnSync(bash, ["-c", cmd]) with windowsHide
+ok 36 - bridge win32 + Git Bash: the user statusLine runs as spawnSync(bash, ["-c", cmd]) with windowsHide
+  ---
+  duration_ms: 1.469
+  type: 'test'
+  ...
+# Subtest: bridge win32: CLAUDE_CODE_GIT_BASH_PATH and git.exe-on-PATH both locate bash
+ok 37 - bridge win32: CLAUDE_CODE_GIT_BASH_PATH and git.exe-on-PATH both locate bash
+  ---
+  duration_ms: 1.4203
+  type: 'test'
+  ...
+# Subtest: bridge win32 without Git Bash: falls back to upstream's shell:true line
+ok 38 - bridge win32 without Git Bash: falls back to upstream's shell:true line
+  ---
+  duration_ms: 0.2459
+  type: 'test'
+  ...
+# Subtest: bridge win32: the loop guard still skips a command that points at claude-statusline.cjs
+ok 39 - bridge win32: the loop guard still skips a command that points at claude-statusline.cjs
+  ---
+  duration_ms: 0.3889
+  type: 'test'
+  ...
+# Subtest: bridge win32: statusLine null (user disabled it) prints nothing and spawns nothing
+ok 40 - bridge win32: statusLine null (user disabled it) prints nothing and spawns nothing
+  ---
+  duration_ms: 0.3697
+  type: 'test'
+  ...
+# Subtest: bridge win32: only the two limit numbers leave the process
+ok 41 - bridge win32: only the two limit numbers leave the process
+  ---
+  duration_ms: 0.794
+  type: 'test'
+  ...
+# Subtest: D2 label: config lang zh -> 周
+ok 42 - D2 label: config lang zh -> 周
+  ---
+  duration_ms: 0.3825
+  type: 'test'
+  ...
+# Subtest: D2 label: config lang en -> 7d (even on a zh system locale)
+ok 43 - D2 label: config lang en -> 7d (even on a zh system locale)
+  ---
+  duration_ms: 0.3065
+  type: 'test'
+  ...
+# Subtest: D2 label: no config + zh locale -> 周
+ok 44 - D2 label: no config + zh locale -> 周
+  ---
+  duration_ms: 0.5094
+  type: 'test'
+  ...
+# Subtest: D2 label: no config + en locale -> 7d
+ok 45 - D2 label: no config + en locale -> 7d
+  ---
+  duration_ms: 0.5286
+  type: 'test'
+  ...
+# Subtest: D2 label: an invalid config lang or unreadable config falls back to the locale
+ok 46 - D2 label: an invalid config lang or unreadable config falls back to the locale
+  ---
+  duration_ms: 0.3933
+  type: 'test'
+  ...
+# Subtest: D2 label: the 5h part and a missing weekly window are untouched
+ok 47 - D2 label: the 5h part and a missing weekly window are untouched
+  ---
+  duration_ms: 0.5784
+  type: 'test'
+  ...
+# Subtest: D2 label: FANBOX_LANG decides when there is no config.lang (even against the process locale)
+ok 48 - D2 label: FANBOX_LANG decides when there is no config.lang (even against the process locale)
+  ---
+  duration_ms: 0.6853
+  type: 'test'
+  ...
+# Subtest: D2 label: config.lang beats FANBOX_LANG (an explicit, later choice is read live)
+ok 49 - D2 label: config.lang beats FANBOX_LANG (an explicit, later choice is read live)
+  ---
+  duration_ms: 0.334
+  type: 'test'
+  ...
+# Subtest: D2 label: an invalid FANBOX_LANG is ignored and the locale decides
+ok 50 - D2 label: an invalid FANBOX_LANG is ignored and the locale decides
+  ---
+  duration_ms: 1.3486
+  type: 'test'
+  ...
+# Subtest: D2 label: resolution order in the source is config.lang, then FANBOX_LANG, then Intl
+ok 51 - D2 label: resolution order in the source is config.lang, then FANBOX_LANG, then Intl
+  ---
+  duration_ms: 0.0965
+  type: 'test'
+  ...
+# Subtest: bridge linux: unchanged. Label stays 周 (config and locale ignored), chaining uses shell:true
+not ok 52 - bridge linux: unchanged. Label stays 周 (config and locale ignored), chaining uses shell:true
+  ---
+  duration_ms: 1.7796
+  type: 'test'
+  location: 'C:\\Users\\yutian\\AppData\\Local\\Temp\\fanbox-v217-review-b6m0hj\\experiments\\win-v2170-usage-202610\\contract-bridge.test.js:509:3'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    
+    0 !== 1
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 1
+  actual: 0
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (C:\Users\yutian\AppData\Local\Temp\fanbox-v217-review-b6m0hj\experiments\win-v2170-usage-202610\contract-bridge.test.js:518:12)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: bridge darwin: unchanged. Label stays 周 (config and locale ignored), chaining uses shell:true
+not ok 53 - bridge darwin: unchanged. Label stays 周 (config and locale ignored), chaining uses shell:true
+  ---
+  duration_ms: 0.5487
+  type: 'test'
+  location: 'C:\\Users\\yutian\\AppData\\Local\\Temp\\fanbox-v217-review-b6m0hj\\experiments\\win-v2170-usage-202610\\contract-bridge.test.js:509:3'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    
+    0 !== 1
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 1
+  actual: 0
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (C:\Users\yutian\AppData\Local\Temp\fanbox-v217-review-b6m0hj\experiments\win-v2170-usage-202610\contract-bridge.test.js:518:12)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: pty:spawn: FANBOX_LANG is added to the PTY env under the IS_WIN guard only, never in the shared env object
+ok 54 - pty:spawn: FANBOX_LANG is added to the PTY env under the IS_WIN guard only, never in the shared env object
+  ---
+  duration_ms: 0.3976
+  type: 'test'
+  ...
+# Subtest: usageRequest: the curl on Windows is the exact name curl.exe (PATH first, System32 second), bare curl elsewhere
+ok 55 - usageRequest: the curl on Windows is the exact name curl.exe (PATH first, System32 second), bare curl elsewhere
+  ---
+  duration_ms: 1.3437
+  type: 'test'
+  ...
+# Subtest: winFindExe: a name with an extension is an exact lookup (no PATHEXT expansion, curl.cmd never stands in for curl.exe)
+ok 56 - winFindExe: a name with an extension is an exact lookup (no PATHEXT expansion, curl.cmd never stands in for curl.exe)
+  ---
+  duration_ms: 1.5587
+  type: 'test'
+  ...
+# Subtest: bridge file: the Windows branches are the only difference from master (only added lines)
+ok 57 - bridge file: the Windows branches are the only difference from master (only added lines)
+  ---
+  duration_ms: 138.499
+  type: 'test'
+  ...
+# Subtest: e2e: bash -c <winStatusLineCommand> prints the quota text and POSTs only the two limits
+ok 58 - e2e: bash -c <winStatusLineCommand> prints the quota text and POSTs only the two limits # SKIP
+  ---
+  duration_ms: 0.0553
+  type: 'test'
+  ...
+# Subtest: D4 table: exact English wording
+ok 59 - D4 table: exact English wording
+  ---
+  duration_ms: 3.7793
+  type: 'test'
+  ...
+# Subtest: composed panel strings: no CJK left in English
+ok 60 - composed panel strings: no CJK left in English
+  ---
+  duration_ms: 3.1575
+  type: 'test'
+  ...
+# Subtest: composed strings: selected exact English (rules, split, shadowing)
+ok 61 - composed strings: selected exact English (rules, split, shadowing)
+  ---
+  duration_ms: 0.5155
+  type: 'test'
+  ...
+# Subtest: new entries do not shadow or break existing translations
+ok 62 - new entries do not shadow or break existing translations
+  ---
+  duration_ms: 0.5093
+  type: 'test'
+  ...
+# Subtest: attribute-style strings (title=) translate the same way
+ok 63 - attribute-style strings (title=) translate the same way
+  ---
+  duration_ms: 0.1201
+  type: 'test'
+  ...
+# Subtest: app.js usagePanel: every fixed Chinese literal translates (or is a known fragment)
+ok 64 - app.js usagePanel: every fixed Chinese literal translates (or is a known fragment)
+  ---
+  duration_ms: 2.0196
+  type: 'test'
+  ...
+# Subtest: app.js usagePanel: template literals still have the shapes the rules expect
+ok 65 - app.js usagePanel: template literals still have the shapes the rules expect
+  ---
+  duration_ms: 1.9555
+  type: 'test'
+  ...
+# Subtest: server.js quota code: every Chinese message translates; 统计失败 never reaches the panel
+ok 66 - server.js quota code: every Chinese message translates; 统计失败 never reaches the panel
+  ---
+  duration_ms: 1.1044
+  type: 'test'
+  ...
+# Subtest: dictionary hygiene: new keys are unique, every rule is anchored
+ok 67 - dictionary hygiene: new keys are unique, every rule is anchored
+  ---
+  duration_ms: 1.0758
+  type: 'test'
+  ...
+# Subtest: Claude与Codex缓存口径归一，推理不重复计入总量
+ok 68 - Claude与Codex缓存口径归一，推理不重复计入总量
+  ---
+  duration_ms: 1.1651
+  type: 'test'
+  ...
+# Subtest: Claude流式补全更新用量，交错重复消息只记一次
+ok 69 - Claude流式补全更新用量，交错重复消息只记一次
+  ---
+  duration_ms: 1.9824
+  type: 'test'
+  ...
+# Subtest: Codex重复累计快照不会重复计数，累计重置采用最后一次请求
+ok 70 - Codex重复累计快照不会重复计数，累计重置采用最后一次请求
+  ---
+  duration_ms: 0.5046
+  type: 'test'
+  ...
+# Subtest: 跨日窗口独立聚合，未来记录不混入
+ok 71 - 跨日窗口独立聚合，未来记录不混入
+  ---
+  duration_ms: 0.198
+  type: 'test'
+  ...
+# Subtest: 半行和跨UTF-8字节写入不会丢记录，截断可重建
+ok 72 - 半行和跨UTF-8字节写入不会丢记录，截断可重建
+  ---
+  duration_ms: 9.82
+  type: 'test'
+  ...
+# Subtest: 一万次同文件事件仅一次stat，同内容通知不重绘
+ok 73 - 一万次同文件事件仅一次stat，同内容通知不重绘
+  ---
+  duration_ms: 4.4603
+  type: 'test'
+  ...
+# Subtest: 大量不同文件保持有界，并保留目录刷新，stat并行不超过16
+ok 74 - 大量不同文件保持有界，并保留目录刷新，stat并行不超过16
+  ---
+  duration_ms: 8.7949
+  type: 'test'
+  ...
+# Subtest: 官方额度请求合并，429保留成功值并退避，后续成功可恢复
+ok 75 - 官方额度请求合并，429保留成功值并退避，后续成功可恢复
+  ---
+  duration_ms: 2.2491
+  type: 'test'
+  ...
+# Subtest: 最新Codex快照按事件时间选择，不把过期窗口归零
+not ok 76 - 最新Codex快照按事件时间选择，不把过期窗口归零
+  ---
+  duration_ms: 1.9193
+  type: 'test'
+  location: 'C:\\Users\\yutian\\AppData\\Local\\Temp\\fanbox-v217-review-b6m0hj\\tests\\agent-usage.test.js:83:1'
+  failureType: 'testCodeFailure'
+  error: "Cannot read properties of null (reading 'primary')"
+  code: 'ERR_TEST_FAILURE'
+  name: 'TypeError'
+  stack: |-
+    TestContext.<anonymous> (C:\Users\yutian\AppData\Local\Temp\fanbox-v217-review-b6m0hj\tests\agent-usage.test.js:93:56)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: CLI实时额度只接收有效窗口，丢弃提示词等无关字段
+ok 77 - CLI实时额度只接收有效窗口，丢弃提示词等无关字段
+  ---
+  duration_ms: 0.9758
+  type: 'test'
+  ...
+# Subtest: 状态栏桥保留自定义输出，回传零额度且不发送正文
+ok 78 - 状态栏桥保留自定义输出，回传零额度且不发送正文
+  ---
+  duration_ms: 588.971
+  type: 'test'
+  ...
+# Subtest: 更新检查区分API限流并能回退发布页
+ok 79 - 更新检查区分API限流并能回退发布页
+  ---
+  duration_ms: 1.7214
+  type: 'test'
+  ...
+# Subtest: 文件首次只有旧元数据通知时不制造修改提示，删除仍通知
+ok 80 - 文件首次只有旧元数据通知时不制造修改提示，删除仍通知
+  ---
+  duration_ms: 0.2698
+  type: 'test'
+  ...
+# Subtest: 推理字段缺失与真实零值区分，混合日志标明部分记录
+ok 81 - 推理字段缺失与真实零值区分，混合日志标明部分记录
+  ---
+  duration_ms: 0.1628
+  type: 'test'
+  ...
+1..81
+# tests 81
+# suites 0
+# pass 76
+# fail 3
+# cancelled 0
+# skipped 2
+# todo 0
+# duration_ms 1552.9775
+
+
+
+TEST-FIXTURE-ONLY DIAGNOSTIC
+Temporary changes only: tests/agent-usage.test.js context path changed to path.posix; two simulated POSIX bridge fixtures use path.posix.join rather than host path.join. Application source unchanged. No repository tests modified.
+TAP version 13
+# Subtest: winStatusLineCommand: forward slashes, single quotes, ELECTRON_RUN_AS_NODE prefix
+ok 1 - winStatusLineCommand: forward slashes, single quotes, ELECTRON_RUN_AS_NODE prefix
+  ---
+  duration_ms: 2.7902
+  type: 'test'
+  ...
+# Subtest: winStatusLineCommand: space + CJK path stays whole inside single quotes
+ok 2 - winStatusLineCommand: space + CJK path stays whole inside single quotes
+  ---
+  duration_ms: 0.1349
+  type: 'test'
+  ...
+# Subtest: winStatusLineCommand: $ and backtick are literal inside single quotes (left untouched)
+ok 3 - winStatusLineCommand: $ and backtick are literal inside single quotes (left untouched)
+  ---
+  duration_ms: 0.0819
+  type: 'test'
+  ...
+# Subtest: winStatusLineCommand: an apostrophe in either path, or an empty path, returns null
+ok 4 - winStatusLineCommand: an apostrophe in either path, or an empty path, returns null
+  ---
+  duration_ms: 0.0964
+  type: 'test'
+  ...
+# Subtest: winStatusLineCommand: the real quoting survives bash with space, CJK, $ and backtick in the path
+ok 5 - winStatusLineCommand: the real quoting survives bash with space, CJK, $ and backtick in the path # SKIP
+  ---
+  duration_ms: 0.1474
+  type: 'test'
+  ...
+# Subtest: claudeHttpHookSettings: unchanged without the option (2.16.1 shape, hooks only)
+ok 6 - claudeHttpHookSettings: unchanged without the option (2.16.1 shape, hooks only)
+  ---
+  duration_ms: 1.0649
+  type: 'test'
+  ...
+# Subtest: claudeHttpHookSettings: statusLine option adds upstream-shaped { type: "command", command }
+ok 7 - claudeHttpHookSettings: statusLine option adds upstream-shaped { type: "command", command }
+  ---
+  duration_ms: 0.211
+  type: 'test'
+  ...
+# Subtest: claudeHttpHookSettings: no token literal, only $FANBOX_CTL_TOKEN references
+ok 8 - claudeHttpHookSettings: no token literal, only $FANBOX_CTL_TOKEN references
+  ---
+  duration_ms: 0.1887
+  type: 'test'
+  ...
+# Subtest: winGitBash: CLAUDE_CODE_GIT_BASH_PATH wins when the file exists
+ok 9 - winGitBash: CLAUDE_CODE_GIT_BASH_PATH wins when the file exists
+  ---
+  duration_ms: 0.4369
+  type: 'test'
+  ...
+# Subtest: winGitBash: a stale override falls through to the PATH search
+ok 10 - winGitBash: a stale override falls through to the PATH search
+  ---
+  duration_ms: 0.6085
+  type: 'test'
+  ...
+# Subtest: winGitBash: git.exe in <root>\\cmd maps to <root>\\bin\\bash.exe
+ok 11 - winGitBash: git.exe in <root>\\cmd maps to <root>\\bin\\bash.exe
+  ---
+  duration_ms: 0.2666
+  type: 'test'
+  ...
+# Subtest: winGitBash: git.exe in <root>\\bin maps to <root>\\bin\\bash.exe
+ok 12 - winGitBash: git.exe in <root>\\bin maps to <root>\\bin\\bash.exe
+  ---
+  duration_ms: 0.1186
+  type: 'test'
+  ...
+# Subtest: winGitBash: git.exe in <root>\\mingw64\\bin maps to <root>\\bin\\bash.exe
+ok 13 - winGitBash: git.exe in <root>\\mingw64\\bin maps to <root>\\bin\\bash.exe
+  ---
+  duration_ms: 0.32
+  type: 'test'
+  ...
+# Subtest: winGitBash: non-default install root with CJK and spaces, quoted PATH entry, PATHEXT honored
+ok 14 - winGitBash: non-default install root with CJK and spaces, quoted PATH entry, PATHEXT honored
+  ---
+  duration_ms: 0.1626
+  type: 'test'
+  ...
+# Subtest: winGitBash: git on PATH without a sibling bash falls back to %ProgramFiles%\\Git
+ok 15 - winGitBash: git on PATH without a sibling bash falls back to %ProgramFiles%\\Git
+  ---
+  duration_ms: 0.1301
+  type: 'test'
+  ...
+# Subtest: winGitBash: %ProgramFiles% fallback, ProgramW6432 fallback, case-insensitive env names
+ok 16 - winGitBash: %ProgramFiles% fallback, ProgramW6432 fallback, case-insensitive env names
+  ---
+  duration_ms: 0.4793
+  type: 'test'
+  ...
+# Subtest: winGitBash: not found returns null (no git, no ProgramFiles Git, no override)
+ok 17 - winGitBash: not found returns null (no git, no ProgramFiles Git, no override)
+  ---
+  duration_ms: 1.2401
+  type: 'test'
+  ...
+# Subtest: winFindOnPath without io keeps its real-filesystem behavior (lower-case PATHEXT: Linux fs is case-sensitive)
+ok 18 - winFindOnPath without io keeps its real-filesystem behavior (lower-case PATHEXT: Linux fs is case-sensitive)
+  ---
+  duration_ms: 4.2355
+  type: 'test'
+  ...
+# Subtest: claudeSettingsGitBashPath: reads CLAUDE_CODE_GIT_BASH_PATH from the env block, as written
+ok 19 - claudeSettingsGitBashPath: reads CLAUDE_CODE_GIT_BASH_PATH from the env block, as written
+  ---
+  duration_ms: 0.279
+  type: 'test'
+  ...
+# Subtest: claudeSettingsGitBashPath: invalid JSON, empty, non-JSON values, missing or malformed env all give an empty string
+ok 20 - claudeSettingsGitBashPath: invalid JSON, empty, non-JSON values, missing or malformed env all give an empty string
+  ---
+  duration_ms: 0.1877
+  type: 'test'
+  ...
+# Subtest: claudeSettingsGitBashPath: pure (no fs, no process.env access)
+ok 21 - claudeSettingsGitBashPath: pure (no fs, no process.env access)
+  ---
+  duration_ms: 0.1573
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32) with Git Bash: copies the bridge and writes a Git Bash safe statusLine
+ok 22 - writeHookFiles (win32) with Git Bash: copies the bridge and writes a Git Bash safe statusLine
+  ---
+  duration_ms: 1.3257
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32): uses process.execPath, never PORTABLE_EXECUTABLE_FILE
+ok 23 - writeHookFiles (win32): uses process.execPath, never PORTABLE_EXECUTABLE_FILE
+  ---
+  duration_ms: 0.8661
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32) without Git Bash: no statusLine, no bridge copy, 2.16.1 shape
+ok 24 - writeHookFiles (win32) without Git Bash: no statusLine, no bridge copy, 2.16.1 shape
+  ---
+  duration_ms: 0.5528
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32): home with an apostrophe gets no statusLine and no copy, hook file still written
+ok 25 - writeHookFiles (win32): home with an apostrophe gets no statusLine and no copy, hook file still written
+  ---
+  duration_ms: 0.5407
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32): space + CJK home gets a quoted, forward-slash command
+ok 26 - writeHookFiles (win32): space + CJK home gets a quoted, forward-slash command
+  ---
+  duration_ms: 1.1247
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32): a failed bridge copy degrades to the 2.16.1 file and does not throw
+ok 27 - writeHookFiles (win32): a failed bridge copy degrades to the 2.16.1 file and does not throw
+  ---
+  duration_ms: 0.8261
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32): no generated file contains the token, only $FANBOX_CTL_TOKEN references
+ok 28 - writeHookFiles (win32): no generated file contains the token, only $FANBOX_CTL_TOKEN references
+  ---
+  duration_ms: 2.176
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32): Git Bash set only in ~/.claude/settings.json env still yields the statusLine and the bridge copy
+ok 29 - writeHookFiles (win32): Git Bash set only in ~/.claude/settings.json env still yields the statusLine and the bridge copy
+  ---
+  duration_ms: 1.3406
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32): the same machine without that settings entry has no statusLine (so the entry is what matters)
+ok 30 - writeHookFiles (win32): the same machine without that settings entry has no statusLine (so the entry is what matters)
+  ---
+  duration_ms: 1.0713
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32): a settings path that does not exist falls through to PATH / ProgramFiles like any stale override
+ok 31 - writeHookFiles (win32): a settings path that does not exist falls through to PATH / ProgramFiles like any stale override
+  ---
+  duration_ms: 0.4964
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32): CLAUDE_CONFIG_DIR moves the settings file; the default ~/.claude one is then not read
+ok 32 - writeHookFiles (win32): CLAUDE_CONFIG_DIR moves the settings file; the default ~/.claude one is then not read
+  ---
+  duration_ms: 0.8961
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32): CLAUDE_CODE_GIT_BASH_PATH in the process env wins and the settings file is not even read
+ok 33 - writeHookFiles (win32): CLAUDE_CODE_GIT_BASH_PATH in the process env wins and the settings file is not even read
+  ---
+  duration_ms: 0.6749
+  type: 'test'
+  ...
+# Subtest: writeHookFiles (win32): the value goes into a copy of the env, process.env is untouched, and the user settings file is never written
+ok 34 - writeHookFiles (win32): the value goes into a copy of the env, process.env is untouched, and the user settings file is never written
+  ---
+  duration_ms: 0.8236
+  type: 'test'
+  ...
+# Subtest: writeHookFiles: Git Bash is looked up in process.env (the env the PTYs inherit after the registry PATH merge)
+ok 35 - writeHookFiles: Git Bash is looked up in process.env (the env the PTYs inherit after the registry PATH merge)
+  ---
+  duration_ms: 1.047
+  type: 'test'
+  ...
+# Subtest: bridge win32 + Git Bash: the user statusLine runs as spawnSync(bash, ["-c", cmd]) with windowsHide
+ok 36 - bridge win32 + Git Bash: the user statusLine runs as spawnSync(bash, ["-c", cmd]) with windowsHide
+  ---
+  duration_ms: 2.1268
+  type: 'test'
+  ...
+# Subtest: bridge win32: CLAUDE_CODE_GIT_BASH_PATH and git.exe-on-PATH both locate bash
+ok 37 - bridge win32: CLAUDE_CODE_GIT_BASH_PATH and git.exe-on-PATH both locate bash
+  ---
+  duration_ms: 2.2157
+  type: 'test'
+  ...
+# Subtest: bridge win32 without Git Bash: falls back to upstream's shell:true line
+ok 38 - bridge win32 without Git Bash: falls back to upstream's shell:true line
+  ---
+  duration_ms: 0.356
+  type: 'test'
+  ...
+# Subtest: bridge win32: the loop guard still skips a command that points at claude-statusline.cjs
+ok 39 - bridge win32: the loop guard still skips a command that points at claude-statusline.cjs
+  ---
+  duration_ms: 0.5991
+  type: 'test'
+  ...
+# Subtest: bridge win32: statusLine null (user disabled it) prints nothing and spawns nothing
+ok 40 - bridge win32: statusLine null (user disabled it) prints nothing and spawns nothing
+  ---
+  duration_ms: 0.4511
+  type: 'test'
+  ...
+# Subtest: bridge win32: only the two limit numbers leave the process
+ok 41 - bridge win32: only the two limit numbers leave the process
+  ---
+  duration_ms: 0.8754
+  type: 'test'
+  ...
+# Subtest: D2 label: config lang zh -> 周
+ok 42 - D2 label: config lang zh -> 周
+  ---
+  duration_ms: 0.3744
+  type: 'test'
+  ...
+# Subtest: D2 label: config lang en -> 7d (even on a zh system locale)
+ok 43 - D2 label: config lang en -> 7d (even on a zh system locale)
+  ---
+  duration_ms: 0.2352
+  type: 'test'
+  ...
+# Subtest: D2 label: no config + zh locale -> 周
+ok 44 - D2 label: no config + zh locale -> 周
+  ---
+  duration_ms: 0.3802
+  type: 'test'
+  ...
+# Subtest: D2 label: no config + en locale -> 7d
+ok 45 - D2 label: no config + en locale -> 7d
+  ---
+  duration_ms: 0.4668
+  type: 'test'
+  ...
+# Subtest: D2 label: an invalid config lang or unreadable config falls back to the locale
+ok 46 - D2 label: an invalid config lang or unreadable config falls back to the locale
+  ---
+  duration_ms: 0.4158
+  type: 'test'
+  ...
+# Subtest: D2 label: the 5h part and a missing weekly window are untouched
+ok 47 - D2 label: the 5h part and a missing weekly window are untouched
+  ---
+  duration_ms: 0.4993
+  type: 'test'
+  ...
+# Subtest: D2 label: FANBOX_LANG decides when there is no config.lang (even against the process locale)
+ok 48 - D2 label: FANBOX_LANG decides when there is no config.lang (even against the process locale)
+  ---
+  duration_ms: 0.6477
+  type: 'test'
+  ...
+# Subtest: D2 label: config.lang beats FANBOX_LANG (an explicit, later choice is read live)
+ok 49 - D2 label: config.lang beats FANBOX_LANG (an explicit, later choice is read live)
+  ---
+  duration_ms: 0.3761
+  type: 'test'
+  ...
+# Subtest: D2 label: an invalid FANBOX_LANG is ignored and the locale decides
+ok 50 - D2 label: an invalid FANBOX_LANG is ignored and the locale decides
+  ---
+  duration_ms: 1.4541
+  type: 'test'
+  ...
+# Subtest: D2 label: resolution order in the source is config.lang, then FANBOX_LANG, then Intl
+ok 51 - D2 label: resolution order in the source is config.lang, then FANBOX_LANG, then Intl
+  ---
+  duration_ms: 0.2731
+  type: 'test'
+  ...
+# Subtest: bridge linux: unchanged. Label stays 周 (config and locale ignored), chaining uses shell:true
+ok 52 - bridge linux: unchanged. Label stays 周 (config and locale ignored), chaining uses shell:true
+  ---
+  duration_ms: 2.9813
+  type: 'test'
+  ...
+# Subtest: bridge darwin: unchanged. Label stays 周 (config and locale ignored), chaining uses shell:true
+ok 53 - bridge darwin: unchanged. Label stays 周 (config and locale ignored), chaining uses shell:true
+  ---
+  duration_ms: 0.5099
+  type: 'test'
+  ...
+# Subtest: pty:spawn: FANBOX_LANG is added to the PTY env under the IS_WIN guard only, never in the shared env object
+ok 54 - pty:spawn: FANBOX_LANG is added to the PTY env under the IS_WIN guard only, never in the shared env object
+  ---
+  duration_ms: 0.4672
+  type: 'test'
+  ...
+# Subtest: usageRequest: the curl on Windows is the exact name curl.exe (PATH first, System32 second), bare curl elsewhere
+ok 55 - usageRequest: the curl on Windows is the exact name curl.exe (PATH first, System32 second), bare curl elsewhere
+  ---
+  duration_ms: 1.6557
+  type: 'test'
+  ...
+# Subtest: winFindExe: a name with an extension is an exact lookup (no PATHEXT expansion, curl.cmd never stands in for curl.exe)
+ok 56 - winFindExe: a name with an extension is an exact lookup (no PATHEXT expansion, curl.cmd never stands in for curl.exe)
+  ---
+  duration_ms: 1.7149
+  type: 'test'
+  ...
+# Subtest: bridge file: the Windows branches are the only difference from master (only added lines)
+ok 57 - bridge file: the Windows branches are the only difference from master (only added lines)
+  ---
+  duration_ms: 217.0158
+  type: 'test'
+  ...
+# Subtest: e2e: bash -c <winStatusLineCommand> prints the quota text and POSTs only the two limits
+ok 58 - e2e: bash -c <winStatusLineCommand> prints the quota text and POSTs only the two limits # SKIP
+  ---
+  duration_ms: 0.063
+  type: 'test'
+  ...
+# Subtest: D4 table: exact English wording
+ok 59 - D4 table: exact English wording
+  ---
+  duration_ms: 5.3495
+  type: 'test'
+  ...
+# Subtest: composed panel strings: no CJK left in English
+ok 60 - composed panel strings: no CJK left in English
+  ---
+  duration_ms: 3.4342
+  type: 'test'
+  ...
+# Subtest: composed strings: selected exact English (rules, split, shadowing)
+ok 61 - composed strings: selected exact English (rules, split, shadowing)
+  ---
+  duration_ms: 0.5762
+  type: 'test'
+  ...
+# Subtest: new entries do not shadow or break existing translations
+ok 62 - new entries do not shadow or break existing translations
+  ---
+  duration_ms: 0.3912
+  type: 'test'
+  ...
+# Subtest: attribute-style strings (title=) translate the same way
+ok 63 - attribute-style strings (title=) translate the same way
+  ---
+  duration_ms: 0.1267
+  type: 'test'
+  ...
+# Subtest: app.js usagePanel: every fixed Chinese literal translates (or is a known fragment)
+ok 64 - app.js usagePanel: every fixed Chinese literal translates (or is a known fragment)
+  ---
+  duration_ms: 3.9666
+  type: 'test'
+  ...
+# Subtest: app.js usagePanel: template literals still have the shapes the rules expect
+ok 65 - app.js usagePanel: template literals still have the shapes the rules expect
+  ---
+  duration_ms: 3.5252
+  type: 'test'
+  ...
+# Subtest: server.js quota code: every Chinese message translates; 统计失败 never reaches the panel
+ok 66 - server.js quota code: every Chinese message translates; 统计失败 never reaches the panel
+  ---
+  duration_ms: 2.7145
+  type: 'test'
+  ...
+# Subtest: dictionary hygiene: new keys are unique, every rule is anchored
+ok 67 - dictionary hygiene: new keys are unique, every rule is anchored
+  ---
+  duration_ms: 1.8063
+  type: 'test'
+  ...
+# Subtest: Claude与Codex缓存口径归一，推理不重复计入总量
+ok 68 - Claude与Codex缓存口径归一，推理不重复计入总量
+  ---
+  duration_ms: 1.2034
+  type: 'test'
+  ...
+# Subtest: Claude流式补全更新用量，交错重复消息只记一次
+ok 69 - Claude流式补全更新用量，交错重复消息只记一次
+  ---
+  duration_ms: 2.1904
+  type: 'test'
+  ...
+# Subtest: Codex重复累计快照不会重复计数，累计重置采用最后一次请求
+ok 70 - Codex重复累计快照不会重复计数，累计重置采用最后一次请求
+  ---
+  duration_ms: 0.3332
+  type: 'test'
+  ...
+# Subtest: 跨日窗口独立聚合，未来记录不混入
+ok 71 - 跨日窗口独立聚合，未来记录不混入
+  ---
+  duration_ms: 0.1276
+  type: 'test'
+  ...
+# Subtest: 半行和跨UTF-8字节写入不会丢记录，截断可重建
+ok 72 - 半行和跨UTF-8字节写入不会丢记录，截断可重建
+  ---
+  duration_ms: 8.7486
+  type: 'test'
+  ...
+# Subtest: 一万次同文件事件仅一次stat，同内容通知不重绘
+ok 73 - 一万次同文件事件仅一次stat，同内容通知不重绘
+  ---
+  duration_ms: 4.2721
+  type: 'test'
+  ...
+# Subtest: 大量不同文件保持有界，并保留目录刷新，stat并行不超过16
+ok 74 - 大量不同文件保持有界，并保留目录刷新，stat并行不超过16
+  ---
+  duration_ms: 6.9913
+  type: 'test'
+  ...
+# Subtest: 官方额度请求合并，429保留成功值并退避，后续成功可恢复
+ok 75 - 官方额度请求合并，429保留成功值并退避，后续成功可恢复
+  ---
+  duration_ms: 1.5859
+  type: 'test'
+  ...
+# Subtest: 最新Codex快照按事件时间选择，不把过期窗口归零
+ok 76 - 最新Codex快照按事件时间选择，不把过期窗口归零
+  ---
+  duration_ms: 1.5137
+  type: 'test'
+  ...
+# Subtest: CLI实时额度只接收有效窗口，丢弃提示词等无关字段
+ok 77 - CLI实时额度只接收有效窗口，丢弃提示词等无关字段
+  ---
+  duration_ms: 0.9118
+  type: 'test'
+  ...
+# Subtest: 状态栏桥保留自定义输出，回传零额度且不发送正文
+ok 78 - 状态栏桥保留自定义输出，回传零额度且不发送正文
+  ---
+  duration_ms: 638.6467
+  type: 'test'
+  ...
+# Subtest: 更新检查区分API限流并能回退发布页
+ok 79 - 更新检查区分API限流并能回退发布页
+  ---
+  duration_ms: 2.7482
+  type: 'test'
+  ...
+# Subtest: 文件首次只有旧元数据通知时不制造修改提示，删除仍通知
+ok 80 - 文件首次只有旧元数据通知时不制造修改提示，删除仍通知
+  ---
+  duration_ms: 0.48
+  type: 'test'
+  ...
+# Subtest: 推理字段缺失与真实零值区分，混合日志标明部分记录
+ok 81 - 推理字段缺失与真实零值区分，混合日志标明部分记录
+  ---
+  duration_ms: 0.2081
+  type: 'test'
+  ...
+1..81
+# tests 81
+# suites 0
+# pass 79
+# fail 0
+# cancelled 0
+# skipped 2
+# todo 0
+# duration_ms 1717.2602
+

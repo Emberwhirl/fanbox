@@ -4,6 +4,14 @@
 const { launch, check, done, FAKE_HOME } = require('./launch');
 const MAL = FAKE_HOME + '\\notes\\innocent.md';
 const LEGIT = FAKE_HOME + '\\notes\\real.md';
+// Own the fixtures: setup-fixtures only seeds minimal notes, which cannot prove
+// either that hostile markup is rejected or that rich Markdown survives.
+const fs = require('fs');
+const path = require('path');
+fs.mkdirSync(path.dirname(MAL), { recursive: true });
+fs.writeFileSync(MAL, '# hostile\n\n<img src=x onerror="window.__XSS_PROOF=1">\n\n<script>window.__XSS_PROOF=1</script>\n\n[script](javascript:window.__XSS_PROOF=1)\n\n![cover](cover.png)\n');
+fs.writeFileSync(LEGIT, '# real\n\n**bold** and `code`\n\n```js\nconst x = 1;\n```\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n> quote\n\n<details><summary>More</summary>details</details>\n\n- [ ] task\n\n[link](https://example.com)\n\n![cover](cover.png)\n');
+fs.writeFileSync(path.join(path.dirname(MAL), 'cover.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'));
 
 setTimeout(() => { console.error('FAIL: watchdog'); process.exit(2); }, 300000);
 

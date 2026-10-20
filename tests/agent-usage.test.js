@@ -84,7 +84,9 @@ test('最新Codex快照按事件时间选择，不把过期窗口归零', async 
   const now = Date.now();
   const snapshot = (t, pct) => JSON.stringify({ timestamp: new Date(t).toISOString(), payload: { rate_limits: { plan_type: 'pro', primary: { used_percent: pct, window_minutes: 10080, resets_at: Math.floor(now / 1000) - 10 } } } });
   const contents = { '/sessions/old.jsonl': snapshot(now - 10000, 20), '/sessions/new.jsonl': snapshot(now - 1000, 80) };
-  const context = { path, Date, Buffer, CODEX_SESS: '/sessions', fsp: {
+  // These fixture keys model Codex's on-disk POSIX session layout even when this
+  // test runs on Windows. The isolated source slice receives path.posix accordingly.
+  const context = { path: path.posix, Date, Buffer, CODEX_SESS: '/sessions', fsp: {
     readdir: async () => ['old.jsonl', 'new.jsonl'].map((name) => ({ name, isDirectory: () => false, isFile: () => true })),
     stat: async (file) => ({ size: Buffer.byteLength(contents[file]), mtimeMs: file.includes('old') ? now : now - 1 }),
     open: async (file) => ({ read: async (buf) => { buf.write(contents[file]); }, close: async () => {} }),

@@ -55,24 +55,24 @@ test('winStatusLineCommand: $ and backtick are literal inside single quotes (lef
   assert.equal(cmd, "ELECTRON_RUN_AS_NODE=1 'C:/a $HOME/x`y/FanBox.exe' 'C:/a $HOME/x`y/s.cjs'");
 });
 
-test('winStatusLineCommand: an apostrophe in either path, or an empty path, returns null', () => {
-  assert.equal(H.winStatusLineCommand("C:\\Users\\O'Brien\\FanBox.exe", 'C:\\h\\s.cjs'), null);
-  assert.equal(H.winStatusLineCommand('C:\\FanBox.exe', "C:\\Users\\O'Brien\\.fanbox\\hooks\\s.cjs"), null);
+test('winStatusLineCommand: apostrophes use a Bash single-quote splice while empty paths return null', () => {
+  assert.equal(H.winStatusLineCommand("C:\\Users\\O'Brien\\FanBox.exe", 'C:\\h\\s.cjs'), "ELECTRON_RUN_AS_NODE=1 'C:/Users/O'\"'\"'Brien/FanBox.exe' 'C:/h/s.cjs'");
+  assert.equal(H.winStatusLineCommand('C:\\FanBox.exe', "C:\\Users\\O'Brien\\.fanbox\\hooks\\s.cjs"), "ELECTRON_RUN_AS_NODE=1 'C:/FanBox.exe' 'C:/Users/O'\"'\"'Brien/.fanbox/hooks/s.cjs'");
   assert.equal(H.winStatusLineCommand('', 'C:\\h\\s.cjs'), null);
   assert.equal(H.winStatusLineCommand('C:\\FanBox.exe', ''), null);
   assert.equal(H.winStatusLineCommand(undefined, undefined), null);
 });
 
-test('winStatusLineCommand: the real quoting survives bash with space, CJK, $ and backtick in the path', { skip: !fs.existsSync('/usr/bin/bash') && !fs.existsSync('/bin/bash') }, () => {
+test('winStatusLineCommand: real Bash accepts apostrophe, space, CJK and inert shell characters in the script path', { skip: process.platform === 'win32' ? !H.winGitBash(process.env) : !fs.existsSync('/usr/bin/bash') && !fs.existsSync('/bin/bash') }, () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'fanbox-q-'));
-  const dir = path.join(base, 'fanbox test', '用户 $HOME `x`');
+  const dir = path.join(base, "fanbox test O'Brien 用户 $HOME `x` % !");
   fs.mkdirSync(dir, { recursive: true });
-  const exe = path.join(dir, 'node'); fs.symlinkSync(process.execPath, exe);
   const script = path.join(dir, 'echo-args.cjs');
   fs.writeFileSync(script, 'process.stdout.write(JSON.stringify({ argv: process.argv.slice(2), ran: process.env.ELECTRON_RUN_AS_NODE }));');
-  const cmd = H.winStatusLineCommand(exe, script);
+  const cmd = H.winStatusLineCommand(process.execPath, script);
   assert.ok(cmd);
-  const r = spawnSync('bash', ['-c', cmd], { encoding: 'utf8' });
+  const bash = process.platform === 'win32' ? H.winGitBash(process.env) : (fs.existsSync('/usr/bin/bash') ? '/usr/bin/bash' : '/bin/bash');
+  const r = spawnSync(bash, ['-c', cmd], { encoding: 'utf8', windowsHide: true });
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(JSON.parse(r.stdout), { argv: [], ran: '1' });
   fs.rmSync(base, { recursive: true, force: true });
@@ -257,10 +257,11 @@ test('writeHookFiles (win32) without Git Bash: no statusLine, no bridge copy, 2.
   assert.deepEqual(r.settings, H.claudeHttpHookSettings(4567));
 });
 
-test('writeHookFiles (win32): home with an apostrophe gets no statusLine and no copy, hook file still written', () => {
+test('writeHookFiles (win32): home with an apostrophe gets a quoted statusLine and bridge copy', () => {
   const r = runWriteHookFiles({ home: "C:\\Users\\O'Brien" });
-  assert.deepEqual(Object.keys(r.settings), ['hooks']);
-  assert.ok(!Object.keys(r.written).some((f) => f.endsWith('claude-statusline.cjs')));
+  assert.equal(r.settings.statusLine.command,
+    "ELECTRON_RUN_AS_NODE=1 'C:/Users/u/AppData/Local/Programs/FanBox/FanBox.exe' 'C:/Users/O'\"'\"'Brien/.fanbox/hooks/claude-statusline.cjs'");
+  assert.equal(r.written[w.join(r.hooksDir, 'claude-statusline.cjs')].toString(), BRIDGE_SRC);
 });
 
 test('writeHookFiles (win32): space + CJK home gets a quoted, forward-slash command', () => {
@@ -508,13 +509,13 @@ test('D2 label: resolution order in the source is config.lang, then FANBOX_LANG,
 for (const platform of ['linux', 'darwin']) {
   test(`bridge ${platform}: unchanged. Label stays 周 (config and locale ignored), chaining uses shell:true`, () => {
     const home = '/home/u';
-    const cfgEn = { [path.join(home, '.fanbox', 'config.json')]: JSON.stringify({ lang: 'en' }) };
+    const cfgEn = { [path.posix.join(home, '.fanbox', 'config.json')]: JSON.stringify({ lang: 'en' }) };
     const base = { platform, home, env: { Path: '/usr/bin', PATH: '/usr/bin', FANBOX_LANG: 'en' }, locale: 'en-US', input: { ...SAMPLE, cwd: '/proj' } }; // FANBOX_LANG is a Windows-only variable and must change nothing here
     let r = runBridge({ ...base, files: cfgEn });
     assert.equal(r.out, '5h 23% · 周 41%\n');
     assert.equal(r.spawns.length, 0);
     const cmd = 'printf original-status';
-    r = runBridge({ ...base, files: { ...cfgEn, [path.join(home, '.claude', 'settings.json')]: JSON.stringify({ statusLine: { type: 'command', command: cmd } }) }, exists: ['C:\\Program Files\\Git\\bin\\bash.exe', '/usr/bin/bash'] });
+    r = runBridge({ ...base, files: { ...cfgEn, [path.posix.join(home, '.claude', 'settings.json')]: JSON.stringify({ statusLine: { type: 'command', command: cmd } }) }, exists: ['C:\\Program Files\\Git\\bin\\bash.exe', '/usr/bin/bash'] });
     assert.equal(r.spawns.length, 1);
     const [file, opts] = r.spawns[0];
     assert.equal(file, cmd);
@@ -588,20 +589,20 @@ test('bridge file: the Windows branches are the only difference from master (onl
 // ---------------------------------------------------------------------------
 // End to end on Linux: the command the helper produces, run through bash, with a real bridge
 // ---------------------------------------------------------------------------
-test('e2e: bash -c <winStatusLineCommand> prints the quota text and POSTs only the two limits', { skip: !fs.existsSync('/usr/bin/bash') && !fs.existsSync('/bin/bash') }, async () => {
+test('e2e: Bash -c <winStatusLineCommand> with an apostrophe path prints quota text and POSTs only the two limits', { skip: process.platform === 'win32' ? !H.winGitBash(process.env) : !fs.existsSync('/usr/bin/bash') && !fs.existsSync('/bin/bash') }, async () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'fanbox-e2e-'));
-  const dir = path.join(base, 'fanbox test', '用户 $x');
+  const dir = path.join(base, "fanbox test O'Brien 用户 $x % !");
   fs.mkdirSync(dir, { recursive: true });
-  const exe = path.join(dir, 'node'); fs.symlinkSync(process.execPath, exe);
   const script = path.join(dir, 'claude-statusline.cjs'); fs.writeFileSync(script, fs.readFileSync(BRIDGE_FILE));
   const claudeDir = path.join(base, 'claude-config'); fs.mkdirSync(claudeDir);
-  const cmd = H.winStatusLineCommand(exe, script);
+  const cmd = H.winStatusLineCommand(process.execPath, script);
   assert.ok(cmd);
   let received, token;
   const server = http.createServer((req, res) => { let t = ''; req.on('data', (x) => { t += x; }); req.on('end', () => { received = JSON.parse(t); token = req.headers['x-fanbox-token']; res.end('{}'); }); });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   try {
-    const child = spawn('bash', ['-c', cmd], { cwd: base, env: { ...process.env, CLAUDE_CONFIG_DIR: claudeDir, FANBOX_CTL: `http://127.0.0.1:${server.address().port}/api/agent`, FANBOX_CTL_TOKEN: 'e2e-token' } });
+    const bash = process.platform === 'win32' ? H.winGitBash(process.env) : (fs.existsSync('/usr/bin/bash') ? '/usr/bin/bash' : '/bin/bash');
+    const child = spawn(bash, ['-c', cmd], { cwd: base, windowsHide: true, env: { ...process.env, CLAUDE_CONFIG_DIR: claudeDir, FANBOX_CTL: `http://127.0.0.1:${server.address().port}/api/agent`, FANBOX_CTL_TOKEN: 'e2e-token', FANBOX_LANG: 'zh' } });
     let output = ''; child.stdout.on('data', (s) => { output += s; });
     child.stdin.end(JSON.stringify({ cwd: base, prompt: 'must-not-forward', rate_limits: { five_hour: { used_percentage: 23.4, resets_at: 2000000000 }, seven_day: { used_percentage: 41.6, resets_at: 2000000000 } } }));
     await new Promise((resolve, reject) => { child.once('exit', (code) => (code === 0 ? resolve() : reject(new Error('exit ' + code)))); child.once('error', reject); });

@@ -5,6 +5,7 @@
  */
 const path = require('path');
 const fs = require('fs');
+const { execFileSync } = require('child_process'); // argv spawn only (codexPreferMxcSupport probe), never a shell string
 const win32 = path.win32;
 
 function uniqueDest(dest, existsFn, pathMod) {
@@ -398,13 +399,13 @@ function claudeHttpHookSettings(port, opts) {
 
 // Command Claude Code runs for the status line on Windows. Claude Code uses Git Bash
 // (PowerShell only when Git Bash is missing), never cmd, and Git Bash eats unquoted
-// backslashes: forward slashes plus single quotes. Returns null when a path is empty or
-// holds a single quote (cannot be quoted safely) so the caller omits the status line.
-// Spaces, $, backticks and CJK are literal inside single quotes.
+// backslashes: forward slashes plus single quotes. A single quote is represented by ending
+// the quoted word, emitting a literal quote, then reopening it. Returns null only for an
+// empty path. Spaces, $, backticks, percent, exclamation marks and CJK stay literal.
 function winStatusLineCommand(execPath, scriptPath) {
   const a = String(execPath || ''), b = String(scriptPath || '');
-  if (!a || !b || a.indexOf("'") >= 0 || b.indexOf("'") >= 0) return null;
-  const fwd = (s) => "'" + s.replace(/\\/g, '/') + "'";
+  if (!a || !b) return null;
+  const fwd = (s) => "'" + s.replace(/\\/g, '/').replace(/'/g, "'\"'\"'") + "'";
   return 'ELECTRON_RUN_AS_NODE=1 ' + fwd(a) + ' ' + fwd(b);
 }
 
@@ -484,8 +485,11 @@ function codexNotifyArgv(nodeExe, scriptPath) {
 function winFindOnPath(name, env, io) {
   const e = env || process.env;
   // Optional io.exists makes the walk testable off Windows: it also switches to path.win32.
+  // Optional io.accept filters hits: a hit it rejects keeps the walk going (first
+  // directory with an accepted hit still wins; PATHEXT order is preserved).
   const P = io && io.exists ? win32 : path;
   const has = io && io.exists ? io.exists : (f) => fs.existsSync(f);
+  const accept = io && typeof io.accept === 'function' ? io.accept : null;
   const dirs = String(e.Path || e.PATH || '').split(';').map((s) => {
     let t = s.trim();
     if (t.length >= 2 && ((t[0] === '"' && t[t.length - 1] === '"') || (t[0] === "'" && t[t.length - 1] === "'"))) {
@@ -498,49 +502,173 @@ function winFindOnPath(name, env, io) {
   for (const d of dirs) {
     if (hasExt) {
       const f = P.join(d, name);
-      try { if (has(f)) return f; } catch { /* */ }
+      try { if (has(f) && (!accept || accept(f))) return f; } catch { /* */ }
       continue;
     }
     for (const ext of exts) {
       const f = P.join(d, name + ext);
-      try { if (has(f)) return f; } catch { /* */ }
+      try { if (has(f) && (!accept || accept(f))) return f; } catch { /* */ }
     }
   }
   return null;
 }
 
-// Resolve claude/codex to a spawnable {file, preArgs, extraEnv?} without a shell.
-// Native .exe is used as-is; npm .cmd/.ps1 shims are rewritten to node.exe + the
-// node_modules JS entry (or Electron with ELECTRON_RUN_AS_NODE=1). Same rules as
-// electron/wechat/driver.js resolveWinCli — this copy is the one the desktop PTY
-// launch path calls, so contract tests can drive it without requiring electron/.
-function resolveWinCli(name, env, execPath) {
-  const hit = winFindOnPath(name, env);
-  if (!hit) return null;
-  const ext = path.extname(hit).toLowerCase();
-  if (ext === '.exe' || ext === '.com') return { file: hit, preArgs: [] };
+// Explorer starts do not inherit the Codex desktop app's private bin directory. Keep the
+// recovery deliberately small: the current user's Desktop cache, npm's documented global
+// bin and the conventional local-bin location. Do not search the working directory or disk.
+function winEnvValue(env, name) {
+  const e = env || process.env;
+  if (e[name] != null && e[name] !== '') return String(e[name]);
+  const key = Object.keys(e).find((k) => k.toLowerCase() === name.toLowerCase());
+  return key != null && e[key] != null ? String(e[key]) : '';
+}
+
+function winRegularFileInfo(file) {
+  try {
+    const stat = fs.statSync(file);
+    return stat.isFile() ? { file, mtime: Number(stat.mtimeMs) || 0 } : null;
+  } catch { return null; }
+}
+
+function winRegularFile(file) {
+  return !!winRegularFileInfo(file);
+}
+
+// A positive winCodexFallback pick is cached per process, keyed by the fallback
+// locations it was resolved from: an in-session Codex Desktop update must not flip
+// which binary a later launch resolves. The cached file is revalidated on read
+// (deleted = re-resolve), and negative results are never cached.
+const codexFallbackCache = new Map();
+
+// Explorer starts do not inherit the Codex desktop app's private bin directory. Keep the
+// recovery deliberately small: the current user's Desktop cache, npm's documented global
+// bin and the conventional local-bin location, in that order. Do not search the working
+// directory or disk. `accept` (spawnability) is consulted per candidate, so a broken npm
+// shim is skipped instead of shadowing the locations after it. The direct bin\codex.exe
+// is preferred over the opaque version/cache dirs; newest-by-mtime only breaks ties
+// among those dirs.
+function winCodexFallback(name, env, accept) {
+  if (String(name).toLowerCase() !== 'codex') return null;
+  const ok = typeof accept === 'function' ? accept : () => true;
+  const local = winEnvValue(env, 'LOCALAPPDATA');
+  const appData = winEnvValue(env, 'APPDATA');
+  const profile = winEnvValue(env, 'USERPROFILE');
+  const cacheKey = [local, appData, profile].join('|');
+  const take = (f) => { codexFallbackCache.set(cacheKey, f); return f; };
+  const cached = codexFallbackCache.get(cacheKey);
+  if (cached && winRegularFile(cached) && ok(cached)) return cached;
+  // The Codex desktop app writes version/cache directories under this fixed parent. Their
+  // names are intentionally opaque, so choose the newest valid codex.exe deterministically.
+  if (local) {
+    const bin = path.join(local, 'OpenAI', 'Codex', 'bin');
+    const direct = path.join(bin, 'codex.exe');
+    if (winRegularFile(direct) && ok(direct)) return take(direct);
+    const choices = [];
+    try {
+      for (const item of fs.readdirSync(bin, { withFileTypes: true })) {
+        if (!item.isDirectory()) continue;
+        const file = path.join(bin, item.name, 'codex.exe');
+        const info = winRegularFileInfo(file);
+        if (info) choices.push(info);
+      }
+    } catch { /* missing or unreadable desktop cache: continue to other bounded locations */ }
+    choices.sort((a, b) => b.mtime - a.mtime || a.file.localeCompare(b.file));
+    for (const c of choices) if (ok(c.file)) return take(c.file);
+  }
+  if (appData) {
+    const npm = path.join(appData, 'npm');
+    for (const file of ['codex.exe', 'codex.cmd', 'codex.ps1']) {
+      const candidate = path.join(npm, file);
+      if (winRegularFile(candidate) && ok(candidate)) return take(candidate);
+    }
+  }
+  if (profile) {
+    const file = path.join(profile, '.local', 'bin', 'codex.exe');
+    if (winRegularFile(file) && ok(file)) return take(file);
+  }
+  return null;
+}
+
+// The node_modules JS entry an npm .cmd/.ps1 shim runs, or null. The regex match is
+// resolved against the shim's directory and must land inside that directory's
+// node_modules: a match containing '..' segments would otherwise escape it
+// (path.resolve(dir, 'node_modules/../../x.js') is anywhere on disk).
+function winShimEntry(hit, name) {
   const dir = path.dirname(hit);
-  let entry = null;
+  const under = path.join(dir, 'node_modules');
   const texts = [hit, hit.replace(/\.(cmd|ps1)$/i, ''), hit.replace(/\.(cmd|ps1)$/i, '') + '.ps1'];
   for (const f of texts) {
     let txt; try { txt = fs.readFileSync(f, 'utf8'); } catch { continue; }
     const m = txt.match(/node_modules[\\/][^"'\r\n]+?\.[cm]?js/i);
     if (m) {
       const cand = path.resolve(dir, m[0].replace(/\//g, path.sep));
-      if (fs.existsSync(cand)) { entry = cand; break; }
+      if (!pathInDir(cand, under, path.sep)) continue;
+      if (fs.existsSync(cand)) return cand;
     }
   }
-  if (!entry) {
-    const guess = { claude: '@anthropic-ai/claude-code/cli.js', codex: '@openai/codex/bin/codex.js' }[name];
-    if (guess) {
-      const cand = path.join(dir, 'node_modules', ...guess.split('/'));
-      if (fs.existsSync(cand)) entry = cand;
-    }
+  const guess = { claude: '@anthropic-ai/claude-code/cli.js', codex: '@openai/codex/bin/codex.js' }[name];
+  if (guess) {
+    const cand = path.join(dir, 'node_modules', ...guess.split('/'));
+    if (fs.existsSync(cand)) return cand;
   }
+  return null;
+}
+
+// Resolve one discovered candidate to a spawnable {file, preArgs, extraEnv?}, or null
+// when it is not spawnable: native .exe/.com is used as-is, an npm .cmd/.ps1 shim only
+// when its node_modules JS entry resolves (winShimEntry). A null here must keep the
+// search going — a broken shim must not abort discovery and shadow a working fallback.
+function winCliSpawnSpec(hit, name, env, execPath) {
+  const ext = path.extname(hit).toLowerCase();
+  if (ext === '.exe' || ext === '.com') return { file: hit, preArgs: [] };
+  const entry = winShimEntry(hit, name);
   if (!entry) return null;
   const node = winFindOnPath('node', env);
   if (node) return { file: node, preArgs: [entry] };
   return { file: execPath || process.execPath, preArgs: [entry], extraEnv: { ELECTRON_RUN_AS_NODE: '1' } };
+}
+
+// Resolve claude/codex to a spawnable {file, preArgs, extraEnv?} without a shell.
+// Same rules as electron/wechat/driver.js resolveWinCli — this copy is the one the
+// desktop PTY launch path calls, so contract tests can drive it without requiring electron/.
+// Candidates are tried in order (spawnable PATH hit first — first-directory-wins with
+// PATHEXT order preserved — then winCodexFallback's locations) and accepted only when
+// spawnable; anything else continues the search instead of returning null.
+function resolveWinCli(name, env, execPath) {
+  const spec = (f) => { try { return winCliSpawnSpec(f, name, env, execPath); } catch { return null; } };
+  // PATH is authoritative: the fallback is only for GUI/Explorer environments where it
+  // lacks Codex's private Desktop-app cache directory.
+  const hit = winFindOnPath(name, env, { accept: (f) => !!spec(f) });
+  if (hit) return spec(hit);
+  const fallback = winCodexFallback(name, env, (f) => !!spec(f));
+  return fallback ? spec(fallback) : null;
+}
+
+// Probe gate for the '--enable prefer_mxc' pair: run the resolved CLI with --help as a
+// real argv (windowsHide, short timeout) and keep the pair only when the help text lists
+// --enable as its own flag. Older CLIs exit on unknown args instead of falling back to their
+// configured sandbox, so the pair is dropped whenever the probe says no, errors, or times out.
+// The answer is cached per resolved binary (executable + entry path, mtime and size).
+const preferMxcCache = new Map();
+function codexPreferMxcSupport(cli, probe) {
+  if (!cli || !cli.file) return false;
+  if (typeof probe === 'function') return !!probe(cli);
+  const entry = (cli.preArgs || [])[0];
+  const mt = (f) => String((winRegularFileInfo(f) || {}).mtime || 0);
+  const sz = (f) => { try { return String(fs.statSync(f).size); } catch { return '0'; } };
+  // size joins the key: a timestamp-preserving binary swap must re-probe, not hit the old cache
+  const key = [cli.file].concat(cli.preArgs || []).join('|') + '|' + mt(cli.file) + '|' + mt(entry) + '|' + sz(cli.file) + '|' + sz(entry);
+  if (preferMxcCache.has(key)) return preferMxcCache.get(key);
+  let help = '';
+  try {
+    help = String(execFileSync(cli.file, (cli.preArgs || []).concat(['--help']), {
+      timeout: 5000, windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    }) || '');
+  } catch { preferMxcCache.set(key, false); return false; }
+  // word-boundary match: --enable must be its own flag (--enabled or glued help text never passes)
+  const supported = /(^|\s)--enable(\s|$)/.test(help);
+  preferMxcCache.set(key, supported);
+  return supported;
 }
 
 // Windows Codex PTY launch spec: real argv, never a PowerShell/cmd string.
@@ -564,9 +692,15 @@ function buildCodexSpawnSpec(opts) {
   if (notifyArgv.length && !winFindOnPath('node', env) && execPath) {
     extraEnv.ELECTRON_RUN_AS_NODE = '1';
   }
+  // Prefer the account-free Windows MXC sandbox, as Codex Desktop does — but only on a
+  // CLI whose own --help lists --enable (codexPreferMxcSupport probe, cached per binary;
+  // opts.preferMxcProbe overrides it for tests). There is no in-CLI fallback when the
+  // flag is unknown: older CLIs exit on unknown args, so the pair is appended only when
+  // the probe says this CLI accepts it.
+  const mxc = codexPreferMxcSupport(cli, typeof o.preferMxcProbe === 'function' ? o.preferMxcProbe : null);
   return {
     file: cli.file,
-    args: cli.preArgs.concat(notifyArgv, extraArgs),
+    args: cli.preArgs.concat(mxc ? ['--enable', 'prefer_mxc'] : [], notifyArgv, extraArgs),
     extraEnv: Object.keys(extraEnv).length ? extraEnv : undefined,
   };
 }
@@ -685,6 +819,7 @@ module.exports = {
   codexNotifyArgv,
   winFindOnPath,
   resolveWinCli,
+  codexPreferMxcSupport,
   buildCodexSpawnSpec,
   shouldSkipAutoUpdateProbe,
   appendNoProxy,

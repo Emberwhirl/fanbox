@@ -16,6 +16,8 @@ async function launch(extraEnv = {}, opts = {}) {
     HOME: FAKE_HOME,
     APPDATA: path.join(FAKE_HOME, 'AppData', 'Roaming'),
     LOCALAPPDATA: path.join(FAKE_HOME, 'AppData', 'Local'),
+    CLAUDE_CONFIG_DIR: path.join(FAKE_HOME, '.claude'),
+    CODEX_HOME: path.join(FAKE_HOME, '.codex'),
     // Path key set below — must reuse the host env's exact key casing or Windows spawn
     // gets duplicate Path/PATH keys and the unmodified one can win
     FANBOX_PORT: opts.port || '4650',
@@ -24,6 +26,7 @@ async function launch(extraEnv = {}, opts = {}) {
   const pathKey = Object.keys(env).find((k) => k.toLowerCase() === 'path') || 'Path';
   env[pathKey] = (opts.toolsPath !== undefined ? opts.toolsPath : TOOLS_PATH) + (env[pathKey] || '');
   delete env.NoDefaultCurrentDirectoryInExePath;
+  delete env.ELECTRON_RUN_AS_NODE;
   // inherited MSYS SHELL would change shell resolution — drop it unless the test set one explicitly
   if (!('SHELL' in extraEnv)) delete env.SHELL;
   const app = await _electron.launch({
@@ -54,8 +57,14 @@ const BUF_FN = `(id) => {
 // app.close() can hang while a ConPTY child is alive — race it and hard-kill leftovers
 async function closeApp(app) {
   const { execFile } = require('child_process');
-  await Promise.race([app.close().catch(() => {}), new Promise((r) => setTimeout(r, 8000))]);
-  await new Promise((r) => execFile('C:\\Windows\\System32\\taskkill.exe', ['/IM', 'electron.exe', '/T', '/F'], () => r()));
+  // Capture this test's PID before closing; never kill unrelated Electron apps.
+  const pid = app.process().pid;
+  let timer;
+  try { await Promise.race([app.close().catch(() => {}), new Promise((r) => { timer = setTimeout(r, 8000); })]); }
+  finally { clearTimeout(timer); }
+  if (Number.isInteger(pid) && pid > 0) {
+    await new Promise((r) => execFile(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe'), ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, () => r()));
+  }
   await new Promise((r) => setTimeout(r, 1500));
 }
 

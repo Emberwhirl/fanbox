@@ -31,6 +31,7 @@ const FILES = [
 // Category (c) whitelist: shared one-line sites that may differ from master
 // when the only behavioral branch is platform/sep-guarded.
 const WHITELIST_RES = [
+  /^\s*let winStatusLineBridge = null;$/, // inert state; read/write sites are Windows-gated
   /function dirOf/,
   /function fsUrl/,
   /function fileManagerName/,
@@ -178,6 +179,7 @@ function analyzeStatusline(diff, source) {
     if (gatedAt !== null && depth <= gatedAt) gatedAt = null;
   }
   if (source != null) {
+    source = source.replace(/\r\n/g, '\n');
     const m = source.match(/function winBash\(\) \{\n\s*([^\n]+)/);
     if (!m || !/^if \(process\.platform !== 'win32'\) return null;/.test(m[1])) out.suspicious.push('gate: winBash() must start with `if (process.platform !== \'win32\') return null;`');
     source.split('\n').forEach((l) => {

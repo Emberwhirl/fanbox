@@ -282,7 +282,7 @@ console.log('# shipped source assertions');
 
   check(/shouldSkipAutoUpdateProbe\(process\.platform\)/.test(main), 'probeAutoUpdate short-circuits via helper');
   check(/autoUpdater\.on\('error'/.test(main), 'autoUpdater error listener registered');
-  check(/claudeHttpHookSettings\(PORT\)/.test(main), 'Windows writeHookFiles uses HTTP settings');
+  check(/claudeHttpHookSettings\(PORT\s*[,)]/.test(main), 'Windows writeHookFiles uses HTTP settings (optional statusLine supported)');
   check(/appendNoProxy/.test(main), 'PTY env appends NO_PROXY');
 
   // D3 argv: typed `-c notify=[…]` still empty on win32; launch is pty.spawn with a real argv

@@ -48,6 +48,12 @@ const MUTATIONS = [
     from: "    if (parts.length) process.stdout.write(parts.join(' · ') + '\\n');\n", to: '' },
 ];
 
+// This explicitly selected checkout can belong to another Windows SID. Scope its ownership
+// exception to every command that reads this repo, never the global Git config — and exempt the
+// work tree ROOT, not <ROOT>/.git: git validates the work tree too and matches safe.directory per
+// validated path, so an entry for <ROOT>/.git does not exempt <ROOT>. Forward slashes keep the
+// -c value unambiguous.
+const SAFE_ROOT = ['-c', `safe.directory=${ROOT.replace(/\\/g, '/')}`];
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 function runVerify(dir) {
   const r = spawnSync(process.execPath, [VERIFY], { cwd: dir, encoding: 'utf8' });
@@ -57,9 +63,10 @@ function runVerify(dir) {
 function main() {
   const dir = process.argv[2] ? path.resolve(process.argv[2]) : fs.mkdtempSync(path.join(os.tmpdir(), 'fanbox-parity-mut-'));
   if (fs.existsSync(dir) && fs.readdirSync(dir).length) { console.error(`scratch dir ${dir} is not empty`); process.exit(2); }
-  const masterSha = git(ROOT, 'rev-parse', 'master').trim();
-  git(ROOT, 'rev-parse', '--git-dir'); // fails early outside a git checkout
-  execFileSync('git', ['clone', '--quiet', '--local', '--no-hardlinks', ROOT, dir], { stdio: 'ignore' });
+  const masterSha = git(ROOT, ...SAFE_ROOT, 'rev-parse', 'master').trim();
+  git(ROOT, ...SAFE_ROOT, 'rev-parse', '--git-dir'); // fails early outside a git checkout
+  // The clone also reads this checkout, so it carries the same command-scoped exception.
+  execFileSync('git', SAFE_ROOT.concat(['clone', '--quiet', '--local', '--no-hardlinks', ROOT, dir]), { stdio: ['ignore', 'ignore', 'inherit'] });
   git(dir, 'branch', '-f', 'master', masterSha);
   for (const f of OVERLAY) fs.copyFileSync(path.join(ROOT, f), path.join(dir, f));
   console.log(`scratch clone: ${dir} (master = ${masterSha.slice(0, 7)})`);
@@ -70,7 +77,7 @@ function main() {
   console.log(`${baseOk ? 'ok  ' : 'FAIL'} clean copy exits ${base.status} (want 0)`);
   if (!baseOk) { console.log(base.out); failed++; }
   for (const m of MUTATIONS) {
-    const file = path.join(dir, m.file), orig = fs.readFileSync(file, 'utf8');
+    const file = path.join(dir, m.file), orig = fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
     if (orig.split(m.from).length !== 2) { console.log(`FAIL (${m.id}) ${m.what}: mutation anchor not found exactly once in ${m.file}`); failed++; continue; }
     fs.writeFileSync(file, orig.replace(m.from, () => m.to));
     const r = runVerify(dir);
