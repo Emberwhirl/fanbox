@@ -889,7 +889,7 @@ async function statusLineCase(ctx, o) {
     // Full-table census attribution: the COPIED bridge script path (the slash-normalized needle
     // procIdentity uses) plus the app's script dir / server path and the running app image.
     // Unrelated system Electron processes carry neither, so they can never be attributed.
-    const censusAttr = { bridgeScript: hook.script, appExe: execPath, needles: [hook.script, ROOT, path.join(ROOT, 'server.js')] };
+    const censusAttr = { bridgeScript: hook.script, appExe: execPath, needles: [hook.script, ROOT, path.join(ROOT, 'server.js'), execPath, path.join(path.dirname(execPath), 'resources', 'app.asar')] };
     if (o.expectStatusLine) {
       check(id, !!hook.json && !!hook.json.statusLine && hook.json.statusLine.type === 'command', label + ': hook file has a statusLine', JSON.stringify(hook.json && hook.json.statusLine));
       check(id, !!wantCmd && hook.json.statusLine.command === wantCmd, label + ': statusLine.command = ELECTRON_RUN_AS_NODE=1 \'<FanBox exe>\' \'<hooks>/claude-statusline.cjs\' (forward slashes, single quotes)', hook.json.statusLine && hook.json.statusLine.command);

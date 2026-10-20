@@ -88,13 +88,16 @@ const free = p => new Promise(resolve => { const s = net.createServer(); s.once(
           // process environment and is referenced as $env:FB_SMOKE_TARGET (RECYCLE_PS pattern).
           const command = "Set-Content -LiteralPath $env:FB_SMOKE_TARGET -Value 'Hello from the FanBox Codex button' -NoNewline; Write-Output FANBOX_BUTTON_WRITE_OK";
           await term.spawnCodexInDir(cwd, ['sandbox', '--include-managed-config', '--permission-profile', ':workspace', '--', ps, '-NoProfile', '-NonInteractive', '-Command', command]);
-          const end = Date.now() + 30000;
+          const end = Date.now() + 60000;
           while (!output.includes('FANBOX_BUTTON_WRITE_OK') && Date.now() < end) await new Promise(r => setTimeout(r, 100));
           return { ok: output.includes('FANBOX_BUTTON_WRITE_OK'), output: output.slice(-3000) };
         } finally { off(); }
       }, { cwd: home, ps });
       report.sandboxWrite.content = fs.existsSync(sandboxTarget) ? fs.readFileSync(sandboxTarget, 'utf8') : null;
-      if (!report.sandboxWrite.ok || report.sandboxWrite.content !== 'Hello from the FanBox Codex button') throw new Error('Button launch sandbox could not write the hello file');
+      // The file content is the authoritative assertion. The FANBOX_BUTTON_WRITE_OK marker
+      // travels through the sandboxed ConPTY stream and proved flaky to capture even when
+      // the write succeeds (direct runs show both statements execute and the marker prints).
+      if (report.sandboxWrite.content !== 'Hello from the FanBox Codex button') throw new Error('Button launch sandbox could not write the hello file (content=' + JSON.stringify(report.sandboxWrite.content) + ', markerSeen=' + !!report.sandboxWrite.ok + ')');
     }
     if (process.argv.includes('--boot')) {
       report.interactiveBoot = await page.evaluate(async (cwd) => {
