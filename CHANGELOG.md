@@ -11,17 +11,6 @@
 
 ## [Unreleased]
 
-### Windows port
-- Windows 的 Codex 启动按钮默认添加 `--enable prefer_mxc`，优先使用 MXC 沙箱，避免本机旧 elevated 沙箱凭据导致的 `CryptUnprotectData failed`；不修改用户全局配置，保留通知钩子与独立参数。
-- 从资源管理器启动时也能找到 Codex 桌面应用自带的 CLI：保留 PATH 优先级，补查当前用户的 Codex 版本缓存、npm 与本地 bin 目录，跳过不完整缓存；启动按钮、后端检测与微信驱动共用解析逻辑，不再把已安装的 Codex 误报为未安装。
-- 状态栏桥的 Bash 命令改用完整单引号转义，用户目录或安装路径含撇号时不再静默关闭实时额度回传；缺少 Git Bash 或准备失败时，用量面板说明原因，继续尝试官方额度与本地日志。
-- 英文界面给 Windows 文件名与路径增加用户内容标记，避免名为「输出」等与界面词条同名的文件被翻译；token 明细中的界面标签仍照常翻译。
-- **Codex 启动参数 `--enable prefer_mxc` 不能无条件下发**：旧版 Codex CLI 不认识该参数，参数被拒后启动直接失败。现在先用 help 探测确认本机 CLI 支持才带上该参数，不支持则按原样启动；不改用户全局配置，通知钩子与独立参数边界不变。
-- **PATH 里的坏 npm 垫片会让 Codex 发现流程整体中断**：解析器遇到损坏的 PATH 条目或 npm 垫片就直接放弃，明明装在桌面应用版本缓存或 `.local\bin` 的 CLI 也被误报为未安装。现在单个来源出错只跳过该来源，按 PATH 优先级继续落到桌面缓存、npm 全局 bin 与本地 bin。
-- **英文界面文件名翻译防护收尾**：侧栏合成标签被误标成用户内容（标记只应保护用户真实数据，属回归），已去掉；标记跳过改为浏览器模式也无条件生效；其余文件名显示面补齐用户内容标记。用户文件名不再被词典翻译，界面标签照常翻译，共享跳过表与词典规则不动；i18n.js 仅新增按标记跳过（标记只在 Windows 产生，POSIX 行为不变）。
-- **验收测试存在“无样本也算过”的漏洞**：打包运行或功能降级时，普查/验收项在根本没采到样本的情况下被计为通过，形成假阳性。现在缺样本即判失败；mutation-proof 的所有权豁免明确指向工作树；PATHEXT 大小写与 Chrome DOM 契约测试固定确定性，不再随环境时过时不过。
-- **文档勘误（本轮文档/清理）**：实现笔记 Dev-4 已作废并标注 SUPERSEDED——不得把 `.fname` 加进共享跳过表（会动到 macOS/Linux），以 Windows 专用用户内容标记方案为准；MXC 段的哈希对改标为「重建前」旧包，发版核验只认「Current packages」一对；`tests/agent-usage.test.js` 的 fixture 修正（POSIX 布局 fixture 显式 POSIX 路径拼接）记为已接受的共享改动、长期保留而非临时改动；删除无人引用的 `public/vendor/purify.min.js`（兑现 2.16.1 计划的承诺）。
-
 ## [2.17.0] - 2026-10-12
 
 ### 新增
@@ -49,6 +38,16 @@
 - **接受的共享改动（POSIX 行为不变，已在 `experiments/winport-parity-202607/verify.js` 分类）：** ① `lib/claude-statusline.cjs` 只插入 win32 才执行的行（bash 接续、`7d` 标签），上游每条语句原样保留，扫描器要求它相对 master 纯新增，删改一行即硬失败；② `electron/main.js` 的 `checkUpdate` 按 `IS_WIN` 选 fetcher 与失败弹窗，上游函数逐字；③ `server.js` `usageRequest` 里 curl 路径的平台三元式（`winFindExe('curl.exe')`，扫描器按原文钉死），加 `env: winSpawnEnv()`（非 Windows 返回 `undefined`）与 `windowsHide`；④ `public/i18n-dict.js` 只新增（扫描器把 `FANBOX_DICT_RULES` 里的单行元组按行号认作纯新增，并要求每条规则整体以 `^…$` 锚定）；⑤ 两处 2.16.1 就存在、这次才列入清单的共享改写：`checkUpdate` 尾部（`if (newer)` → `if (newer && winAssetOk)`，Windows 的 `latestAssets` 回落 `[]`，手动「发现新版本」弹窗拆成 `IS_WIN` / macOS 两支）和 `update:download`（单 dmg 流程改成 `updateAssetCandidates` 候选循环，外加 Windows 精确双文件名闸；非 Windows 仍是同一个 dmg 地址、同一个基名比较）。`skills/fanbox-agent/SKILL.md` 与 README 下半部相对 master 零差异。
 - **验收脚本：** 新增 `experiments/win-v2170-usage-202610/`。`contract-bridge.test.js`（Linux 可跑）覆盖 hook 文件有无 Git Bash 的形状（含 Git Bash 路径只配在 Claude Code 自己的 `settings.json` 里、`CLAUDE_CONFIG_DIR` 改址、用户设置文件从不被写）、无 token 字面量、正斜杠与引号规则、撇号返回 `null`、`winGitBash` 对假目录树、桥的 Windows 分支与 `7d` 标签（`config.lang` > `FANBOX_LANG` > `Intl` 的次序）、`pty:spawn` 里 `FANBOX_LANG` 只在 `IS_WIN` 分支、`usageRequest` 用 `curl.exe` 精确名；`contract-i18n.test.js` 真跑 `i18n.js` 翻译器对照 D4 表，并守住上游源码漂移；`ui-usage-en.cjs` 在浏览器里渲染 20 种用量面板状态，断言 `#usage-body` 里没有中日韩字符；`playwright-electron.js` 在物理 Windows 上真跑开发版 Electron（隔离的假主目录 + `--user-data-dir`），用替身 `claude` 经真实 Git Bash 执行 hook 文件里的 `statusLine`，自动跑 S1/S5/S6、U2/U5/U6/U7、W1/W2/W4、R1 与 X1 子集，其余人工用例按步骤打印，`--dry` 在 Linux 上只跑与平台无关的部分；`gen-fixtures.js` 生成约 500 MB 的 Claude 日志树、Codex 会话与突发写盘夹具。`winport-parity-202607/verify.js` 为 `lib/claude-statusline.cjs` 和 `FANBOX_DICT_RULES` 新增专门检查，并加四条硬检查（退出码 1）：`REL_PAGE`…`let pendingUpdate` 与 master 逐字节一致、`checkUpdate` 的 POSIX 失败弹窗与 master 逐字节一致、`usageRequest` 的 curl 选择按原文钉死且函数其余部分与 master 一致、`FANBOX_DICT_RULES` 每条整体 `^…$` 锚定。起因是评审在克隆里改了四处（失败弹窗的 `else if` 条件、`fetchLatestRelease` 里加一行 `console.log`、curl 三元式改成 `PLATFORM !== 'darwin'`、加一条未锚定的兜底翻译规则），旧扫描器对四处都打印「All files pass」；`mutation-proof.js` 在临时克隆里把这四处与另外六种近邻改动逐个跑一遍，要求每次都以 1 退出、干净副本以 0 退出。
 - **升级提示：** 升级后需要重启正在运行的 Claude Code 会话才会出现额度状态栏（与上游发布说明一致）；没装 Git for Windows 的机器不会有状态栏，面板照常轮询官方接口。手敲的 `claude` 不受影响。
+
+- Windows 的 Codex 启动按钮默认添加 `--enable prefer_mxc`，优先使用 MXC 沙箱，避免本机旧 elevated 沙箱凭据导致的 `CryptUnprotectData failed`；不修改用户全局配置，保留通知钩子与独立参数。
+- 从资源管理器启动时也能找到 Codex 桌面应用自带的 CLI：保留 PATH 优先级，补查当前用户的 Codex 版本缓存、npm 与本地 bin 目录，跳过不完整缓存；启动按钮、后端检测与微信驱动共用解析逻辑，不再把已安装的 Codex 误报为未安装。
+- 状态栏桥的 Bash 命令改用完整单引号转义，用户目录或安装路径含撇号时不再静默关闭实时额度回传；缺少 Git Bash 或准备失败时，用量面板说明原因，继续尝试官方额度与本地日志。
+- 英文界面给 Windows 文件名与路径增加用户内容标记，避免名为「输出」等与界面词条同名的文件被翻译；token 明细中的界面标签仍照常翻译。
+- **Codex 启动参数 `--enable prefer_mxc` 不能无条件下发**：旧版 Codex CLI 不认识该参数，参数被拒后启动直接失败。现在先用 help 探测确认本机 CLI 支持才带上该参数，不支持则按原样启动；不改用户全局配置，通知钩子与独立参数边界不变。
+- **PATH 里的坏 npm 垫片会让 Codex 发现流程整体中断**：解析器遇到损坏的 PATH 条目或 npm 垫片就直接放弃，明明装在桌面应用版本缓存或 `.local\bin` 的 CLI 也被误报为未安装。现在单个来源出错只跳过该来源，按 PATH 优先级继续落到桌面缓存、npm 全局 bin 与本地 bin。
+- **英文界面文件名翻译防护收尾**：侧栏合成标签被误标成用户内容（标记只应保护用户真实数据，属回归），已去掉；标记跳过改为浏览器模式也无条件生效；其余文件名显示面补齐用户内容标记。用户文件名不再被词典翻译，界面标签照常翻译，共享跳过表与词典规则不动；i18n.js 仅新增按标记跳过（标记只在 Windows 产生，POSIX 行为不变）。
+- **验收测试存在“无样本也算过”的漏洞**：打包运行或功能降级时，普查/验收项在根本没采到样本的情况下被计为通过，形成假阳性。现在缺样本即判失败；mutation-proof 的所有权豁免明确指向工作树；PATHEXT 大小写与 Chrome DOM 契约测试固定确定性，不再随环境时过时不过。
+- **文档勘误（本轮文档/清理）**：实现笔记 Dev-4 已作废并标注 SUPERSEDED——不得把 `.fname` 加进共享跳过表（会动到 macOS/Linux），以 Windows 专用用户内容标记方案为准；MXC 段的哈希对改标为「重建前」旧包，发版核验只认「Current packages」一对；`tests/agent-usage.test.js` 的 fixture 修正（POSIX 布局 fixture 显式 POSIX 路径拼接）记为已接受的共享改动、长期保留而非临时改动；删除无人引用的 `public/vendor/purify.min.js`（兑现 2.16.1 计划的承诺）。
 
 ## [2.16.1] - 2026-09-04
 
