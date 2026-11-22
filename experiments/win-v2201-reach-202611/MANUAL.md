@@ -8,8 +8,11 @@ Automated already (re-run any time):
 | 2.20.1 contracts (Linux-runnable) | `node --test experiments/win-v2201-reach-202611/contract.test.js` | 13/13 |
 | Live shells (PowerShell 5.1, cmd, Git Bash) | `node experiments/win-v2201-reach-202611/live-windows.js` | all ok (also reproduces the cmd-metacharacter limit) |
 | Electron campaign (isolated profile) | `$env:NODE_PATH = "E:\pw\node_modules"; node experiments\win-v2201-reach-202611\playwright-electron.js` | 14/14 PASS (incl. English-mode render of the new panels, background `/create`) |
+| Packaged build (after `npm run dist:win`) | `$env:NODE_PATH = "E:\pw\node_modules"; node experiments\win-v2201-reach-202611\packaged-smoke.js` (optional exe path argument; the portable stub can't be driven by Playwright) | 6/6 PASS on `dist\win-unpacked` built from `4a825c6`; portable checked by hand: backend, asar-read launchers, hook file OK |
 | Earlier campaigns | `node --test experiments/win-v2170-usage-202610/contract-bridge.test.js experiments/win-v2170-usage-202610/contract-i18n.test.js`, `node experiments/win-v2161-hooks-202609/contract.test.js`, `node experiments/win-v213-images-202608/contract.test.js` | 67 / 100 / 106 pass |
 | Parity scanner | `$env:PARITY_BASE = "v2.20.1"; node experiments/winport-parity-202607/verify.js` | exit 0, no CHK |
+
+**Manual result (2026-11-22):** the user ran this checklist against the 2.20.1 build from `4a825c6`; all steps passed.
 
 Start the dev app from the repo root with `npm run app`. Claude Code steps need a logged-in `claude` (`claude` → `/login`).
 
