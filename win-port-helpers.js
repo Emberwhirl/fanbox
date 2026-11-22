@@ -720,6 +720,11 @@ function buildCodexSpawnSpec(opts) {
 //   script and a .cmd side by side). Pure ASCII with CRLF, because cmd reads batch files in the OEM code page;
 //   %~dp0 and %FANBOX_EXE% are expanded by cmd as UTF-16, so CJK paths are safe.
 // - fanbox-notify (no extension): found by Git Bash, which Claude Code's Bash tool uses on Windows. LF only.
+// Console code page: FanBox's exe is a GUI-subsystem program, so as Node it has no TTY stdout (isTTY undefined,
+// fstat(1) throws) and writes raw UTF-8 bytes into an inherited console handle, which the console decodes with its
+// OEM code page (Chinese notes became mojibake in both PowerShell and Git Bash, seen in the 2.20.1 campaign). Both
+// launchers switch the console to UTF-8 (65001) for the call and restore the previous code page afterwards; the
+// number is the last token / the digits of chcp's output in every locale. Pipes (agents' tool calls) are unaffected.
 function buildFanboxNotifyCmd() {
   return [
     '@echo off',
@@ -729,9 +734,18 @@ function buildFanboxNotifyCmd() {
     '  echo fanbox-notify: not inside a FanBox terminal, nothing sent 1>&2',
     '  exit /b 1',
     ')',
+    'rem FanBox writes UTF-8: switch the console code page for the call, restore it afterwards',
+    'set "FB_CP="',
+    'set "FB_LINE="',
+    "for /f \"tokens=*\" %%a in ('chcp 2^>nul') do set \"FB_LINE=%%a\"",
+    'if defined FB_LINE for %%b in (%FB_LINE%) do set "FB_CP=%%b"',
+    'if defined FB_CP set "FB_CP=%FB_CP:.=%"',
+    'if defined FB_CP chcp 65001 >nul 2>&1',
     'set ELECTRON_RUN_AS_NODE=1',
     '"%FANBOX_EXE%" "%~dp0fanbox-notify.cjs" %*',
-    'exit /b %ERRORLEVEL%',
+    'set FB_RC=%ERRORLEVEL%',
+    'if defined FB_CP chcp %FB_CP% >nul 2>&1',
+    'exit /b %FB_RC%',
     '',
   ].join('\r\n');
 }
@@ -741,7 +755,14 @@ function buildFanboxNotifySh() {
     '#!/bin/sh',
     '# FanBox 启动时生成（Windows / Git Bash）。用法：fanbox-notify "要说的话"，或者 命令 | fanbox-notify',
     '[ -n "$FANBOX_EXE" ] || { echo "fanbox-notify：不在 FanBox 的终端里，没有发" >&2; exit 1; }',
-    'ELECTRON_RUN_AS_NODE=1 exec "$FANBOX_EXE" "$0.cjs" "$@"',
+    '# FanBox 输出 UTF-8：输出到控制台时临时把代码页切到 65001，跑完切回',
+    "cp=''",
+    "if [ -t 1 ]; then cp=$(chcp.com 2>/dev/null | tr -dc '0-9'); fi",
+    '[ -n "$cp" ] && chcp.com 65001 >/dev/null 2>&1',
+    'ELECTRON_RUN_AS_NODE=1 "$FANBOX_EXE" "$0.cjs" "$@"',
+    'rc=$?',
+    '[ -n "$cp" ] && chcp.com "$cp" >/dev/null 2>&1',
+    'exit $rc',
     '',
   ].join('\n');
 }

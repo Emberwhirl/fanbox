@@ -83,7 +83,14 @@ test('fanbox-notify.cmd: ASCII, CRLF, no paths or user data, runs the .cjs besid
   assert.ok(c.includes('if not defined FANBOX_EXE ('));
   assert.ok(c.includes('set ELECTRON_RUN_AS_NODE=1'));
   assert.ok(c.includes('"%FANBOX_EXE%" "%~dp0fanbox-notify.cjs" %*'));
-  assert.ok(c.includes('exit /b %ERRORLEVEL%'));
+  assert.ok(c.includes('set FB_RC=%ERRORLEVEL%') && c.includes('exit /b %FB_RC%'), 'exit code of the .cjs is kept');
+  // console code page: switched to UTF-8 only when chcp was readable, restored afterwards, around the one call
+  const lines = c.split('\r\n');
+  const at = (t) => lines.findIndex((l) => l.includes(t));
+  assert.ok(at("('chcp 2^>nul')") > 0 && at('chcp 65001') > at("('chcp 2^>nul')"), 'reads the code page before switching');
+  assert.ok(at('chcp 65001') < at('"%FANBOX_EXE%"') && at('chcp %FB_CP%') > at('"%FANBOX_EXE%"'), 'switch before, restore after');
+  assert.equal(lines[at('chcp 65001')], 'if defined FB_CP chcp 65001 >nul 2>&1');
+  assert.equal(lines[at('chcp %FB_CP%')], 'if defined FB_CP chcp %FB_CP% >nul 2>&1');
   assert.ok(!/[A-Za-z]:\\/.test(c) && !c.includes('FANBOX_CTL_TOKEN'), 'no absolute path, no token reference');
 });
 
@@ -92,7 +99,11 @@ test('fanbox-notify (sh): LF, Git Bash launcher of the same .cjs', () => {
   assert.ok(s.startsWith('#!/bin/sh\n'));
   assert.ok(!s.includes('\r'), 'LF only');
   assert.ok(s.includes('[ -n "$FANBOX_EXE" ] ||'));
-  assert.ok(s.includes('ELECTRON_RUN_AS_NODE=1 exec "$FANBOX_EXE" "$0.cjs" "$@"'));
+  assert.ok(s.includes('ELECTRON_RUN_AS_NODE=1 "$FANBOX_EXE" "$0.cjs" "$@"\nrc=$?\n'), 'runs the .cjs and keeps its exit code');
+  assert.ok(s.includes("if [ -t 1 ]; then cp=$(chcp.com 2>/dev/null | tr -dc '0-9'); fi"), 'reads the code page only for a console');
+  const run = s.indexOf('ELECTRON_RUN_AS_NODE=1 "$FANBOX_EXE"');
+  assert.ok(s.indexOf('chcp.com 65001') > 0 && s.indexOf('chcp.com 65001') < run && s.indexOf('chcp.com "$cp"') > run, 'switch before, restore after');
+  assert.ok(s.trimEnd().endsWith('exit $rc'));
   assert.ok(!s.includes('FANBOX_CTL_TOKEN'), 'token stays out of the command line');
 });
 
