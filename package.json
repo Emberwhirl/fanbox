@@ -8,6 +8,7 @@
   "main": "electron/main.js",
   "scripts": {
     "test": "node --test tests/*.test.js",
+    "test:win": "node --require ./experiments/win-v2201-reach-202611/home-shim.cjs --test tests/*.test.js",
     "start": "node server.js",
     "app": "electron .",
     "rebuild": "electron-rebuild -f -w node-pty",
