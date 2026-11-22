@@ -281,6 +281,12 @@ kbd {
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
 }
 #btn-terminal:hover, #btn-terminal.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+/* 面板收着、有终端在等你：按钮右上角红点（展开时指挥台和标签已经在喊，不重复） */
+#btn-terminal { position: relative; }
+#btn-terminal.need:not(.active)::after {
+  content: ''; position: absolute; top: -3px; right: -3px; width: 8px; height: 8px; border-radius: 50%;
+  background: #d9534f; box-shadow: 0 0 0 2px var(--bg-2, var(--bg));
+}
 
 #content { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
 #file-area { padding: 12px 16px 40px; flex: 1; } /* 撑满 #content 高度：文件下方空白也算文件夹内，拖拽存盘不再"下半截无效" */
@@ -1202,6 +1208,11 @@ kbd {
 .agents-pop .ap-ic svg, .agents-pop .ap-ic img { width: 15px; height: 15px; display: block; }
 .agents-pop .ap-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agents-pop .ap-flag { font-size: 11px; color: var(--yellow); cursor: copy; flex: none; }
+.agents-pop .ap-feishu { display: flex; flex-direction: column; gap: 6px; padding: 2px 12px 10px; }
+.agents-pop .ap-feishu input { font: inherit; font-size: 12px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); min-width: 0; }
+.agents-pop .ap-feishu-act { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--yellow); }
+.agents-pop .ap-feishu-act button { font: inherit; font-size: 12px; padding: 4px 10px; border: 1px solid var(--accent); border-radius: 6px; background: transparent; color: var(--accent); cursor: pointer; flex: none; }
+.agents-pop .ap-feishu-act button:disabled { opacity: .5; cursor: default; }
 .agents-pop .ap-foot { padding: 8px 12px; font-size: 11px; color: var(--text-dim); border-top: 1px solid var(--border); line-height: 1.7; }
 
 #xterm-host { flex: 1; position: relative; min-height: 0; overflow: hidden; background: var(--bg); }
@@ -1485,9 +1496,14 @@ body { transition: background-color 0.28s ease, color 0.28s ease; }
 .tr-agent svg, .tr-agent img { width: 12px; height: 12px; }
 .tr-name { flex: none; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
 .tr-st { flex: none; }
+.tr-wait { flex: none; color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .tr-tag { flex: none; padding: 0 5px; border-radius: 99px; font-size: 10px; line-height: 15px; color: var(--accent-ink); background: var(--accent); }
 .tr-say { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-faint); }
 .tr-files { flex: none; color: var(--text-dim); }
+/* 就地回复：平时收成一小格，点进去才展开，不抢「它说了什么」的位置 */
+.tr-reply { flex: 0 1 150px; min-width: 90px; height: 17px; padding: 0 6px; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; outline: none; cursor: text; }
+.tr-reply::placeholder { color: var(--text-faint); }
+.tr-reply:focus { flex-basis: 420px; border-color: var(--accent); }
 [data-theme="editorial"] .tr-row.active { border-left-width: 3px; }
 
 /* 用量详情沿用侧栏配色，可用键盘展开，不挤占常驻面板。 */

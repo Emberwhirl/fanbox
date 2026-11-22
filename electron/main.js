@@ -5,7 +5,7 @@
  * 复用零依赖后端 server.js（文件能力），叠加 node-pty 内嵌终端，
  * 让 TUI coding agent（Claude Code / Codex / Aider…）在界面里直接跑起来。
  */
-const { app, BrowserWindow, ipcMain, shell, nativeImage, Menu, clipboard, dialog, net, session, systemPreferences, utilityProcess, powerSaveBlocker } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, nativeImage, Menu, clipboard, dialog, net, session, systemPreferences, utilityProcess, powerSaveBlocker, powerMonitor } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -44,12 +44,24 @@ const termWaiters = new Map(); // id -> Set<fn(text)>，wait 的增量输出订�
 // id -> { agent, sessionId, state, since, lastEventAt, hooked:true, changed: Map(path -> {n, lastAt, tool}) }
 // agent 官方 hooks 报来的事实（见 writeHookFiles / agentEvent）。有这条记录的终端，忙闲不再刮终端文本
 const termFacts = new Map();
+const agentState = require('../lib/agent-state');
+const autoResume = require('../lib/auto-resume');
+const resumeFacts = new Map(); // id -> 这个终端当前这次故障的续跑记录（见 autoResumeTick）
+const relay = require('../lib/relay');
+const notify = require('../lib/notify'); // 叫人：终端里的 agent 给用户发消息（见 agentNotify）
+const relayLog = relay.createLog(); // 窗口互通的内存日志：各窗口里你的原话、agent 改的文件（见 agentRelay）。不落盘
+const relaySeqs = new Map(); // id -> 这个窗口收到第几条了。跟窗口走不跟会话走：同一个窗口里重开 claude，接着上次的收
+const agentSentAt = new Map(); // id -> [{ text, at }]：别的 agent 经 /send 发进这个窗口的话（留最近 10 条、10 分钟）。那不是你说的，不当成你的话转告
+const sentByAgent = (id, text, now) => (agentSentAt.get(id) || []).some((x) => now - x.at < 600000 && x.text === String(text || '').trim());
+let relayOnCache = null;
+const relayOn = () => (relayOnCache === null ? (relayOnCache = readConfig().relay !== false) : relayOnCache);
 
 // ---------- Agent 官方 hooks：让 claude/codex 自己汇报「在干活 / 等确认 / 干完了」，取代刮终端文本 ----------
 // 启动时把两份静态文件写到 ~/.fanbox/hooks/：claude 走 `--settings 文件` 叠加（不动用户自己的
 // ~/.claude/settings.json），codex 走 `-c notify=[脚本]`。命令里的 $FANBOX_* 由 pty 环境展开，
 // 所以文件内容对所有终端相同。--noproxy：用户开着系统代理时 curl 127.0.0.1 会被拦掉（实测）。
 const HOOKS_DIR = () => path.join(os.homedir(), '.fanbox', 'hooks');
+const BIN_DIR = () => path.join(os.homedir(), '.fanbox', 'bin'); // 终端 PATH 里多出来的一个目录：fanbox-notify
 const HOOK_CURL = `curl -s --noproxy '*' -m 3 -X POST "$FANBOX_CTL/event" -H "x-fanbox-token: $FANBOX_CTL_TOKEN" -H "x-fanbox-term: $FANBOX_TERM_ID" -H 'content-type: application/json' --data-binary`;
 let winStatusLineBridge = null;
 function writeHookFiles() {
@@ -98,6 +110,12 @@ function writeHookFiles() {
     const hooks = {};
     for (const ev of ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'Notification', 'Stop', 'SubagentStop', 'SessionEnd']) hooks[ev] = on('*');
     hooks.PostToolUse = on('Edit|Write|MultiEdit|NotebookEdit|Bash');
+    // 窗口互通：这一条是同步的（要把返回的内容送进 agent 的上下文），只挂在你发话和工具跑完两处；
+    // 没有要送的就返回空、agent 无感；2 秒超时，FanBox 没开着也只是空转一下。-f：这份钩子文件是各版本共用的，
+    // 旧版 FanBox 没有这个接口会回一段报错 JSON，不能让它进 agent 的上下文
+    const relayHook = { type: 'command', command: `${HOOK_CURL.replace('/event"', '/relay"').replace('-m 3', '-f -m 2')} @- 2>/dev/null || true`, timeout: 4 };
+    hooks.UserPromptSubmit[0].hooks.push(relayHook);
+    hooks.PostToolUse[0].hooks.push(relayHook);
     fs.copyFileSync(path.join(__dirname, '..', 'lib', 'claude-statusline.cjs'), path.join(dir, 'claude-statusline.cjs'));
     const quote = (s) => "'" + s.replace(/'/g, "'\\''") + "'";
     const command = process.platform === 'win32'
@@ -113,6 +131,16 @@ function writeHookFiles() {
       'for last; do :; done',
       `[ -n "$FANBOX_CTL" ] && ${HOOK_CURL} "$last" >/dev/null 2>&1`,
       orig.length ? `exec ${orig.map(q).join(' ')} "$@"` : 'exit 0', ''].join('\n');
+    // fanbox-notify：任何终端里的 agent（或一条普通命令）叫人用的。内容走表单编码，不用在 shell 里拼 JSON
+    const binDir = BIN_DIR();
+    fs.mkdirSync(binDir, { recursive: true });
+    const nsh = ['#!/bin/sh', '# FanBox 启动时生成。用法：fanbox-notify "要说的话"，或者 命令 | fanbox-notify',
+      '[ -n "$FANBOX_CTL" ] || { echo "fanbox-notify：不在 FanBox 的终端里，没有发" >&2; exit 1; }',
+      'if [ $# -gt 0 ]; then text="$*"; else text=$(cat); fi',
+      `out=$(printf '%s' "$text" | curl -s --noproxy '*' -m 5 -X POST "$FANBOX_CTL/notify" -H "x-fanbox-token: $FANBOX_CTL_TOKEN" -H "x-fanbox-term: $FANBOX_TERM_ID" --data-urlencode text@-) || { echo "fanbox-notify：连不上 FanBox，没有发" >&2; exit 1; }`,
+      'printf \'%s\\n\' "$out"', 'case "$out" in *\'"ok":true\'*) exit 0;; *) exit 2;; esac', ''].join('\n');
+    fs.writeFileSync(path.join(binDir, 'fanbox-notify'), nsh);
+    fs.chmodSync(path.join(binDir, 'fanbox-notify'), 0o755);
     const shPath = path.join(dir, 'codex-notify.sh');
     fs.writeFileSync(shPath, sh);
     fs.chmodSync(shPath, 0o755);
@@ -302,6 +330,9 @@ app.whenReady().then(async () => {
     if (IS_WIN) winPtyChildMap().catch(() => null).then(refreshLidGuard);
     else refreshLidGuard();
   }, 30000);
+  setInterval(settleAgentStates, 30000);
+  setInterval(waitingWatch, 30000);
+  setInterval(autoResumeTick, 20000);
   buildMenu();
   try {
     const m = Menu.getApplicationMenu();
@@ -309,8 +340,8 @@ app.whenReady().then(async () => {
     console.log('[lid] 视图 子菜单 =', view ? JSON.stringify(view.submenu.items.map((x) => x.label || `<${x.type}>`)) : '没找到视图菜单');
   } catch (e) { console.log('[lid] dump menu 出错:', e.message); }
   createWindow();
-  // 临时调试：dev 实例强制抢到最前，避免和正式版搞混
-  setTimeout(() => { try { app.focus({ steal: true }); if (win && !win.isDestroyed()) { win.show(); win.focus(); win.setAlwaysOnTop(true); setTimeout(() => win.setAlwaysOnTop(false), 1500); } } catch { /* */ } }, 1200);
+  // 临时调试：dev 实例强制抢到最前，避免和正式版搞混。只限开发实例——正式版若跟着抢，开机自启 / 更新后重启时会把你正在打字的窗口夺走
+  if (!app.isPackaged) setTimeout(() => { try { app.focus({ steal: true }); if (win && !win.isDestroyed()) { win.show(); win.focus(); win.setAlwaysOnTop(true); setTimeout(() => win.setAlwaysOnTop(false), 1500); } } catch { /* */ } }, 1200);
   startShotWatch();
   // 启动 6 秒后查一次新版本（不挡启动）；长开会话每 2 小时再查；
   // 窗口重新聚焦也顺手查（30 分钟节流）——否则发版当天老 app 要等满周期才知道有新版
@@ -722,6 +753,33 @@ ipcMain.handle('win:badge', (e, { text }) => {
   if (process.platform !== 'darwin' || !app.dock) return;
   try { app.dock.setBadge(String(text || '')); } catch { /* */ }
 });
+
+// 系统通知闸门：macOS 上 FanBox 第一次发通知时，要不要问「允许通知」由系统决定——agent 收工 / 等确认多半发生在你没看着的时候，
+// 不能让授权框在后台突然冒出来。只有系统里已登记过 FanBox 的通知设置（允许、拒绝都算，之后不会再问），
+// 或你在设置面板亲手开过，才发系统通知；否则提醒只留在应用内（提示音、指挥台、Dock 角标、终端按钮红点）。只读登记，不碰系统设置
+let ncCache = { t: 0, v: false };
+function notifyRegistered() {
+  if (process.platform !== 'darwin') return Promise.resolve(true);
+  if (Date.now() - ncCache.t < 60000) return Promise.resolve(ncCache.v);
+  let id = '';
+  try { id = (fs.readFileSync(path.join(path.dirname(process.execPath), '..', 'Info.plist'), 'utf8').match(/<key>CFBundleIdentifier<\/key>\s*<string>([^<]+)<\/string>/) || [])[1] || ''; } catch { /* */ }
+  return new Promise((resolve) => require('child_process').execFile('/usr/bin/defaults', ['export', 'com.apple.ncprefs', '-'], { timeout: 3000, maxBuffer: 16 << 20 }, (err, out) => {
+    const v = !err && !!id && new RegExp(`<key>bundle-id</key>\\s*<string>${id.replace(/\./g, '\\.')}</string>`).test(String(out));
+    ncCache = { t: Date.now(), v }; resolve(v);
+  }));
+}
+ipcMain.handle('notify:state', async () => {
+  const pref = readConfig().systemNotify; // true = 亲手开过，false = 亲手关了，undefined = 没表过态
+  const registered = await notifyRegistered();
+  return { on: pref === false ? false : (pref === true || registered), pref: typeof pref === 'boolean' ? pref : null, registered };
+});
+ipcMain.handle('notify:set', (e, { on } = {}) => { writeConfig({ systemNotify: !!on }); return { ok: true }; });
+// 断线自动续跑：默认开，设置里可关（~/.fanbox/config.json 的 autoResume）
+ipcMain.handle('resume:state', () => ({ on: readConfig().autoResume !== false }));
+// 窗口互通：默认开，设置里可关（~/.fanbox/config.json 的 relay）。关掉时连已经记下的话一起清掉
+ipcMain.handle('relay:state', () => ({ on: relayOn() }));
+ipcMain.handle('relay:set', (e, { on } = {}) => { writeConfig({ relay: !!on }); relayOnCache = !!on; if (!on) relayLog.items.length = 0; return { ok: true }; });
+ipcMain.handle('resume:set', (e, { on } = {}) => { writeConfig({ autoResume: !!on }); if (!on) resumeFacts.clear(); return { ok: true }; });
 
 // 预览全屏时藏掉左上角红黄绿系统按钮——它和右侧自家关闭图标太像，容易让人误点
 ipcMain.handle('win:traffic', (e, { show }) => {
@@ -1246,6 +1304,7 @@ ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme, shell, agent, extr
     // 终端里的 agent 天生知道自己是几号窗口、控制接口在哪、门票是啥——skill 零配置（见 docs/12）
     FANBOX_TERM_ID: id, FANBOX_CTL: `http://127.0.0.1:${PORT}/api/agent`, FANBOX_CTL_TOKEN: AGENT_TOKEN,
   };
+  if (process.platform !== 'win32') env.PATH = (env.PATH || '/usr/bin:/bin') + ':' + BIN_DIR();
   // D3: never force LANG on win32 (Git/MSYS follow OS display language). POSIX keeps master fallback.
   if (!IS_WIN && !/UTF-8/i.test(env.LC_ALL || env.LC_CTYPE || env.LANG || '')) env.LANG = 'zh_CN.UTF-8';
   if (IS_WIN) {
@@ -1304,6 +1363,7 @@ ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme, shell, agent, extr
     termFacts.delete(id);
     termCwds.delete(id);
     termAgentKind.delete(id);
+    resumeFacts.delete(id);
     refreshLidGuard(); // 最后一个终端退出即恢复休眠
     recStop(id);
     if (win && !win.isDestroyed()) win.webContents.send('pty:exit', { id, exitCode });
@@ -1513,7 +1573,7 @@ async function agentList() {
   return { ok: true, terminals: arr };
 }
 // 官方 hook 事件入口（/api/agent/event → RPC → 这里）。claude 看 hook_event_name，codex 看 type。
-// 状态机：SessionStart/UserPromptSubmit/PreToolUse → working；Notification permission_prompt → needs_permission；
+// 状态机（claude 部分在 lib/agent-state.js）：SessionStart/UserPromptSubmit/PreToolUse → working；Notification permission_prompt → needs_permission；
 // idle_prompt / agent_needs_input → needs_input；Stop / agent_completed → done；SessionEnd → ended（事实随即清掉，
 // 裸 shell 回到旧判据）；codex 的 *turn-complete → done，其他 → working。每个事件都广播给渲染层。
 function agentEvent(termId, body) {
@@ -1526,21 +1586,17 @@ function agentEvent(termId, body) {
   const now = Date.now();
   let f = termFacts.get(id);
   if (!f) termFacts.set(id, f = { agent: kind, sessionId: '', state: 'working', since: now, lastEventAt: now, hooked: true, changed: new Map() });
+  if (!relaySeqs.has(id)) relaySeqs.set(id, relayLog.seq); // 这个窗口第一次有会话：从当下算起，不翻旧账
   let event, state = f.state, file = '';
   if (kind === 'claude') {
     f.agent = 'claude'; event = b.hook_event_name;
     if (b.session_id) f.sessionId = String(b.session_id);
-    if (event === 'SessionStart' || event === 'UserPromptSubmit' || event === 'PreToolUse' || event === 'SubagentStop') state = 'working';
-    else if (event === 'Stop') state = 'done';
-    else if (event === 'SessionEnd') state = 'ended';
-    else if (event === 'Notification') {
-      const nt = String(b.notification_type || '');
-      if (nt === 'permission_prompt') state = 'needs_permission';
-      else if (nt === 'idle_prompt' || nt === 'agent_needs_input') state = 'needs_input';
-      else if (nt === 'agent_completed') state = 'done';
-      event += ':' + nt;
-    } else if (event === 'PostToolUse') {
-      state = 'working';
+    if (typeof b.transcript_path === 'string' && !b.agent_id) f.transcript = b.transcript_path; // 对账用，见 settleAgentStates
+    ({ state, event } = agentState.claudeNext(f, b, now));
+    if (typeof b.cwd === 'string' && !b.agent_id && !f.cwd) f.cwd = b.cwd; // 只记会话起点的目录：agent 中途 cd 到子目录，还是同一个项目
+    const byAgent = sentByAgent(id, b.prompt, now);
+    if (b.hook_event_name === 'UserPromptSubmit' && !byAgent && relayOn() && relay.worthSaying(b.prompt)) relay.record(relayLog, 'said', id, { cwd: f.cwd, text: String(b.prompt) }, now);
+    if (b.hook_event_name === 'PostToolUse') {
       const tool = String(b.tool_name || '');
       const p = b.tool_input && (b.tool_input.file_path || b.tool_input.notebook_path);
       if (tool !== 'Bash' && typeof p === 'string' && p) { // Bash 不记文件：改了什么它自己也说不清
@@ -1549,20 +1605,129 @@ function agentEvent(termId, body) {
         c.n++; c.lastAt = now; c.tool = tool;
         if (!f.changed.has(p) && f.changed.size >= 500) f.changed.delete(f.changed.keys().next().value);
         f.changed.set(p, c);
+        if (relayOn()) relay.record(relayLog, 'edit', id, { cwd: f.cwd, file: p }, now);
       }
     }
   } else {
     f.agent = 'codex'; event = b.type;
     if (b['thread-id']) f.sessionId = String(b['thread-id']);
     state = /turn-(complete|ended)/.test(event) ? 'done' : 'working';
+    // codex 没有能往上下文里送东西的钩子，只能当「说话的一方」：回合结束时把你这回合说的话记下，送给别的窗口
+    if (typeof b.cwd === 'string' && !f.cwd) f.cwd = b.cwd;
+    const said = Array.isArray(b['input-messages']) ? b['input-messages'][b['input-messages'].length - 1] : '';
+    if (state === 'done' && relayOn() && !sentByAgent(id, said, now) && relay.worthSaying(said)) relay.record(relayLog, 'said', id, { cwd: f.cwd, text: String(said) }, now);
   }
   const changed = state !== f.state;
   if (changed) f.since = now;
+  if (changed && (state === 'done' || state === 'needs_input')) f.restAt = now;
   f.state = state; f.lastEventAt = now;
   if (win && !win.isDestroyed()) win.webContents.send('agent:event', { id, state, event, file: file || undefined, agent: f.agent });
   if (state === 'ended') termFacts.delete(id);
   if (changed) refreshLidGuard(); // 收工/开工立刻结算电源守卫，不等 30s 轮询
   return { ok: true, id, state };
+}
+// 窗口互通（/api/agent/relay，claude 的同步钩子调这里）：把别的窗口里跟这个窗口有关的新情况交给它。
+// 有关 = 同一个目录（家目录除外）的窗口里你说的话、别的窗口改了这个窗口也改过的文件。
+// 每个窗口各记一个读到哪了的序号，送过的不再送；子代理不送；窗口第一次有会话时从当下算起，不翻旧账
+function agentRelay(termId, body) {
+  const id = String(termId || ''), b = body && typeof body === 'object' ? body : {};
+  const f = termFacts.get(id);
+  if (!f || b.agent_id || typeof b.hook_event_name !== 'string') return { ok: true, out: '' };
+  const now = Date.now();
+  let text = '';
+  if (relayOn()) {
+    const got = relay.collect(relayLog, id, { cwd: f.cwd || '', files: new Set(f.changed.keys()), home: os.homedir() }, relaySeqs.get(id) || 0, now);
+    relaySeqs.set(id, got.seq);
+    text = relay.format(got, (t) => { const o = termFacts.get(t); return ((o && o.cwd && path.basename(o.cwd)) || '终端') + ' ' + t; }, now);
+    if (text && win && !win.isDestroyed()) win.webContents.send('agent:relay', { id, said: got.said.length, edits: got.edits.length, from: [...new Set([...got.said, ...got.edits].map((x) => x.term))] });
+  }
+  // 叫人：连了微信或飞书、值守开着时，每个会话第一次发话告诉它一次有 fanbox-notify、什么时候该用
+  if (b.hook_event_name === 'UserPromptSubmit' && notifyBriefed.get(id) !== (b.session_id || '') && wechatInited && wechatBridge.alwaysOn && wechatBridge.canNotify()) {
+    notifyBriefed.set(id, b.session_id || '');
+    text = [text, notify.BRIEF].filter(Boolean).join('\n\n');
+  }
+  return { ok: true, out: relay.hookOutput(b.hook_event_name, text) };
+}
+// 叫人（/api/agent/notify，终端里的 fanbox-notify 调这里）：某个窗口里的 agent 或一条命令要给用户发消息。
+// 人在电脑前（2 分钟内有键鼠输入）只在界面上提示；不在才进发件箱发到手机。判断在 lib/notify.js
+const notifyBriefed = new Map(); // 终端 id -> 已经告诉过的会话 id
+const notifyLast = new Map();    // 终端 id -> { at, text }：挡重复和写错的循环；waitingWatch 也看它，免得同一件事叫两次
+function agentNotify(termId, body) {
+  const id = String(termId || ''), text = notify.clean(body && body.text);
+  ensureWechat();
+  let idleS = 0;
+  try { idleS = fakeIdle() ?? powerMonitor.getSystemIdleTime(); } catch { /* 读不到当作在电脑前 */ }
+  const now = Date.now();
+  const d = notify.decide(text, { on: wechatBridge.alwaysOn, channel: wechatBridge.canNotify(), idleS, last: notifyLast.get(id) }, now);
+  const f = termFacts.get(id);
+  const name = (f && f.cwd && path.basename(f.cwd)) || '终端';
+  if (d.action === 'desktop' || d.action === 'phone') notifyLast.set(id, { at: now, text });
+  if (d.action === 'desktop' && win && !win.isDestroyed()) win.webContents.send('agent:notify', { id, text, to: 'desktop' });
+  if (d.action === 'phone') {
+    wechatBridge.notify(notify.label(text, id, name), { from: 'notify', term: id });
+    if (win && !win.isDestroyed()) win.webContents.send('agent:notify', { id, text, to: 'phone' });
+  }
+  return { ok: d.action !== 'reject', delivered: d.action, why: d.why, note: d.note };
+}
+// 测试用：非打包环境下，FANBOX_FAKE_IDLE 指向的文件里写着的秒数顶替系统空闲时间（系统的读数没法在测试里摆布）
+function fakeIdle() {
+  if (app.isPackaged || !process.env.FANBOX_FAKE_IDLE) return undefined;
+  try { return Number(fs.readFileSync(process.env.FANBOX_FAKE_IDLE, 'utf8')) || 0; } catch { return undefined; }
+}
+// 对账：状态停在 working、90 秒没有任何事件、会话日志却说回合早就结束了——把它改回 done。
+// 钩子事件会丢、会乱序、以后还可能多出新的事件种类；只靠事件，错一次就一直错到用户下次发话
+function settleAgentStates() {
+  const now = Date.now();
+  let any = false;
+  for (const [id, f] of termFacts) {
+    if (!agentState.shouldSettle(f, now)) continue;
+    f.state = 'done'; f.since = now; any = true; // 不记 restAt：那 3 秒窗口只为 Stop 之后迟到的事件留，对账之后来的工具事件是真的又开工了
+    if (win && !win.isDestroyed()) win.webContents.send('agent:event', { id, state: 'done', event: 'reconcile', agent: f.agent });
+  }
+  if (any) refreshLidGuard();
+}
+// 常驻值守的事件来源之一：某个窗口的 agent 停下来等你满 10 分钟，而你不在电脑前（系统 5 分钟没有键鼠输入）
+// → 给微信那头的常驻 agent 送一个事件，由它决定要不要在微信上叫你。人在电脑前时不送：指挥台和通知已经在提醒了。
+// 同一次等待只送一次（key 带上进入这个状态的时刻）
+const WAIT_NOTIFY_MS = 10 * 60000, AWAY_IDLE_S = 300;
+function waitingWatch() {
+  if (!terminals.size) return;
+  ensureWechat(); // 只连了飞书的人没打开过微信面板，这里也要能送出去
+  let idle = 0;
+  try { idle = fakeIdle() ?? powerMonitor.getSystemIdleTime(); } catch { return; }
+  if (idle < AWAY_IDLE_S) return;
+  const now = Date.now();
+  for (const [id, f] of termFacts) {
+    if ((f.state !== 'needs_input' && f.state !== 'needs_permission') || now - f.since < WAIT_NOTIFY_MS) continue;
+    const nl = notifyLast.get(id);
+    if (nl && nl.at > f.since - 5 * 60000) continue; // 它停下来前后自己已经用 fanbox-notify 说过了
+    wechatBridge.event('term_waiting', `wait:${id}:${f.since}`, { id, name: (f.cwd && path.basename(f.cwd)) || id, state: f.state, minutes: Math.round((now - f.since) / 60000), tail: (termTails.get(id) || '').slice(-600) });
+  }
+}
+// 断线自动续跑：claude 因为断网、休眠、超时、过载停在半路时替人敲「继续」。判据和退避在 lib/auto-resume.js：
+// 只认瞬时故障；额度用完、要重新登录只提醒；屏幕 10 秒内还在动、输入框里有字都不插手；1/5/15 分钟退避，三次不行交给人
+function autoResumeTick() {
+  if (readConfig().autoResume === false) return;
+  const now = Date.now();
+  for (const [id, p] of terminals) {
+    const f = termFacts.get(id);
+    if (!(f ? f.agent === 'claude' : /^claude/i.test((p && p.process) || ''))) { resumeFacts.delete(id); continue; }
+    if (now - (termLastOut.get(id) || 0) < 10000) continue;
+    const { kind, evidence } = autoResume.classify((termBufs.get(id) || '').split('\n').slice(-60).join('\n'));
+    if (kind === 'ok' || kind === 'empty') { resumeFacts.delete(id); continue; }
+    let e = resumeFacts.get(id);
+    if (!e) resumeFacts.set(id, e = {});
+    const d = autoResume.decide(e, kind, evidence, now);
+    if (!d) continue;
+    if (d.action === 'send') {
+      // 字和回车分两次写：一次写进去 TUI 会当成粘贴，只落在输入框里不提交
+      try { p.write('继续'); recEvent(id, 'i', '继续\r'); setTimeout(() => { try { p.write('\r'); } catch { /* 终端刚好退了 */ } }, 300); }
+      catch { continue; }
+    }
+    if (win && !win.isDestroyed()) win.webContents.send('agent:resume', { id, action: d.action, attempt: d.attempt, evidence });
+    // 续不上、或者是不代办的故障（额度、登录）：交给常驻 agent，它会在微信上告诉你
+    if (d.action !== 'send' && wechatInited) wechatBridge.event('resume_failed', `resume:${id}:${d.action}:${String(evidence).slice(0, 80)}`, { id, name: (f && f.cwd && path.basename(f.cwd)) || id, action: d.action, evidence });
+  }
 }
 function agentRead(id, lines) {
   if (!terminals.has(id)) return { ok: false, error: 'no such terminal' };
@@ -1576,7 +1741,7 @@ function agentSend(id, text, opts = {}) {
   if (opts.paste) t = '\x1b[200~' + t + '\x1b[201~'; // bracketed paste：多行文本整块进 TUI，不被逐行提交
   else t = t.replace(/\r\n|\n/g, '\r'); // 换行 → 回车才会真正提交
   if (opts.submit !== false && !/\r$/.test(t)) t += '\r';
-  try { p.write(t); recEvent(id, 'i', t); agentTouch(id, 'send'); return { ok: true }; }
+  try { p.write(t); recEvent(id, 'i', t); agentTouch(id, 'send'); agentSentAt.set(id, [...(agentSentAt.get(id) || []).slice(-9), { text: String(text == null ? '' : text).trim(), at: Date.now() }]); return { ok: true }; }
   catch (e) { return { ok: false, error: String(e && e.message || e) }; }
 }
 function agentCreate(opts = {}) {
@@ -1677,7 +1842,7 @@ function agentKill(id) {
   catch (e) { return { ok: false, error: String(e && e.message || e) }; }
 }
 // server.js 在子进程里经 RPC 桥调这组能力（见 startBackendServer）；token 走 fork env
-const agentImpl = { list: agentList, read: agentRead, send: agentSend, create: agentCreate, wait: agentWait, kill: agentKill, event: agentEvent };
+const agentImpl = { list: agentList, read: agentRead, send: agentSend, create: agentCreate, wait: agentWait, kill: agentKill, event: agentEvent, relay: agentRelay, notify: agentNotify };
 
 // ---------- 录制文件管理 IPC ----------
 // 列表：读每个 .cast 的头行拿元信息 + 文件大小/时长（末事件时间），按新→旧。失败的文件跳过不报错。
@@ -1997,6 +2162,9 @@ function ensureWechat() {
 ipcMain.handle('wechat:env', async () => { ensureWechat(); return wechatBridge.env(); });
 ipcMain.handle('wechat:setTarget', (e, { target } = {}) => { ensureWechat(); return wechatBridge.setTarget(target); });
 ipcMain.handle('wechat:setCwd', (e, { dir } = {}) => { ensureWechat(); return wechatBridge.setCwd(dir); });
+ipcMain.handle('wechat:alwaysOn', (e, { on } = {}) => { ensureWechat(); return typeof on === 'boolean' ? wechatBridge.setAlwaysOn(on) : { ok: true, alwaysOn: wechatBridge.alwaysOn, connected: wechatBridge.isConnected() }; });
+ipcMain.handle('reach:state', () => { ensureWechat(); return wechatBridge.channelState(); });
+ipcMain.handle('reach:setFeishu', (e, { url, secret } = {}) => { ensureWechat(); return wechatBridge.setFeishu(url, secret); });
 ipcMain.handle('wechat:setPersona', (e, { persona } = {}) => { ensureWechat(); return wechatBridge.setPersona(persona); });
 ipcMain.handle('wechat:send', async (e, { text } = {}) => { ensureWechat(); return wechatBridge.sendDesktop(text); });
 ipcMain.handle('wechat:conversation', (e, { id } = {}) => { ensureWechat(); return wechatBridge.conversation(id); });

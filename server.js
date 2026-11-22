@@ -3505,6 +3505,17 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/agent/kill' && req.method === 'POST') { const b = await readBody(req); return sendJSON(res, 200, await A.kill(b.id)); }
       // agent 官方 hook 事件：body 是 claude hook / codex notify 的 JSON 原样，终端 id 走 x-fanbox-term 头（hook 命令里 $FANBOX_TERM_ID 展开）
       if (p === '/api/agent/usage' && req.method === 'POST') return sendJSON(res, 200, acceptClaudeLimits(await readBody(req)));
+      if (p === '/api/agent/relay' && req.method === 'POST') { // 返回的就是钩子的标准输出：空 = 没有要送的
+        const r = await A.relay(String(req.headers['x-fanbox-term'] || ''), await readBody(req));
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end((r && r.out) || '');
+      }
+      if (p === '/api/agent/notify' && req.method === 'POST') { // fanbox-notify 发的是表单编码（shell 里不用拼 JSON），也收 JSON
+        let raw = ''; for await (const c of req) { raw += c; if (raw.length > 65536) break; }
+        let text = '';
+        if (/json/i.test(req.headers['content-type'] || '')) { try { text = JSON.parse(raw).text; } catch { /* 当空 */ } } else text = new URLSearchParams(raw).get('text');
+        return sendJSON(res, 200, await A.notify(String(req.headers['x-fanbox-term'] || ''), { text: typeof text === 'string' ? text : '' }));
+      }
       if (p === '/api/agent/event' && req.method === 'POST') { const b = await readBody(req); return sendJSON(res, 200, await A.event(String(req.headers['x-fanbox-term'] || ''), b)); }
       return sendJSON(res, 404, { ok: false, error: 'unknown agent endpoint' });
     }

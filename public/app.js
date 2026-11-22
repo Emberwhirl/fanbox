@@ -3070,7 +3070,7 @@ const wechatView = {
 };
 
 // ---------- coding agent 启动按钮（#38：内置注册表 + 设置面板开关 + config 自定义） ----------
-// 三层：① AGENT_REGISTRY 内置 11 个主流 agent（图标在 /assets/agents/）
+// 三层：① AGENT_REGISTRY 内置 11 个主流 agent（只收有终端 CLI 形态的）（图标在 /assets/agents/）
 //      ② 设置面板（⚙ 滑杆按钮）勾选启用哪些，存 config.json 的 enabledAgents，默认 claude + codex
 //      ③ config.json 的 agents 数组做高级自定义：同 id 覆盖内置命令，新 id 追加按钮
 // app: true 的是桌面应用（无终端 CLI 形态，官方确认），按钮改为 open -a / Start-Process 拉起，检测走 open -Ra
@@ -3084,15 +3084,17 @@ const CODEX_HOOKS = window.fanboxEnv ? ' -c "notify=[\\"$HOME/.fanbox/hooks/code
 const AGENT_REGISTRY = [
   { id: 'claude', label: 'Claude Code', cmd: 'claude --dangerously-skip-permissions' + CLAUDE_HOOKS, bin: 'claude', install: 'npm install -g @anthropic-ai/claude-code', sessions: { badge: 'C', resumeCmd: 'claude --dangerously-skip-permissions' + CLAUDE_HOOKS + ' --resume {id}' } },
   { id: 'codex', label: 'Codex', cmd: 'codex' + CODEX_HOOKS, bin: 'codex', install: 'npm install -g @openai/codex', sessions: { badge: '>_', resumeCmd: 'codex' + CODEX_HOOKS + ' resume {id}' } },
+  // DeepSeek Harness：官方启动器 dsh 按 profile 起应用，终端界面是 tui 这个 profile（目前由社区插件提供，装哪个都走同一条命令）。
+  // 用 npx 而不是裸 dsh：没全局装也能起，也不会被用户自己给 dsh 起的 shell 别名带偏
+  { id: 'dsh', label: 'DeepSeek Harness', cmd: 'npx -y @deepseek-ai/dsh --profile tui', bin: 'npx', install: 'npx -y @deepseek-ai/dsh plugin --profile tui add @dsh-tui/dsh-tui （终端界面是社区插件，也可换别的 tui 插件）' },
   { id: 'hermes', label: 'Hermes Agent', cmd: 'hermes', bin: 'hermes', install: 'curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash' },
   { id: 'openclaw', label: 'OpenClaw', cmd: 'openclaw', bin: 'openclaw', install: 'npm install -g openclaw' },
   { id: 'kimi', label: 'Kimi Code', cmd: 'kimi', bin: 'kimi', install: 'curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash', sessions: { badge: 'K', resumeCmd: 'kimi -S {id}' } },
-  { id: 'zcode', label: 'ZCode', cmd: 'open -a ZCode', app: 'ZCode', install: isWindows() ? 'https://zcode.z.ai （桌面应用，官网下载）' : 'https://zcode.z.ai （桌面应用，官网下载 dmg）' },
+  { id: 'zcode', label: 'ZCode', cmd: 'zcode', bin: 'zcode', install: 'https://github.com/zai-org/ZCode （命令行版从官方仓库构建，装好后有 zcode 命令；桌面版不带终端界面）' },
   { id: 'opencode', label: 'opencode', cmd: 'opencode', bin: 'opencode', install: 'curl -fsSL https://opencode.ai/install | bash', sessions: { badge: 'oc', resumeCmd: 'opencode -s {id}' } },
 
   { id: 'pi', label: 'pi', cmd: 'pi', bin: 'pi', install: 'curl -fsSL https://pi.dev/install.sh | sh' },
   { id: 'codebuddy', label: 'CodeBuddy', cmd: 'codebuddy', bin: 'codebuddy', install: 'npm install -g @tencent-ai/codebuddy-code' },
-  { id: 'workbuddy', label: 'WorkBuddy', cmd: 'open -a WorkBuddy', app: 'WorkBuddy', install: 'https://codebuddy.cn/work （桌面应用，官网下载）' },
   { id: 'qoder', label: 'Qoder CLI', cmd: 'qodercli', bin: 'qodercli', install: 'curl -fsSL https://qoder.com/install | bash' },
 ];
 // 按平台解析 agent 启动命令（终端里可敲的那种）
@@ -3205,6 +3207,17 @@ async function renderAgentButtons() {
   }
 }
 
+// 系统通知该不该发：桌面版问 main 的 macOS 闸门；网页版看浏览器授权 + 本机开关。{ on, pref: true|false|null }
+async function notifyState() {
+  if (typeof Notification === 'undefined') return { on: false, pref: false };
+  if (window.fanboxWin && window.fanboxWin.notifyState) {
+    const st = await window.fanboxWin.notifyState().catch(() => null);
+    return st && Notification.permission === 'granted' ? st : { on: false, pref: st ? st.pref : null };
+  }
+  let off = null; try { off = localStorage.getItem('fb_notify_off'); } catch { /* */ }
+  return { on: off !== '1' && Notification.permission === 'granted', pref: off === '1' ? false : (Notification.permission === 'default' ? null : true) };
+}
+
 // 设置面板：勾选即生效；未安装的显示「未装」，点它复制安装命令
 const agentsPop = {
   el: null, which: null,
@@ -3227,6 +3240,36 @@ const agentsPop = {
         <input type="checkbox" ${(() => { try { return localStorage.getItem('fanbox.noWebgl') === '1' ? '' : 'checked'; } catch { return 'checked'; } })()}>
         <span class="ap-name">WebGL 加速渲染</span>
       </label>
+      <div class="ap-head ap-sub">提醒</div>
+      <label class="ap-row" data-notify title="agent 收工或等你确认、而你没看着它时发系统通知。首次开启时系统可能问你是否允许——只会在你点这里时问，不会在后台突然弹">
+        <input type="checkbox" disabled>
+        <span class="ap-name">系统通知</span>
+        <span class="ap-flag" data-notify-flag></span>
+      </label>
+      <label class="ap-row" data-resume style="display:none" title="Claude Code 因为断网、电脑休眠、超时、服务过载停在半路时，替你敲一句「继续」。等 1、5、15 分钟各试一次，三次不行就不再试；额度用完、要重新登录这类只提醒不代办；输入框里有你打了一半的字时不动">
+        <input type="checkbox">
+        <span class="ap-name">断线自动续跑</span>
+        <span class="ap-flag" data-resume-flag></span>
+      </label>
+      <label class="ap-row" data-relay style="display:none" title="你在一个窗口里对 agent 说的话，会转给同一个项目目录下的其他 Claude Code 窗口（家目录下开的窗口之间不转）；一个窗口改了另一个窗口也改过的文件，也会告诉后者。FanBox 自己不存盘、不上传；转过去的话会进入收到它的那个会话。Codex 窗口里说的话能转出去，但它自己收不到">
+        <input type="checkbox">
+        <span class="ap-name">窗口互通</span>
+        <span class="ap-flag" data-relay-flag></span>
+      </label>
+      <label class="ap-row" data-always style="display:none" title="连了微信或飞书时生效。终端里的 agent 需要你、而你不在电脑前时，会发消息到你手机：它自己可以叫你（fanbox-notify），某个窗口停下来等你满 10 分钟、断线续不上时 FanBox 也会叫你。连着微信遥控时，由微信那头的 agent 先看一眼、值得才说，你回一句它替你转进对应窗口。你在电脑前时只在界面上提示。夜里 23 点到早上 8 点不发，两条之间至少隔 10 分钟">
+        <input type="checkbox">
+        <span class="ap-name">离开时叫我</span>
+        <span class="ap-flag" data-always-flag></span>
+      </label>
+      <div class="ap-row" data-feishu style="display:none" title="把消息发到一个飞书群：群设置 › 群机器人 › 添加机器人 › 自定义机器人，复制 webhook 地址贴进来。只能发、不能在飞书里回话；微信遥控连着时优先发微信，微信发不出去才走飞书">
+        <span class="ap-name">飞书</span>
+        <span class="ap-flag" data-feishu-flag></span>
+      </div>
+      <div class="ap-feishu" data-feishu-form hidden>
+        <input type="text" data-feishu-url placeholder="群机器人的 webhook 地址" spellcheck="false">
+        <input type="text" data-feishu-secret placeholder="签名密钥（没开签名校验就留空）" spellcheck="false">
+        <div class="ap-feishu-act"><button data-feishu-save>连接并发一条试试</button><span data-feishu-msg></span></div>
+      </div>
       <div class="ap-head ap-sub">Agent 互控</div>
       <div class="ap-row" title="装进 ~/.claude/skills 后，翻箱终端里的 claude 就能指挥兄弟窗口：新开窗口 / 读输出 / 发指令 / 等结果">
         <span class="ap-name">fanbox-agent skill</span>
@@ -3243,6 +3286,10 @@ const agentsPop = {
     this.markSkill(pop);
     const wgCb = pop.querySelector('[data-webgl] input');
     if (wgCb) wgCb.onchange = () => { term.setWebgl(wgCb.checked); toast(wgCb.checked ? 'WebGL 渲染已开启' : '已切换兼容渲染（修中文乱码）'); };
+    this.markNotify(pop);
+    this.markResume(pop);
+    this.markRelay(pop);
+    this.markAlways(pop);
     pop.querySelectorAll('.ap-list .ap-row input').forEach((cb) => {
       cb.onchange = async () => {
         const ids = [...pop.querySelectorAll('.ap-list .ap-row input:checked')].map((x) => x.closest('.ap-row').dataset.id);
@@ -3253,6 +3300,85 @@ const agentsPop = {
     });
     this._out = (ev) => { if (!pop.contains(ev.target) && !$('#agent-config').contains(ev.target)) this.close(); };
     document.addEventListener('mousedown', this._out, true);
+  },
+  // 「离开时叫我」开关和飞书连接（只有桌面版有）。没连任何通道时标出来，开着也不会有动作
+  async markAlways(pop) {
+    const row = pop.querySelector('[data-always]'), fw = window.fanboxWin;
+    if (!row || !fw || !fw.reachState) return;
+    const cb = row.querySelector('input'), flag = row.querySelector('[data-always-flag]');
+    const frow = pop.querySelector('[data-feishu]'), fflag = pop.querySelector('[data-feishu-flag]'), form = pop.querySelector('[data-feishu-form]');
+    const url = form.querySelector('[data-feishu-url]'), secret = form.querySelector('[data-feishu-secret]'), msg = form.querySelector('[data-feishu-msg]'), save = form.querySelector('[data-feishu-save]');
+    let st = await fw.reachState().catch(() => null);
+    if (!st) return;
+    const mark = () => {
+      flag.textContent = !cb.checked ? '已关' : st.wechat ? (st.feishu ? '微信＋飞书' : '微信') : st.feishu ? '飞书' : '未连微信或飞书';
+      fflag.textContent = st.feishu ? '已连 · 断开' : '连接';
+    };
+    row.style.display = ''; frow.style.display = ''; cb.checked = st.alwaysOn; mark();
+    cb.onchange = async () => {
+      await fw.alwaysOnSet(cb.checked).catch(() => {});
+      mark();
+      reachBar.refresh();
+      toast(cb.checked ? '离开时叫我：已开' : '离开时叫我：已关，agent 不会再主动往你手机发消息');
+    };
+    frow.onclick = async () => {
+      if (st.feishu) { st = (await fw.feishuSet('', '').catch(() => null)) || st; mark(); toast('飞书已断开'); return; }
+      form.hidden = !form.hidden; if (!form.hidden) url.focus();
+    };
+    save.onclick = async () => {
+      msg.textContent = '发送中…'; save.disabled = true;
+      const r = await fw.feishuSet(url.value, secret.value).catch((e) => ({ ok: false, error: String(e && e.message || e) }));
+      save.disabled = false;
+      if (!r || !r.ok) { msg.textContent = (r && r.error) || '没连上'; return; }
+      st = r; url.value = ''; secret.value = ''; msg.textContent = ''; form.hidden = true; mark();
+      toast('飞书已连上，群里应该收到了一条消息');
+    };
+  },
+  // 窗口互通开关（只有桌面版有：各窗口的事件都汇在主进程）
+  async markRelay(pop) {
+    const row = pop.querySelector('[data-relay]');
+    if (!row || !window.fanboxWin || !window.fanboxWin.relayState) return;
+    const cb = row.querySelector('input'), flag = row.querySelector('[data-relay-flag]');
+    const st = await window.fanboxWin.relayState().catch(() => ({ on: true }));
+    row.style.display = ''; cb.checked = st.on; flag.textContent = st.on ? '' : '已关';
+    cb.onchange = async () => {
+      await window.fanboxWin.relaySet(cb.checked).catch(() => {});
+      flag.textContent = cb.checked ? '' : '已关';
+      toast(cb.checked ? '窗口互通已开' : '窗口互通已关，各窗口不再互相转告');
+    };
+  },
+  // 断线自动续跑开关（只有桌面版有：续跑由主进程盯终端输出来做）
+  async markResume(pop) {
+    const row = pop.querySelector('[data-resume]');
+    if (!row || !window.fanboxWin || !window.fanboxWin.autoResumeState) return;
+    const cb = row.querySelector('input'), flag = row.querySelector('[data-resume-flag]');
+    const st = await window.fanboxWin.autoResumeState().catch(() => ({ on: true }));
+    row.style.display = ''; cb.checked = st.on; flag.textContent = st.on ? '' : '已关';
+    cb.onchange = async () => {
+      await window.fanboxWin.autoResumeSet(cb.checked).catch(() => {});
+      flag.textContent = cb.checked ? '' : '已关';
+      toast(cb.checked ? '断线自动续跑已开' : '断线自动续跑已关，断线后要你自己敲「继续」');
+    };
+  },
+  // 系统通知开关：只有在这里亲手打开时才可能触发系统 / 浏览器的授权询问，开了立刻发一条测试通知当面验证
+  async markNotify(pop) {
+    const cb = pop.querySelector('[data-notify] input'), flag = pop.querySelector('[data-notify-flag]');
+    if (!cb) return;
+    if (typeof Notification === 'undefined') { flag.textContent = '不可用'; return; }
+    const st = await notifyState();
+    cb.checked = st.on; cb.disabled = false;
+    flag.textContent = st.on ? '' : (st.pref === false ? '已关' : '未开');
+    cb.onchange = async () => {
+      const on = cb.checked;
+      if (window.fanboxWin && window.fanboxWin.notifySet) await window.fanboxWin.notifySet(on).catch(() => {});
+      else try { on ? localStorage.removeItem('fb_notify_off') : localStorage.setItem('fb_notify_off', '1'); } catch { /* */ }
+      flag.textContent = on ? '' : '已关';
+      if (!on) { toast('系统通知已关，提醒只留在应用内（提示音、红点、Dock 角标）'); return; }
+      if (Notification.permission === 'default') await Notification.requestPermission().catch(() => {}); // 你亲手点的，此刻问才合理
+      if (Notification.permission !== 'granted') { cb.checked = false; flag.textContent = '被拒'; toast('浏览器拒绝了通知权限，去站点设置里放行后再开', true); return; }
+      try { new Notification('FanBox 系统通知已开启', { body: 'agent 收工或等你确认、而你没看着时，会这样提醒你' }); } catch { /* */ }
+      toast('已发一条测试通知；没看到就去「系统设置 › 通知」里找 FanBox');
+    };
   },
   // 内置 skill 安装状态：未装 →「安装」可点；装过但内容旧 →「可更新」可点；最新 →「已装 ✓」
   async markSkill(pop) {
@@ -3568,6 +3694,49 @@ const powerBar = {
     return `<b>合盖继续干活</b>
       <p>翻箱盯着每个终端窗口的工作状态。开启后：只要检测到有 agent 正在干活，合上盖子 Mac 也不休眠，任务接着跑；所有终端都空闲约两分钟后，自动恢复正常休眠——不会让 Mac 一直不睡。</p>
       <p class="tip-note">合盖跑任务持续耗电发热，建议接电源。首次开启需输一次管理员密码（装一条仅限电源设置的免密规则）。</p>
+      <p class="tip-state">${escapeHtml(now)}</p>`;
+  },
+};
+
+// ---------- 侧栏「离开时叫我」开关（桌面版专属）----------
+// 和设置面板里的同名开关是同一个状态（reach:state / wechat:alwaysOn），放侧栏是为了出门前一眼看得到。
+// 连微信、连飞书仍在原处：微信 ClawBot 面板、设置面板的飞书一行。
+const reachBar = {
+  st: null,
+  async init() {
+    const fw = window.fanboxWin;
+    if (!fw || !fw.reachState) return; // 浏览器版 / 老 preload：整行不显示
+    await this.refresh();
+    if (!this.st) return;
+    $('#pw-reach').classList.remove('hidden');
+    $('#pw-reach').onclick = () => this.flip();
+    sideHoverCard($('#pw-reach'), () => this.tip());
+    $('#pw-reach').addEventListener('mouseenter', () => this.refresh()); // 通道可能刚在别处连上或断开
+  },
+  async refresh() {
+    const st = await window.fanboxWin.reachState().catch(() => null);
+    if (st) { this.st = st; this.sync(); }
+  },
+  async flip() {
+    const on = !(this.st && this.st.alwaysOn);
+    await window.fanboxWin.alwaysOnSet(on).catch(() => {});
+    await this.refresh();
+    const st = this.st || {};
+    toast(!st.alwaysOn ? '离开时叫我：已关，agent 不会再主动往你手机发消息'
+      : (st.wechat || st.feishu) ? '离开时叫我：已开' : '离开时叫我：已开，但还没连微信或飞书，消息发不出去');
+  },
+  sync() {
+    const st = this.st; const el = $('#pw-reach'); if (!st || !el) return;
+    el.querySelector('.pw-switch').classList.toggle('on', !!st.alwaysOn);
+    el.querySelector('.pw-dot').classList.toggle('lit', !!st.alwaysOn && !!(st.wechat || st.feishu)); // 点亮 = 开着且真有通道能发到手机
+  },
+  tip() {
+    const st = this.st || {};
+    const ch = st.wechat ? (st.feishu ? '微信＋飞书' : '微信') : st.feishu ? '飞书' : '';
+    const now = !st.alwaysOn ? '现在：已关' : ch ? `现在：已开，发到${ch}` : '现在：已开，但还没连微信或飞书，消息发不出去';
+    return `<b>离开时叫我</b>
+      <p>终端里的 agent 需要你、而你不在电脑前时，发消息到你手机：某个窗口停下来等你满 10 分钟、断线续不上，或者 agent 自己叫你（fanbox-notify）。你在电脑前就只在界面上提示。</p>
+      <p class="tip-note">连微信：更多… › 微信 ClawBot。连飞书：终端右上的设置 › 提醒 › 飞书。</p>
       <p class="tip-state">${escapeHtml(now)}</p>`;
   },
 };
@@ -4259,7 +4428,8 @@ const term = {
       }
     } catch { /* 取不到就保持原标题 */ }
   },
-  async newTab(cwdOverride, shellOverride, spawnSpec) {
+  // background：agent 遥控新开（见文末 onCreate）——不切走当前标签、不抢输入焦点，用户正在打字/语音输入的字不会落进新终端
+  async newTab(cwdOverride, shellOverride, spawnSpec, { background = false } = {}) {
     const startDir = cwdOverride || state.cwd;
     const id = 't' + (++this.seq);
     const host = document.createElement('div');
@@ -4305,7 +4475,8 @@ const term = {
     if (fit) try { fit.fit(); } catch { /* */ }
     const sess = { id, xterm, fit, host, webgl: wg, dead: false, status: 'idle', unread: false, startDir, title: baseOf(startDir || '') || 'shell' };
     this.sessions.push(sess);
-    this.activate(id);
+    if (background && this.sessions.some((x) => x.id === this.active)) host.classList.remove('show'); // 已有前台标签：新标签留在后台
+    else this.activate(id, { focus: !background }); // 首个标签总得有人当前台，但后台开的不拿焦点
     updateWatches(); // 新终端的项目目录也纳入监听
     const r = await window.fanboxPty.spawn({ id, cwd: startDir, cols: xterm.cols, rows: xterm.rows, theme: state.theme, shell: shellOverride || undefined, agent: isWindows() && spawnSpec && spawnSpec.agent || undefined, extraArgs: isWindows() && spawnSpec && spawnSpec.extraArgs || undefined });
     if (!r.ok) { sess.dead = true; xterm.write('\r\n  \x1b[31m终端启动失败：' + (r.error || '') + '\x1b[0m\r\n'); }
@@ -4317,8 +4488,24 @@ const term = {
     xterm.onResize(({ cols, rows }) => { sess.lastInput = Date.now(); window.fanboxPty.resize(id, cols, rows); }); // resize 引发的 TUI 重绘不算 agent 干活
     window.fanboxPty.resize(id, xterm.cols, xterm.rows); // spawn 等待期间 fit 过的 resize 事件无人监听会丢：补发一次对齐 PTY
 
+    // #66 豆包等输入法的中文标点不走组合（keyCode 不是 229）：xterm 在 keydown 就按键位发出英文 , . 并拦下默认行为，
+    // 输入法真正给出的「，。」随之被吞。标点键照 xterm 对 A-Z 的老办法放到 keypress 再发——它带的就是输入法给的字符；
+    // 多字符标点（……——）走 input 事件由下面接住；两样都没来（keyup 时还悬着）就按键位补发，保证不丢字
+    let punct = null;
+    host.addEventListener('input', (ev) => {
+      if (!punct || ev.inputType !== 'insertText' || !ev.data || ev.isComposing) return;
+      punct = null;
+      ev.stopPropagation(); // xterm 自己的 input 处理在 keydown 未抬起时本就不收，这里接手，免得两边都发
+      try { ev.target.value = ''; } catch { /* */ }
+      this.input(id, ev.data);
+    }, true);
     // 自定义键盘处理：⌘C 有选中文本则复制，否则发 SIGINT；⌘V 粘贴；⌘+/⌘-/⌘0 字体缩放
     xterm.attachCustomKeyEventHandler((e) => {
+      if (e.type === 'keydown') {
+        punct = null;
+        if (!e.metaKey && !e.ctrlKey && !e.altKey && !e.isComposing && e.keyCode !== 229 && e.key.length === 1 && /[^\p{L}\p{N}\s]/u.test(e.key)) { punct = e.key; return false; }
+      } else if (e.type === 'keypress') punct = null;
+      else if (e.type === 'keyup' && punct) { const k = punct; punct = null; this.input(id, k); }
       const cmd = e.metaKey || e.ctrlKey;
       if (cmd && (e.key === 'c' || e.key === 'C')) {
         if (xterm.hasSelection()) {
@@ -4528,7 +4715,7 @@ const term = {
     if (!r.ok) { sess.dead = true; sess.xterm.write('\x1b[31m重开失败：' + (r.error || '') + '\x1b[0m\r\n'); }
     else sess.cwd = r.cwd || sess.startDir;
   },
-  activate(id) {
+  activate(id, { focus = true } = {}) {
     this.active = id;
     this.sessions.forEach((s) => s.host.classList.toggle('show', s.id === id));
     const cur = this.sessions.find((x) => x.id === id);
@@ -4537,7 +4724,7 @@ const term = {
     const s = this.sessions.find((x) => x.id === id);
     if (s) {
       this.fitActive();
-      setTimeout(() => s.xterm.focus(), 0);
+      if (focus) setTimeout(() => s.xterm.focus(), 0);
       // 延迟刷新标题（避开双击窗口：双击的第二下若撞上 renderTabs 重建会丢 dblclick 事件）
       setTimeout(() => this.refreshCwd(s), 600);
     }
@@ -4707,6 +4894,7 @@ const term = {
     s.status = 'idle';
     this.renderTabs();
     this.refreshCwd(s);
+    if (event === 'reconcile') return; // 主进程对账纠正的状态：回合早就结束、当时已经提醒过，不再响一次
     if (state === 'needs_permission') {
       this.awaitGlow();
       playChime('ask');
@@ -4719,6 +4907,30 @@ const term = {
       playChime('done');
       if (!document.hasFocus() || s.id !== this.active) this.notify(s, 'agent 任务完成 · ' + (s.title || 'shell'), this.lastReplyExcerpt(s) || (s.title || 'shell') + ' 已空闲');
     }
+  },
+  // 主进程把别的窗口的新情况转给了这个窗口：说一声，让人知道 agent 的上下文里多了什么
+  // 某个窗口的 agent 用 fanbox-notify 叫你：你在电脑前就在这里说，不在就已经发去手机了
+  onAgentNotify({ id, text, to }) {
+    const s = this.sessions.find((x) => x.id === id);
+    const who = s ? (s.title || 'shell') : id;
+    toast(to === 'phone' ? `「${who}」给你手机发了一条：${text.slice(0, 60)}` : `「${who}」叫你：${text.slice(0, 120)}`);
+  },
+  onAgentRelay({ id, said, edits, from }) {
+    const s = this.sessions.find((x) => x.id === id);
+    if (!s) return;
+    const names = (from || []).map((t) => { const o = this.sessions.find((x) => x.id === t); return o ? (o.title || 'shell') : t; }).join('、');
+    const what = [said ? `你说的 ${said} 句话` : '', edits ? `agent 的 ${edits} 处文件改动` : ''].filter(Boolean).join('、');
+    toast(`已把「${names}」里${what}转告给「${s.title || 'shell'}」`);
+  },
+  // 主进程替你敲了「继续」，或者碰上它不代办的故障：说一声，不在场也留一条系统通知
+  onAgentResume({ id, action, attempt, evidence }) {
+    const s = this.sessions.find((x) => x.id === id);
+    if (!s) return;
+    const name = s.title || 'shell', why = String(evidence || '').replace(/^API Error:\s*/, '').slice(0, 80);
+    const msg = action === 'send' ? `${name} 断线了，已替你敲「继续」（第 ${attempt} 次）`
+      : action === 'give_up' ? `${name} 续了 3 次还是断，交给你了` : `${name} 停住了，需要你处理`;
+    toast(msg + (why ? ' · ' + why : ''), action !== 'send');
+    if (action !== 'send' && (!document.hasFocus() || s.id !== this.active)) this.notify(s, msg, why || name);
   },
   ensureStatusTick() {
     if (this._statusTimer) return;
@@ -4770,20 +4982,23 @@ const term = {
     const text = lines.slice(-3).join(' ').replace(/\s+/g, ' ').trim();
     return text.length > maxLen ? text.slice(0, maxLen) + '…' : text;
   },
-  notify(s, title, body) {
+  // 授权框只该由你亲手点出来：后台事件里不 requestPermission，桌面版再过 main 的 macOS 闸门（notify:state）。
+  // 发不了也不丢：提示音、指挥台、Dock 角标、终端按钮红点照常在；没表过态的话本会话提一次去哪开
+  async notify(s, title, body) {
     try {
       if (typeof Notification === 'undefined') return;
-      const fire = () => {
-        const n = new Notification(title, { body });
-        // 点通知：app 拉回前台 + 切到对应终端标签——多项目并行时直达要操作的那个环境
-        n.onclick = () => {
-          try { if (window.fanboxWin) window.fanboxWin.focus(); else window.focus(); } catch { /* */ }
-          if (s && this.sessions.includes(s)) { this.open(); this.activate(s.id); }
-          try { n.close(); } catch { /* */ }
-        };
+      const st = await notifyState();
+      if (!st.on) {
+        if (st.pref === null && !this._notifyHinted && document.hasFocus()) { this._notifyHinted = true; toast('系统通知没开：提醒挂在「终端」红点和 Dock 角标上，可在 agent 按钮旁的滑杆设置里开启'); }
+        return;
+      }
+      const n = new Notification(title, { body });
+      // 点通知：app 拉回前台 + 切到对应终端标签——多项目并行时直达要操作的那个环境
+      n.onclick = () => {
+        try { if (window.fanboxWin) window.fanboxWin.focus(); else window.focus(); } catch { /* */ }
+        if (s && this.sessions.includes(s)) { this.open(); this.activate(s.id); }
+        try { n.close(); } catch { /* */ }
       };
-      if (Notification.permission === 'granted') fire();
-      else if (Notification.permission !== 'denied') Notification.requestPermission().then((p) => { if (p === 'granted') fire(); });
     } catch { /* 通知不可用就算了 */ }
   },
   renderTabs() {
@@ -4850,6 +5065,8 @@ const roster = {
     if (st === 'idle' && s._rState === 'working' && !seen && (s.hooked || Date.now() - (s.busyStart || 0) > 4000)) s._fresh = true;
     if (st !== 'idle' || seen) s._fresh = false;
     s._rState = st;
+    // 从什么时候开始等你的：排队和「等了多久」都看它
+    if (!this.tier(s, st)) s._needSince = 0; else if (!s._needSince) s._needSince = Date.now();
   },
   // 需要你的优先级：等你确认 > 等你输入 > 刚完成未看；0 = 不需要
   tier(s, st) { return st === 'ask' ? 1 : st === 'input' ? 2 : (st === 'idle' && s._fresh) ? 3 : 0; },
@@ -4865,14 +5082,27 @@ const roster = {
   },
   changed(s) { return state.changeLog.filter((c) => c.termId === s.id).length; },
   say(s, st) { return st === 'dead' ? '' : escapeHtml(term.lastReplyExcerpt(s, 90)); },
+  // 就地回复：agent 说完话在等你（等你输入 / 刚完成）时，不用切过去，在这一行里回一句就行。
+  // 等你确认的不给——那是在批一条具体命令，得看着终端批
+  canReply(s, st) { return !!s.hooked && (st === 'input' || (st === 'idle' && s._fresh)); },
+  reply(s, el) {
+    const text = el.value.trim();
+    if (!text) return;
+    s._reply = ''; el.value = ''; el.blur();
+    term.input(s.id, text);
+    setTimeout(() => term.input(s.id, '\r'), 300); // 字和回车分两次发：一次发 TUI 会当成粘贴，只落在输入框里不提交
+    toast('已发给 ' + (s.title || 'shell'));
+  },
   rowHtml(s, st) {
     const hue = term.hueOf(s.cwd || s.startDir);
     const icon = s.agent ? this.agentIcon(s.agent) : ic('term', `hsl(${hue} 62% 48%)`, 12);
     const fresh = st === 'idle' && s._fresh ? '<span class="tr-tag">刚完成</span>' : '';
     const n = this.changed(s);
+    const mins = Math.floor((Date.now() - (s._needSince || Date.now())) / 60000);
+    const wait = mins >= 1 ? `<span class="tr-wait" title="从它停下来等你算起">等了 ${mins >= 60 ? Math.floor(mins / 60) + ' 小时' + (mins % 60 ? ' ' + mins % 60 + ' 分' : '') : mins + ' 分钟'}</span>` : '';
     return `<div class="tr-row st-${st}${s.id === term.active ? ' active' : ''}" data-id="${s.id}" title="点击切到该标签">
       <span class="tr-shape" title="${this.LABEL[st]}">${this.SHAPE[st]}</span><span class="tr-agent">${icon}</span><span class="tr-name"${isWindows() && s.title ? ' data-fanbox-user-content' : ''}>${escapeHtml(s.title || 'shell')}</span>
-      <span class="tr-st">${this.LABEL[st]}</span>${fresh}<span class="tr-say">${this.say(s, st)}</span><span class="tr-files"${n ? ` title="本回合改动 ${n} 个文件"` : ''}>${n ? n + ' 文件' : ''}</span></div>`;
+      <span class="tr-st">${this.LABEL[st]}</span>${fresh}${wait}<span class="tr-say" title="${st === 'dead' ? '' : escapeHtml(term.lastReplyExcerpt(s, 600))}">${this.say(s, st)}</span>${this.canReply(s, st) ? `<input class="tr-reply" placeholder="回一句，回车发送" spellcheck="false" value="${escapeHtml(s._reply || '')}">` : ''}<span class="tr-files"${n ? ` title="本回合改动 ${n} 个文件"` : ''}>${n ? n + ' 文件' : ''}</span></div>`;
   },
   render() {
     const box = $('#term-roster'); if (!box) return;
@@ -4880,14 +5110,31 @@ const roster = {
     // Dock 角标：几个会话在等你。不看指挥台显不显示——一个会话在等你也该亮
     const need = list.filter((x) => this.tier(x.s, x.st)).length;
     if (need !== this._badge && window.fanboxWin && window.fanboxWin.setBadge) { this._badge = need; window.fanboxWin.setBadge(need ? String(need) : ''); }
+    $('#btn-terminal').classList.toggle('need', need > 0); // 面板收着时指挥台和呼吸边都看不见：红点挂在「终端」按钮上，点开即处理
     list.some((x) => x.st === 'working') ? this.startTick() : this.stopTick(); // 有人干活就每秒刷标签上的已跑时长
-    const rows = list.filter((x) => this.tier(x.s, x.st));
+    // 排队：等你确认的在前，同一档里等得最久的在前——最上面那行就是下一个该处理的
+    const rows = list.filter((x) => this.tier(x.s, x.st)).sort((a, b) => this.tier(a.s, a.st) - this.tier(b.s, b.st) || a.s._needSince - b.s._needSince);
+    if (rows.length && !this._waitTick) this._waitTick = setInterval(() => { if (!box.matches(':hover')) this.render(); }, 60000); // 「等了多久」每分钟走一格
+    else if (!rows.length && this._waitTick) { clearInterval(this._waitTick); this._waitTick = null; }
+    // 正在回复框里打字时不重画：重画会打断输入法，也会丢光标。等离开输入框再补画
+    if (document.activeElement && document.activeElement.classList.contains('tr-reply') && box.contains(document.activeElement)) { this._stale = true; return; }
     const show = list.length >= 2 && rows.length > 0;
     box.classList.toggle('hidden', !show);
     if (!show) box.innerHTML = '';
     else {
       box.innerHTML = rows.map(({ s, st }) => this.rowHtml(s, st)).join('');
-      box.querySelectorAll('.tr-row').forEach((el) => { el.onclick = () => term.activate(el.dataset.id); });
+      box.querySelectorAll('.tr-row').forEach((el) => {
+        el.onclick = (ev) => { if (!ev.target.classList.contains('tr-reply')) term.activate(el.dataset.id); };
+        const inp = el.querySelector('.tr-reply'), s = term.sessions.find((x) => x.id === el.dataset.id);
+        if (!inp || !s) return;
+        inp.oninput = () => { s._reply = inp.value; };
+        inp.onkeydown = (ev) => {
+          ev.stopPropagation(); // 别让全局快捷键吃掉
+          if (ev.key === 'Enter' && !ev.isComposing && ev.keyCode !== 229) { ev.preventDefault(); this.reply(s, inp); }
+          else if (ev.key === 'Escape') inp.blur();
+        };
+        inp.onblur = () => { if (this._stale) { this._stale = false; this.render(); } };
+      });
     }
     const h = show ? box.offsetHeight : 0;
     if (h !== this._h) { this._h = h; term.fitActive(); } // 条的高度变了（出现/消失/行数变）xterm 得重新量行数
@@ -4906,7 +5153,7 @@ const roster = {
   stopTick() { clearInterval(this._tick); this._tick = null; },
   // ⌘⌥L：跳到下一个需要你的会话。按优先级排好队，从当前所在位置往后循环，没有就说一声
   next() {
-    const list = term.sessions.map((s) => ({ s, t: this.tier(s, this.stateOf(s)) })).filter((x) => x.t).sort((a, b) => a.t - b.t);
+    const list = term.sessions.map((s) => ({ s, t: this.tier(s, this.stateOf(s)) })).filter((x) => x.t).sort((a, b) => a.t - b.t || a.s._needSince - b.s._needSince);
     if (!list.length) { toast('没有在等你的'); return; }
     const i = list.findIndex((x) => x.s.id === term.active);
     const pick = list[(i + 1) % list.length].s;
@@ -6487,6 +6734,7 @@ async function init() {
   if (!state.cwd) await navigate(state.home, false);
   renderRootsActive(); // 列表可能比侧栏先到，这时侧栏还没东西可高亮，补一次
   powerBar.init();
+  reachBar.init();
   verInfo.init();
   cronPanel.syncBadge();
   loadAgentProjects();
@@ -6578,9 +6826,12 @@ window.fbWebgl = (on) => { term.setWebgl(!!on); console.log('[fanbox] WebGL ' + 
 if (window.fanboxAgentCtl) {
   window.fanboxAgentCtl.onCreate(async ({ reqId, cwd, shell, agent, extraArgs }) => {
     try {
-      if ($('#terminal-panel').classList.contains('hidden')) term.open();
+      // 后台开：不弹开收起的终端面板、不切标签、不抢焦点（可能正在别处打字或语音输入）。
+      // 面板收着时只留一句提示；它之后等你确认，终端按钮红点 + Dock 角标会喊你
+      const hidden = $('#terminal-panel').classList.contains('hidden');
       const spec = agent ? { agent, extraArgs: extraArgs || [] } : undefined;
-      const sess = await term.newTab(cwd || undefined, shell || undefined, spec);
+      const sess = await term.newTab(cwd || undefined, shell || undefined, spec, { background: true });
+      if (hidden && sess) toast(`agent 在后台新开了终端「${sess.title}」，点「终端」查看`);
       window.fanboxAgentCtl.created({ reqId, ok: !!(sess && sess.id), id: sess && sess.id });
     } catch (e) { window.fanboxAgentCtl.created({ reqId, ok: false, error: String(e && e.message || e) }); }
   });
@@ -6592,6 +6843,9 @@ if (window.fanboxAgentCtl) {
     setTimeout(() => term.renderTabs(), 8200); // 标记过期后重画抹掉
   });
   if (window.fanboxAgentCtl.onEvent) window.fanboxAgentCtl.onEvent((m) => term.onAgentEvent(m));
+  if (window.fanboxAgentCtl.onResume) window.fanboxAgentCtl.onResume((m) => term.onAgentResume(m));
+  if (window.fanboxAgentCtl.onRelay) window.fanboxAgentCtl.onRelay((m) => term.onAgentRelay(m));
+  if (window.fanboxAgentCtl.onNotify) window.fanboxAgentCtl.onNotify((m) => term.onAgentNotify(m));
 }
 
 init();
