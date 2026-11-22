@@ -6,8 +6,8 @@ Automated already (re-run any time):
 |---|---|---|
 | Upstream tests (Windows-safe) | `npm run test:win` | 82/82 |
 | 2.20.1 contracts (Linux-runnable) | `node --test experiments/win-v2201-reach-202611/contract.test.js` | 13/13 |
-| Live shells (PowerShell 5.1, cmd, Git Bash) | `node experiments/win-v2201-reach-202611/live-windows.js` | all ok |
-| Electron campaign (isolated profile) | `$env:NODE_PATH = "E:\pw\node_modules"; node experiments\win-v2201-reach-202611\playwright-electron.js` | 11/11 PASS |
+| Live shells (PowerShell 5.1, cmd, Git Bash) | `node experiments/win-v2201-reach-202611/live-windows.js` | all ok (also reproduces the cmd-metacharacter limit) |
+| Electron campaign (isolated profile) | `$env:NODE_PATH = "E:\pw\node_modules"; node experiments\win-v2201-reach-202611\playwright-electron.js` | 14/14 PASS (incl. English-mode render of the new panels, background `/create`) |
 | Earlier campaigns | `node --test experiments/win-v2170-usage-202610/contract-bridge.test.js experiments/win-v2170-usage-202610/contract-i18n.test.js`, `node experiments/win-v2161-hooks-202609/contract.test.js`, `node experiments/win-v213-images-202608/contract.test.js` | 67 / 100 / 106 pass |
 | Parity scanner | `$env:PARITY_BASE = "v2.20.1"; node experiments/winport-parity-202607/verify.js` | exit 0, no CHK |
 
@@ -25,7 +25,7 @@ Start the dev app from the repo root with `npm run app`. Claude Code steps need 
 
 6. In a PowerShell tab: `fanbox-notify '测试一下'` → prints `{"ok":false,...,"why":"no_channel","note":"用户没有连微信或飞书…"}` with **readable Chinese**; `$LASTEXITCODE` is 2; `chcp` shows the same code page before and after.
 7. Same in a Git Bash tab (`echo $?` → 2) and in `cmd` (`echo %ERRORLEVEL%` → 2).
-8. Known limit, expected: from PowerShell `fanbox-notify 'a>b'` creates a file named `b` (cmd syntax). Use Git Bash or avoid `& | < > ^ %`.
+8. Known limit, reproduced by `live-windows.js`: from PowerShell `fanbox-notify 'a>b'` creates a file named `b`, and `fanbox-notify 'ok&hostname'` runs `hostname` (cmd re-parses a no-space argument). Use Git Bash or avoid `& | < > ^ %`.
 
 ## C. Feishu (optional, needs a Feishu group bot)
 
@@ -37,6 +37,7 @@ Start the dev app from the repo root with `npm run app`. Claude Code steps need 
 11. Open two one-click Claude Code tabs in the **same project folder** (try one opened with a different-case `cd`). In tab A say "以后这个项目都用 pnpm". In tab B send any prompt: Claude B mentions it noticed the pnpm instruction; FanBox shows a toast "已把「…」里你说的 1 句话转告给「…」".
 12. Two Claude tabs opened in the home folder, or at `C:\`: nothing is relayed between them.
 13. Settings › 窗口互通 off: nothing relayed; on again: words said while off are not replayed.
+13b. Mid-turn relay (PostToolUse): while Claude B is busy editing files, say something new in A; B should mention it before its turn ends (it arrives after B's next tool call).
 
 ## E. 指挥台 / roster
 
@@ -46,7 +47,7 @@ Start the dev app from the repo root with `npm run app`. Claude Code steps need 
 
 ## F. Auto-resume (optional, hard to trigger)
 
-17. Mid-turn in a one-click Claude Code tab, disconnect the network until Claude shows a connection error, reconnect. About a minute later FanBox types `继续` and shows a toast. (A `claude` you type yourself is not tracked on Windows.)
+17. **Unverified on ConPTY — please try.** Mid-turn in a one-click Claude Code tab, disconnect the network until Claude shows a connection error, reconnect. About a minute later FanBox should type `继续` and show a toast. If nothing happens, note it (ConPTY repaints with cursor moves, so the error-line detection may never match; it should never type while you have text in the input box). A `claude` you type yourself is not tracked on Windows.
 
 ## G. WeChat always-on (optional, needs WeChat ClawBot)
 

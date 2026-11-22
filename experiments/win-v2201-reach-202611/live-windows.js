@@ -85,6 +85,36 @@ const ok = (c, name, d) => { console.log((c ? '  ok   ' : '  FAIL ') + name + (c
   const envNo = { ...env }; delete envNo.FANBOX_CTL;
   const c = spawnSync(exe, [path.join(bin, 'fanbox-notify.cjs'), 'x'], { env: { ...envNo, ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8', windowsHide: true });
   ok(c.status === 1 && c.stderr.includes('不在 FanBox 的终端里'), 'outside FanBox -> exit 1', JSON.stringify(c));
+
+  console.log('# pipes through the .cmd (chcp line must not eat stdin)');
+  r = await runP(cmdExe, ['/d', '/c', 'echo hi from cmd pipe| fanbox-notify']);
+  last = got[got.length - 1] || {};
+  ok(r.code === 0 && /^hi from cmd pipe\s*$/.test(last.text || ''), 'cmd: echo | fanbox-notify', JSON.stringify({ r, last }));
+  r = await runP(pwsh, ['-NoProfile', '-Command', "'hi from ps pipe' | fanbox-notify"]);
+  last = got[got.length - 1] || {};
+  ok(r.code === 0 && /^hi from ps pipe\s*$/.test(last.text || ''), 'PowerShell: pipe | fanbox-notify', JSON.stringify({ r, last }));
+
+  // Known limit (documented, not fixable in a .cmd): PowerShell 5.1 passes an argument without whitespace unquoted,
+  // and cmd.exe parses & | < > ^ before the batch runs. These cases RECORD the behaviour; they pass when the limit
+  // reproduces, so a future fix (or a PowerShell change) shows up as a changed result here.
+  console.log('# known limit: cmd metacharacters in a no-space argument from PowerShell');
+  const meta = fs.mkdtempSync(path.join(os.tmpdir(), 'fanbox-v2201-meta-'));
+  const runIn = (file, args) => new Promise((resolve) => {
+    const ch = spawn(file, args, { env, cwd: meta, windowsHide: true });
+    let out = '', err = '';
+    ch.stdout.on('data', (d) => { out += d; }); ch.stderr.on('data', (d) => { err += d; });
+    ch.on('close', (code) => resolve({ code, out, err }));
+    ch.stdin.end('');
+  });
+  r = await runIn(pwsh, ['-NoProfile', '-Command', "fanbox-notify 'a>b'"]);
+  const redirected = fs.existsSync(path.join(meta, 'b'));
+  console.log(`  info  'a>b' from PowerShell: file b created=${redirected}; FanBox got ${JSON.stringify((got[got.length - 1] || {}).text)}`);
+  r = await runIn(pwsh, ['-NoProfile', '-Command', "fanbox-notify 'ok&hostname'"]);
+  const injected = r.out.toLowerCase().includes(os.hostname().toLowerCase());
+  console.log(`  info  'ok&hostname' from PowerShell: second command ran=${injected}; FanBox got ${JSON.stringify((got[got.length - 1] || {}).text)}`);
+  ok(redirected || injected, 'known limit reproduces (cmd parses metacharacters); see MANUAL step 8', JSON.stringify(r));
+  r = await runIn(pwsh, ['-NoProfile', '-Command', "fanbox-notify 'ok & echo SAFE'"]);
+  ok(!/SAFE\r?\n/.test(r.out.replace(/"text"[^,]*/, '')) && (got[got.length - 1] || {}).text === 'ok & echo SAFE', 'with a space PowerShell quotes the argument: no injection', JSON.stringify({ r, last: got[got.length - 1] }));
   srv.close();
   console.log(fails ? `FAILED ${fails}` : 'ALL OK');
   process.exit(fails ? 1 : 0);

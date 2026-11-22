@@ -3376,7 +3376,7 @@ const agentsPop = {
       if (!on) { toast(isWindows() ? '系统通知已关，提醒只留在应用内（提示音、红点、任务栏图标红点）' : '系统通知已关，提醒只留在应用内（提示音、红点、Dock 角标）'); return; }
       if (Notification.permission === 'default') await Notification.requestPermission().catch(() => {}); // 你亲手点的，此刻问才合理
       if (Notification.permission !== 'granted') { cb.checked = false; flag.textContent = '被拒'; toast('浏览器拒绝了通知权限，去站点设置里放行后再开', true); return; }
-      try { new Notification('FanBox 系统通知已开启', { body: 'agent 收工或等你确认、而你没看着时，会这样提醒你' }); } catch { /* */ }
+      try { const tw = (x) => (isWindows() && window.t ? window.t(x) : x); new Notification(tw('FanBox 系统通知已开启'), { body: tw('agent 收工或等你确认、而你没看着时，会这样提醒你') }); } catch { /* */ }
       toast(isWindows() ? '已发一条测试通知；没看到就去 Windows「设置 › 系统 › 通知」里找 FanBox' : '已发一条测试通知；没看到就去「系统设置 › 通知」里找 FanBox');
     };
   },
@@ -4992,6 +4992,9 @@ const term = {
         if (st.pref === null && !this._notifyHinted && document.hasFocus()) { this._notifyHinted = true; toast(isWindows() ? '系统通知没开：提醒挂在「终端」红点和任务栏图标红点上，可在 agent 按钮旁的滑杆设置里开启' : '系统通知没开：提醒挂在「终端」红点和 Dock 角标上，可在 agent 按钮旁的滑杆设置里开启'); }
         return;
       }
+      // Windows port: native notifications never pass the DOM translator; translate the fixed title in EN mode
+      // (window.t is identity in zh). The body is the agent's own words and stays as is.
+      if (isWindows() && window.t) title = window.t(title);
       const n = new Notification(title, { body });
       // 点通知：app 拉回前台 + 切到对应终端标签——多项目并行时直达要操作的那个环境
       n.onclick = () => {

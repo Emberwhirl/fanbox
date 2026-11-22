@@ -205,15 +205,79 @@ setTimeout(() => { console.error('timeout: campaign did not finish in 180 s'); p
     await post('event', { hook_event_name: 'UserPromptSubmit', session_id: 's1', cwd: fwd, prompt: '接口统一改成 v2' }, T);
     const out = await post('relay', { hook_event_name: 'UserPromptSubmit', session_id: 's4', cwd: up, prompt: '继续' }, T2, true);
     assert.ok(out && JSON.parse(out).hookSpecificOutput.additionalContext.includes('接口统一改成 v2'), 'same folder in another case / with / reaches the other window: ' + out);
-    // a third terminal at the drive root and in the home folder (typed in another case) receives nothing
-    const T3 = await win.evaluate(() => term.newTab(undefined, undefined, undefined, { background: true }).then((s) => s.id));
-    await sleep(2500);
-    const drive = proj.slice(0, 3);
+    // Negative halves need both windows in the SAME no-project folder, spelled differently (without winRelayKey the
+    // strings differ and nothing is relayed anyway; with a naive normalisation the drive root / home would relay).
+    // Each window's facts keep the cwd of its first event, so fresh terminals are used.
+    const fresh = () => win.evaluate(() => term.newTab(undefined, undefined, undefined, { background: true }).then((s) => s.id));
+    const T3 = await fresh(), T4 = await fresh(), T5 = await fresh(), T6 = await fresh();
+    await sleep(3000);
+    const drive = proj.slice(0, 3); // e.g. C:\
+    await post('event', { hook_event_name: 'SessionStart', session_id: 's7', cwd: drive.toLowerCase() }, T4);
     await post('event', { hook_event_name: 'SessionStart', session_id: 's5', cwd: drive }, T3);
-    await post('event', { hook_event_name: 'SessionStart', session_id: 's6', cwd: home.toLowerCase() }, T2);
     await post('event', { hook_event_name: 'UserPromptSubmit', session_id: 's5', cwd: drive, prompt: '根目录里说的话不该外传' }, T3);
-    const r3 = await post('relay', { hook_event_name: 'UserPromptSubmit', session_id: 's6', cwd: home.toLowerCase(), prompt: '继续' }, T2, true);
-    assert.ok(!r3.includes('根目录里说的话'), 'drive-root words are not relayed: ' + r3);
+    const r3 = await post('relay', { hook_event_name: 'UserPromptSubmit', session_id: 's7', cwd: drive.toLowerCase(), prompt: '继续' }, T4, true);
+    assert.ok(!r3.includes('根目录里说的话'), 'two windows at the drive root (C:\\ vs c:\\) do not relay: ' + r3);
+    await post('event', { hook_event_name: 'SessionStart', session_id: 's8', cwd: home.toUpperCase() }, T6);
+    await post('event', { hook_event_name: 'SessionStart', session_id: 's6', cwd: home.toLowerCase() }, T5);
+    await post('event', { hook_event_name: 'UserPromptSubmit', session_id: 's6', cwd: home.toLowerCase(), prompt: '家目录里说的话不该外传' }, T5);
+    const r4 = await post('relay', { hook_event_name: 'UserPromptSubmit', session_id: 's8', cwd: home.toUpperCase(), prompt: '继续' }, T6, true);
+    assert.ok(!r4.includes('家目录里说的话'), 'two windows in the home folder, different case, do not relay: ' + r4);
+  });
+
+  await step('C1', 'agent /create opens the tab in the background (merged onCreate path)', async () => {
+    const before = await win.evaluate(() => ({ active: term.active, n: term.sessions.length }));
+    const r = await post('create', { cwd: proj });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    const after = await win.evaluate(() => ({ active: term.active, n: term.sessions.length, ids: term.sessions.map((s) => s.id) }));
+    assert.equal(after.n, before.n + 1, 'one more tab');
+    assert.ok(after.ids.includes(r.id), 'the created id is a real tab');
+    assert.equal(after.active, before.active, 'active tab unchanged');
+  });
+
+  await step('L1', 'English mode: settings Alerts block, sidebar card, roster wait/reply have no Chinese', async () => {
+    await win.evaluate(() => { localStorage.setItem('fb_lang', 'en'); location.reload(); }).catch(() => {});
+    await win.waitForFunction(() => window.fanboxLang === 'en' && typeof term !== 'undefined' && document.readyState === 'complete', null, { timeout: 30000 });
+    await sleep(3000);
+    await win.evaluate(() => document.querySelectorAll('.guide-overlay').forEach((el) => el.remove()));
+    const scan = (sel) => win.evaluate((s) => {
+      const CJK = /[　-〿一-鿿＀-￯]/;
+      const SKIP = '[data-fanbox-user-content], #preview-body, .xterm';
+      const bad = [];
+      for (const root of document.querySelectorAll(s)) {
+        const walk = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+        for (let n = root; n; n = walk.nextNode()) {
+          const el = n.nodeType === 3 ? n.parentElement : n;
+          if (!el || el.closest(SKIP)) continue;
+          // “继续” stays literal in English on purpose: it is the exact text FanBox types into Claude Code
+          const has = (x) => CJK.test(String(x).replace(/“继续”/g, ''));
+          if (n.nodeType === 3) { if (has(n.nodeValue)) bad.push('text: ' + n.nodeValue.trim().slice(0, 80)); continue; }
+          for (const a of ['title', 'placeholder']) { const v = n.getAttribute && n.getAttribute(a); if (v && has(v)) bad.push(a + ': ' + v.slice(0, 80)); }
+        }
+      }
+      return bad;
+    }, sel);
+    await win.click('#agent-config');
+    await win.locator('.agents-pop .ap-row[data-always]').waitFor({ state: 'visible', timeout: 5000 });
+    await sleep(500);
+    const pop = await scan('.agents-pop');
+    await win.evaluate(() => { const el = document.querySelector('#pw-reach'); el.dispatchEvent(new MouseEvent('mouseenter')); });
+    await sleep(800);
+    const side = await scan('#pw-reach, .side-tip');
+    // two hooked sessions waiting for input (after the reload: the renderer rebuilt its tabs) so the roster shows
+    // the wait column and the reply box
+    const ids = await win.evaluate(() => term.sessions.slice(0, 2).map((x) => x.id));
+    for (const [i, t] of ids.entries()) {
+      await post('event', { hook_event_name: 'UserPromptSubmit', session_id: 'l' + i, cwd: proj, prompt: 'x' }, t);
+      await post('event', { hook_event_name: 'Notification', session_id: 'l' + i, notification_type: 'idle_prompt', cwd: proj }, t);
+    }
+    await sleep(1000);
+    await win.evaluate(() => { roster.render(); });
+    await sleep(800);
+    const rosterBad = await scan('#term-roster');
+    const rosterHasReply = await win.evaluate(() => !!document.querySelector('#term-roster .tr-reply'));
+    console.log(`     settings: ${pop.length} CJK, sidebar card: ${side.length}, roster: ${rosterBad.length} (reply box shown: ${rosterHasReply})`);
+    assert.ok(rosterHasReply, 'roster shows the reply box (two sessions waiting)');
+    assert.deepEqual([...pop, ...side, ...rosterBad], [], JSON.stringify([...pop, ...side, ...rosterBad]));
   });
 
   await step('E0', 'no page errors', async () => { assert.deepEqual(errors, []); });

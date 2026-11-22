@@ -422,6 +422,20 @@ window.FANBOX_DICT = {
   '勾选即生效 · 点「未装」复制安装命令': 'Changes apply instantly · click “not installed” to copy the install command',
   '高级：~/.fanbox/config.json 的 agents 数组可自定义命令 / 加新 agent': 'Advanced: override commands or add agents via the agents array in ~/.fanbox/config.json',
   '未装': 'not installed',
+  // settings panel rows that were never in the dictionary (found by the 2.20.1 English-mode render check)
+  '终端渲染': 'Terminal rendering',
+  'WebGL 加速渲染': 'WebGL acceleration',
+  '长时间中文输出偶发乱码时可关掉：改用兼容渲染（DOM），立即生效，稍慢但稳': 'Turn off if long Chinese output occasionally garbles: switches to compatible (DOM) rendering, applies immediately, a bit slower but steady',
+  'Agent 互控': 'Agent cross-control',
+  '装进 ~/.claude/skills 后，翻箱终端里的 claude 就能指挥兄弟窗口：新开窗口 / 读输出 / 发指令 / 等结果': 'Once installed in ~/.claude/skills, claude in a FanBox terminal can direct sibling windows: open windows / read output / send commands / wait for results',
+  '安装': 'install',
+  '可更新': 'update available',
+  '已装 ✓': 'installed ✓',
+  'fanbox-agent skill 已装进 ~/.claude/skills，终端里的 claude 即刻可用': 'fanbox-agent skill installed in ~/.claude/skills; claude in the terminal can use it right away',
+  '安装失败': 'Install failed',
+  // native notifications (translated via window.t on Windows, see term.notify)
+  'FanBox 系统通知已开启': 'FanBox system notifications are on',
+  'agent 收工或等你确认、而你没看着时，会这样提醒你': "When an agent finishes or needs your approval while you're not looking, you'll be alerted like this",
   '已复制安装命令': 'Install command copied',
   // 2.17.1–2.20.1 install 文案带中文括注：整句词条优先于下方「点击复制安装命令：…」规则（那条把命令原样透传）
   '点击复制安装命令：npx -y @deepseek-ai/dsh plugin --profile tui add @dsh-tui/dsh-tui （终端界面是社区插件，也可换别的 tui 插件）': 'Click to copy the install command: npx -y @deepseek-ai/dsh plugin --profile tui add @dsh-tui/dsh-tui (the terminal UI is a community plugin; other tui plugins work too)',
@@ -870,6 +884,7 @@ window.FANBOX_DICT_RULES = [
   [/^将执行于：(.+)$/, (m) => `Runs at: ${window.t ? window.t(m[1]) : m[1]}`],
   [/^下载中 (\d+)%$/, (m) => `Downloading ${m[1]}%`],
   [/^v(.+) 已下载，重启即完成更新$/, (m) => `v${m[1]} downloaded — restart to finish`],
+  [/^安装失败：([\s\S]+)$/, (m) => `Install failed: ${m[1]}`],
   // 2.17.1–2.20.1 指挥台「等了 N 分钟 / N 小时 M 分」
   [/^等了 (\d+) 分钟$/, (m) => `Waiting ${m[1]} min`],
   [/^等了 (\d+) 小时(?: (\d+) 分)?$/, (m) => `Waiting ${m[1]} hr${m[2] ? ` ${m[2]} min` : ''}`],
