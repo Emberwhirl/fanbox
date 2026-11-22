@@ -209,6 +209,7 @@ const makeWriteHookFiles = new Function('path', 'os', 'fs', 'winHelpers', 'IS_WI
 function runWriteHookFiles({ home = 'C:\\Users\\u', execPath = 'C:\\Users\\u\\AppData\\Local\\Programs\\FanBox\\FanBox.exe', winTree = [BASH], env = { Path: 'C:\\Windows', ProgramFiles: PF }, readFails = false, settingsText, settingsDir } = {}) {
   const written = {}; const logs = []; const dirs = []; const settingsReads = [];
   const asarBridge = w.join('C:\\app\\resources\\app.asar\\electron', '..', 'lib', 'claude-statusline.cjs');
+  const asarNotify = w.join('C:\\app\\resources\\app.asar\\electron', '..', 'lib', 'win-fanbox-notify.cjs');
   // Claude Code's own settings file: ${CLAUDE_CONFIG_DIR || ~/.claude}/settings.json. settingsText undefined = the file does not exist.
   const settingsFile = w.join(settingsDir || env.CLAUDE_CONFIG_DIR || w.join(home, '.claude'), 'settings.json');
   const fakeFs = {
@@ -216,7 +217,10 @@ function runWriteHookFiles({ home = 'C:\\Users\\u', execPath = 'C:\\Users\\u\\Ap
     writeFileSync: (f, data) => { written[f] = data; },
     readFileSync: (f) => {
       if (/settings\.json$/i.test(String(f))) { settingsReads.push(f); if (f === settingsFile && settingsText !== undefined) return settingsText; throw Object.assign(new Error('ENOENT ' + f), { code: 'ENOENT' }); }
-      if (readFails) throw new Error('ENOENT asar'); assert.equal(f, asarBridge, 'the bridge is read from the app (asar) lib dir'); return fs.readFileSync(BRIDGE_FILE);
+      if (readFails) throw new Error('ENOENT asar');
+      // v2.20.1: fanbox-notify's Node implementation is read from the same asar lib dir
+      if (/win-fanbox-notify\.cjs$/.test(String(f))) { assert.equal(f, asarNotify, 'fanbox-notify is read from the app (asar) lib dir'); return fs.readFileSync(path.join(__dirname, '..', '..', 'lib', 'win-fanbox-notify.cjs')); }
+      assert.equal(f, asarBridge, 'the bridge is read from the app (asar) lib dir'); return fs.readFileSync(BRIDGE_FILE);
     },
     copyFileSync: () => { throw new Error('copyFileSync must not be used (does not work from app.asar)'); },
     chmodSync: () => {},
@@ -240,6 +244,11 @@ test('writeHookFiles (win32) with Git Bash: copies the bridge and writes a Git B
     "ELECTRON_RUN_AS_NODE=1 'C:/Users/u/AppData/Local/Programs/FanBox/FanBox.exe' 'C:/Users/u/.fanbox/hooks/claude-statusline.cjs'");
   assert.ok(r.settings.hooks.Stop, 'HTTP hooks still written');
   assert.ok(w.join(r.hooksDir, 'codex-notify.js') in r.written, 'codex-notify.js still written');
+  const bin = w.join('C:\\Users\\u', '.fanbox', 'bin');
+  assert.equal(r.written[w.join(bin, 'fanbox-notify.cmd')], H.buildFanboxNotifyCmd(), 'v2.20.1: fanbox-notify.cmd written');
+  assert.equal(r.written[w.join(bin, 'fanbox-notify')], H.buildFanboxNotifySh(), 'v2.20.1: Git Bash launcher written');
+  assert.ok(String(r.written[w.join(bin, 'fanbox-notify.cjs')]).includes("'/notify'"), 'v2.20.1: fanbox-notify.cjs copied');
+  assert.ok(r.settings.hooks.UserPromptSubmit[0].hooks.some((h) => /\/api\/agent\/relay$/.test(h.url)), 'v2.20.1: relay hook present');
   assert.deepEqual(r.logs, []);
 });
 
@@ -339,7 +348,8 @@ test('writeHookFiles (win32): the value goes into a copy of the env, process.env
   assert.equal(seen.CLAUDE_CODE_GIT_BASH_PATH, GB_CUSTOM);
   assert.equal(seen.Path, 'C:\\Windows', 'the rest of the env is carried over');
   assert.equal(proc.env.CLAUDE_CODE_GIT_BASH_PATH, undefined, 'process.env itself is not modified');
-  assert.deepEqual(Object.keys(written).filter((f) => !f.startsWith(w.join('C:\\Users\\u', '.fanbox', 'hooks'))), [], 'only ~/.fanbox/hooks is written');
+  // v2.20.1: ~/.fanbox/bin (fanbox-notify) joins ~/.fanbox/hooks as FanBox's own output dir
+  assert.deepEqual(Object.keys(written).filter((f) => !f.startsWith(w.join('C:\\Users\\u', '.fanbox', 'hooks')) && !f.startsWith(w.join('C:\\Users\\u', '.fanbox', 'bin'))), [], 'only ~/.fanbox/hooks and ~/.fanbox/bin are written');
   assert.ok(!Object.keys(written).some((f) => /settings\.json$/.test(f) && !f.endsWith('claude-settings.json')), 'the user settings file is never written');
 });
 
