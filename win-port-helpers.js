@@ -713,6 +713,15 @@ function buildCodexSpawnSpec(opts) {
   };
 }
 
+// 2.19.0 window relay key: lib/relay.js compares cwd / file strings exactly and treats '/' and the home dir as
+// "no project". Windows form of the same rule: winNorm() (lower case, backslashes, no trailing separator) and a
+// drive root maps to '/'. Non-strings and '' pass through unchanged.
+function winRelayKey(p) {
+  if (typeof p !== 'string' || !p) return p;
+  const n = winNorm(p);
+  return /^[a-z]:\\$/.test(n) || /^[a-z]:$/.test(n) ? '/' : n;
+}
+
 // 2.20.0 fanbox-notify launchers. The work is done by lib/win-fanbox-notify.cjs (copied next to them as
 // fanbox-notify.cjs) run with FanBox's own exe as Node; FANBOX_EXE comes from the PTY env. Neither launcher
 // contains a path or any user data, so the files are identical for every user.
@@ -740,6 +749,8 @@ function buildFanboxNotifyCmd() {
     "for /f \"tokens=*\" %%a in ('chcp 2^>nul') do set \"FB_LINE=%%a\"",
     'if defined FB_LINE for %%b in (%FB_LINE%) do set "FB_CP=%%b"',
     'if defined FB_CP set "FB_CP=%FB_CP:.=%"',
+    'rem only a number may be switched away from (and restored); anything else leaves the console alone',
+    'if defined FB_CP for /f "delims=0123456789" %%c in ("%FB_CP%") do set "FB_CP="',
     'if defined FB_CP chcp 65001 >nul 2>&1',
     'set ELECTRON_RUN_AS_NODE=1',
     '"%FANBOX_EXE%" "%~dp0fanbox-notify.cjs" %*',
@@ -775,7 +786,9 @@ function buildFanboxNotifySh() {
 function winShellSpec(cmd, env, io) {
   const e = env || process.env;
   const bash = winGitBash(e, io);
-  if (bash) return { file: bash, args: ['-l', '-s'], stdin: String(cmd), shell: 'bash' };
+  // Grouped so bash parses the whole command before running it, and its children read </dev/null instead of the
+  // rest of the script. CHERE_INVOKING keeps an MSYS2-style /etc/profile from cd-ing to $HOME (run() sets the cwd).
+  if (bash) return { file: bash, args: ['-l', '-s'], stdin: '{\n' + String(cmd) + '\n} </dev/null\n', shell: 'bash', extraEnv: { CHERE_INVOKING: '1' } };
   const root = winEnvValue(e, 'SystemRoot') || 'C:\\Windows';
   const ps = win32.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const script = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8\n' + String(cmd);
@@ -909,4 +922,5 @@ module.exports = {
   buildFanboxNotifyCmd,
   buildFanboxNotifySh,
   winShellSpec,
+  winRelayKey,
 };

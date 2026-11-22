@@ -5102,7 +5102,7 @@ const roster = {
     const wait = mins >= 1 ? `<span class="tr-wait" title="从它停下来等你算起">等了 ${mins >= 60 ? Math.floor(mins / 60) + ' 小时' + (mins % 60 ? ' ' + mins % 60 + ' 分' : '') : mins + ' 分钟'}</span>` : '';
     return `<div class="tr-row st-${st}${s.id === term.active ? ' active' : ''}" data-id="${s.id}" title="点击切到该标签">
       <span class="tr-shape" title="${this.LABEL[st]}">${this.SHAPE[st]}</span><span class="tr-agent">${icon}</span><span class="tr-name"${isWindows() && s.title ? ' data-fanbox-user-content' : ''}>${escapeHtml(s.title || 'shell')}</span>
-      <span class="tr-st">${this.LABEL[st]}</span>${fresh}${wait}<span class="tr-say" title="${st === 'dead' ? '' : escapeHtml(term.lastReplyExcerpt(s, 600))}">${this.say(s, st)}</span>${this.canReply(s, st) ? `<input class="tr-reply" placeholder="回一句，回车发送" spellcheck="false" value="${escapeHtml(s._reply || '')}">` : ''}<span class="tr-files"${n ? ` title="本回合改动 ${n} 个文件"` : ''}>${n ? n + ' 文件' : ''}</span></div>`;
+      <span class="tr-st">${this.LABEL[st]}</span>${fresh}${wait}<span class="tr-say"${isWindows() ? ' data-fanbox-user-content' : ''} title="${st === 'dead' ? '' : escapeHtml(term.lastReplyExcerpt(s, 600))}">${this.say(s, st)}</span>${this.canReply(s, st) ? `<input class="tr-reply" placeholder="回一句，回车发送" spellcheck="false" value="${escapeHtml(s._reply || '')}">` : ''}<span class="tr-files"${n ? ` title="本回合改动 ${n} 个文件"` : ''}>${n ? n + ' 文件' : ''}</span></div>`;
   },
   render() {
     const box = $('#term-roster'); if (!box) return;

@@ -90,6 +90,9 @@ test('fanbox-notify.cmd: ASCII, CRLF, no paths or user data, runs the .cjs besid
   assert.ok(at("('chcp 2^>nul')") > 0 && at('chcp 65001') > at("('chcp 2^>nul')"), 'reads the code page before switching');
   assert.ok(at('chcp 65001') < at('"%FANBOX_EXE%"') && at('chcp %FB_CP%') > at('"%FANBOX_EXE%"'), 'switch before, restore after');
   assert.equal(lines[at('chcp 65001')], 'if defined FB_CP chcp 65001 >nul 2>&1');
+  const digits = at('delims=0123456789');
+  assert.ok(digits > 0 && digits < at('chcp 65001'), 'a non-numeric code page clears FB_CP before any switch');
+  assert.equal(lines[digits], 'if defined FB_CP for /f "delims=0123456789" %%c in ("%FB_CP%") do set "FB_CP="');
   assert.equal(lines[at('chcp %FB_CP%')], 'if defined FB_CP chcp %FB_CP% >nul 2>&1');
   assert.ok(!/[A-Za-z]:\\/.test(c) && !c.includes('FANBOX_CTL_TOKEN'), 'no absolute path, no token reference');
 });
@@ -183,7 +186,45 @@ test('win-fanbox-notify.cjs: args, stdin, headers, exit codes', async () => {
 test('winShellSpec: Git Bash login shell with the command on stdin when Git Bash exists', () => {
   const env = { CLAUDE_CODE_GIT_BASH_PATH: 'D:\\Git\\bin\\bash.exe', SystemRoot: 'C:\\Windows' };
   const s = H.winShellSpec("gh issue list --jq '.[]|\"#\\(.number)\"'", env, { exists: (f) => f === 'D:\\Git\\bin\\bash.exe' });
-  assert.deepEqual(s, { file: 'D:\\Git\\bin\\bash.exe', args: ['-l', '-s'], stdin: "gh issue list --jq '.[]|\"#\\(.number)\"'", shell: 'bash' });
+  assert.deepEqual(s, {
+    file: 'D:\\Git\\bin\\bash.exe', args: ['-l', '-s'], shell: 'bash',
+    stdin: "{\ngh issue list --jq '.[]|\"#\\(.number)\"'\n} </dev/null\n", // parsed whole; children never read the script
+    extraEnv: { CHERE_INVOKING: '1' }, // an MSYS2-style /etc/profile must not cd to $HOME
+  });
+});
+
+test('winRelayKey: one key per Windows folder; drive root is the Windows "/"', () => {
+  const k = H.winRelayKey;
+  assert.equal(k('D:\\Proj'), k('d:/proj/'));
+  assert.equal(k('D:\\Proj\\src\\A.ts'), k('d:/proj/src/a.ts'));
+  assert.equal(k('C:\\Users\\Me'), k('c:\\users\\me'));
+  for (const root of ['C:\\', 'c:/', 'C:', 'D:\\\\']) assert.equal(k(root), '/', root);
+  assert.equal(k('\\\\srv\\Share\\Dir'), '\\\\srv\\share\\dir');
+  assert.equal(k(''), '');
+  assert.equal(k(undefined), undefined);
+});
+
+test('main.js: relay record/collect wrapped with winRelayKey on Windows only; upstream relay lines intact', () => {
+  const main = read('electron/main.js');
+  const at = main.indexOf('if (IS_WIN) {\n  const key = winHelpers.winRelayKey, record = relay.record, collect = relay.collect;');
+  assert.ok(at > 0 && at < main.indexOf('function writeHookFiles'), 'wrapper installed at module load, before any event');
+  assert.ok(main.includes('relay.record = (log, kind, term, data, now) => record(log, kind, term, { ...data, cwd: key(data.cwd), file: key(data.file) }, now);'));
+  assert.ok(main.includes('relay.collect = (log, meTerm, me, cursor, now) => collect(log, meTerm, { ...me, cwd: key(me.cwd), files: new Set([...me.files].map(key)), home: key(me.home) }, cursor, now);'));
+  assert.ok(main.includes("relay.collect(relayLog, id, { cwd: f.cwd || '', files: new Set(f.changed.keys()), home: os.homedir() }, relaySeqs.get(id) || 0, now);"), 'upstream call site unchanged');
+  // behaviour: the wrapped functions, with real lib/relay.js
+  const relay = require(path.join(ROOT, 'lib', 'relay.js'));
+  const key = H.winRelayKey;
+  const rec = (log, kind, term, data, now) => relay.record(log, kind, term, { ...data, cwd: key(data.cwd), file: key(data.file) }, now);
+  const col = (log, t, me, c, now) => relay.collect(log, t, { ...me, cwd: key(me.cwd), files: new Set([...me.files].map(key)), home: key(me.home) }, c, now);
+  const log = relay.createLog(), now = Date.now();
+  rec(log, 'said', 'a', { cwd: 'D:\\Proj', text: '以后都用 pnpm' }, now);
+  rec(log, 'said', 'a', { cwd: 'C:\\', text: '根目录里说的' }, now);
+  rec(log, 'said', 'a', { cwd: 'c:\\users\\me', text: '家目录里说的' }, now);
+  rec(log, 'edit', 'a', { cwd: 'D:\\Proj', file: 'D:/Proj/src/A.ts' }, now);
+  assert.equal(col(log, 'b', { cwd: 'd:/proj', files: new Set(['d:\\proj\\src\\a.ts']), home: 'C:\\Users\\Me' }, 0, now).said.length, 1, 'same project, different case/separators');
+  assert.equal(col(log, 'b', { cwd: 'd:/proj', files: new Set(['d:\\proj\\src\\a.ts']), home: 'C:\\Users\\Me' }, 0, now).edits.length, 1, 'same file, different case/separators');
+  assert.equal(col(log, 'b', { cwd: 'C:', files: new Set(), home: 'C:\\Users\\Me' }, 0, now).said.length, 0, 'drive root is not a project');
+  assert.equal(col(log, 'b', { cwd: 'C:\\Users\\Me', files: new Set(), home: 'C:\\Users\\Me' }, 0, now).said.length, 0, 'home is not a project, whatever the case');
 });
 
 test('winShellSpec: absolute Windows PowerShell with -EncodedCommand otherwise', () => {
@@ -206,7 +247,7 @@ test('driver.run: Windows string commands go through winShellSpec; arrays keep t
   assert.ok(w.includes("if (!Array.isArray(cmd)) {"));
   assert.ok(w.includes("require('../../win-port-helpers').winShellSpec(String(cmd), env)"));
   assert.ok(w.includes('stdinText = sh.stdin;'));
-  assert.ok(w.includes('child = spawn(sh.file, sh.args, { cwd: spawnCwd, env, windowsHide: true });'));
+  assert.ok(w.includes('child = spawn(sh.file, sh.args, { cwd: spawnCwd, env: sh.extraEnv ? { ...env, ...sh.extraEnv } : env, windowsHide: true });'));
   assert.ok(w.includes('const resolved = resolveWinCli(name, env);'));
   assert.ok(!/shell:\s*true/.test(w), 'never shell:true');
   assert.ok(src.includes("child = spawn(loginShell(), ['-lc', cmd], {"), 'POSIX branch untouched');

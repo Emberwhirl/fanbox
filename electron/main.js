@@ -50,6 +50,15 @@ const resumeFacts = new Map(); // id -> 这个终端当前这次故障的续跑�
 const relay = require('../lib/relay');
 const notify = require('../lib/notify'); // 叫人：终端里的 agent 给用户发消息（见 agentNotify）
 const relayLog = relay.createLog(); // 窗口互通的内存日志：各窗口里你的原话、agent 改的文件（见 agentRelay）。不落盘
+// v2.20.1 port: lib/relay.js matches windows by exact cwd / file strings and excludes only '/' and os.homedir().
+// On Windows one folder can arrive as `D:\Proj`, `d:\proj` or `D:/proj`, and a drive root is the Windows '/'.
+// Wrap the two exported calls agentEvent / agentRelay make so both sides are compared in winRelayKey() form
+// (lower case, backslashes, drive root -> '/'); upstream's lines and module stay untouched.
+if (IS_WIN) {
+  const key = winHelpers.winRelayKey, record = relay.record, collect = relay.collect;
+  relay.record = (log, kind, term, data, now) => record(log, kind, term, { ...data, cwd: key(data.cwd), file: key(data.file) }, now);
+  relay.collect = (log, meTerm, me, cursor, now) => collect(log, meTerm, { ...me, cwd: key(me.cwd), files: new Set([...me.files].map(key)), home: key(me.home) }, cursor, now);
+}
 const relaySeqs = new Map(); // id -> 这个窗口收到第几条了。跟窗口走不跟会话走：同一个窗口里重开 claude，接着上次的收
 const agentSentAt = new Map(); // id -> [{ text, at }]：别的 agent 经 /send 发进这个窗口的话（留最近 10 条、10 分钟）。那不是你说的，不当成你的话转告
 const sentByAgent = (id, text, now) => (agentSentAt.get(id) || []).some((x) => now - x.at < 600000 && x.text === String(text || '').trim());
@@ -1660,12 +1669,17 @@ function agentRelay(termId, body) {
   if (b.hook_event_name === 'UserPromptSubmit' && notifyBriefed.get(id) !== (b.session_id || '') && wechatInited && wechatBridge.alwaysOn && wechatBridge.canNotify()) {
     notifyBriefed.set(id, b.session_id || '');
     text = [text, notify.BRIEF].filter(Boolean).join('\n\n');
+    // v2.20.1 port: from PowerShell / cmd, fanbox-notify resolves to fanbox-notify.cmd, and cmd.exe re-parses the
+    // command line before the batch runs (PowerShell 5.1 quotes an argument only when it has whitespace), so
+    // & | < > ^ % in the message act as cmd syntax. Git Bash uses the sh launcher and is not affected.
+    if (IS_WIN) text += '\n' + WIN_NOTIFY_NOTE;
   }
   return { ok: true, out: relay.hookOutput(b.hook_event_name, text) };
 }
 // 叫人（/api/agent/notify，终端里的 fanbox-notify 调这里）：某个窗口里的 agent 或一条命令要给用户发消息。
 // 人在电脑前（2 分钟内有键鼠输入）只在界面上提示；不在才进发件箱发到手机。判断在 lib/notify.js
 const notifyBriefed = new Map(); // 终端 id -> 已经告诉过的会话 id
+const WIN_NOTIFY_NOTE = '[Windows] 在 PowerShell 或 cmd 里调用时，消息里不要出现 & | < > ^ % 这些字符（会被 cmd 当成命令语法执行），用逗号、句号代替；在 Git Bash 里不受这个限制。';
 const notifyLast = new Map();    // 终端 id -> { at, text }：挡重复和写错的循环；waitingWatch 也看它，免得同一件事叫两次
 function agentNotify(termId, body) {
   const id = String(termId || ''), text = notify.clean(body && body.text);

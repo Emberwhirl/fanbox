@@ -187,6 +187,7 @@ setTimeout(() => { console.error('timeout: campaign did not finish in 180 s'); p
     const ctx = own ? JSON.parse(own).hookSpecificOutput.additionalContext : '';
     assert.ok(!ctx.includes('以后都用 pnpm'), 'own words are not relayed back');
     assert.ok(ctx.includes('fanbox-notify'), 'notify brief delivered on the first prompt of the session');
+    assert.ok(ctx.includes('[Windows]') && ctx.includes('& | < > ^ %'), 'Windows note about cmd metacharacters appended to the brief');
     assert.equal(await post('relay', { hook_event_name: 'UserPromptSubmit', session_id: 's1', cwd: proj, prompt: 'y' }, T, true), '', 'brief only once per session');
   });
 
@@ -196,6 +197,23 @@ setTimeout(() => { console.error('timeout: campaign did not finish in 180 s'); p
     assert.equal(await post('relay', { hook_event_name: 'UserPromptSubmit', session_id: 's2', cwd: proj, prompt: '继续' }, T2, true), '');
     await win.evaluate(() => window.fanboxWin.relaySet(true));
     assert.equal(await post('relay', { hook_event_name: 'UserPromptSubmit', session_id: 's2', cwd: proj, prompt: '继续' }, T2, true), '', 'words said while off were not kept');
+  });
+
+  await step('R3', 'relay on Windows paths: case/separators match, drive root and home do not', async () => {
+    const up = proj.toUpperCase(), fwd = proj.replace(/\\/g, '/');
+    await post('event', { hook_event_name: 'SessionStart', session_id: 's4', cwd: up }, T2); // new session id, same window
+    await post('event', { hook_event_name: 'UserPromptSubmit', session_id: 's1', cwd: fwd, prompt: '接口统一改成 v2' }, T);
+    const out = await post('relay', { hook_event_name: 'UserPromptSubmit', session_id: 's4', cwd: up, prompt: '继续' }, T2, true);
+    assert.ok(out && JSON.parse(out).hookSpecificOutput.additionalContext.includes('接口统一改成 v2'), 'same folder in another case / with / reaches the other window: ' + out);
+    // a third terminal at the drive root and in the home folder (typed in another case) receives nothing
+    const T3 = await win.evaluate(() => term.newTab(undefined, undefined, undefined, { background: true }).then((s) => s.id));
+    await sleep(2500);
+    const drive = proj.slice(0, 3);
+    await post('event', { hook_event_name: 'SessionStart', session_id: 's5', cwd: drive }, T3);
+    await post('event', { hook_event_name: 'SessionStart', session_id: 's6', cwd: home.toLowerCase() }, T2);
+    await post('event', { hook_event_name: 'UserPromptSubmit', session_id: 's5', cwd: drive, prompt: '根目录里说的话不该外传' }, T3);
+    const r3 = await post('relay', { hook_event_name: 'UserPromptSubmit', session_id: 's6', cwd: home.toLowerCase(), prompt: '继续' }, T2, true);
+    assert.ok(!r3.includes('根目录里说的话'), 'drive-root words are not relayed: ' + r3);
   });
 
   await step('E0', 'no page errors', async () => { assert.deepEqual(errors, []); });

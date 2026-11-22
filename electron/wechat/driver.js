@@ -99,7 +99,7 @@ async function run(cmd, stdinText, cwd, opts = {}, onLine = null) {
         // shell the agent wrote it for (Git Bash via stdin, else PowerShell -EncodedCommand; see winShellSpec)
         const sh = require('../../win-port-helpers').winShellSpec(String(cmd), env);
         stdinText = sh.stdin;
-        child = spawn(sh.file, sh.args, { cwd: spawnCwd, env, windowsHide: true });
+        child = spawn(sh.file, sh.args, { cwd: spawnCwd, env: sh.extraEnv ? { ...env, ...sh.extraEnv } : env, windowsHide: true });
       } else {
         const [name, ...rest] = cmd;
         const resolved = resolveWinCli(name, env);
