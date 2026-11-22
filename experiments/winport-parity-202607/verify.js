@@ -19,6 +19,9 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '../..');
+// Upstream ref to compare against. Default `master` (the upstream mirror); set PARITY_BASE to the upstream release tag
+// being ported when master has moved past it (e.g. PARITY_BASE=v2.20.1 while master carries unreleased PRs).
+const BASE = process.env.PARITY_BASE || 'master';
 const FILES = [
   'electron/main.js',
   'server.js',
@@ -81,6 +84,7 @@ const WHITELIST_RES = [
   /require\('child_process'\)|require\('path'\)|require\('fs'\)/,
   /agent:term-create|autorun: cronCommand/,
   /agentBusyIn|busyHere|followScopeRoot|inFollowScope|joinPath/,
+  /claudeWinPerm/, // v2.20.1: Windows argv twin of claudeCmd, only called from runClaude's isWin() branch
 ];
 
 const WIN_GUARD = /IS_WIN|IS_MAC|isWin\(|isWindows\(|isMacOS\(|PLATFORM === ['"]win32['"]|PLATFORM === ['"]darwin['"]|process\.platform === ['"]win32['"]|state\.sep === ['"]\\\\['"]|state\.platform === ['"]win32['"]|winPlat|applyPlatformChrome|fanboxEnv\.platform/;
@@ -103,7 +107,7 @@ const RULES_RANGE = dictRulesRange();
 
 function diffUnified(file) {
   try {
-    return execSync(`git diff master -- ${file}`, { cwd: ROOT, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
+    return execSync(`git diff ${BASE} -- ${file}`, { cwd: ROOT, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
   } catch (e) {
     return e.stdout || '';
   }
@@ -198,7 +202,7 @@ function statuslineSource() { try { return fs.readFileSync(path.join(ROOT, STATU
 // CRLF is normalised on both sides so a Windows autocrlf checkout compares equal to the LF blobs.
 const lf = (t) => String(t).replace(/\r\n/g, '\n');
 function readMaster(rel) {
-  try { return lf(execFileSync('git', ['show', `master:${rel}`], { cwd: ROOT, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { return null; }
+  try { return lf(execFileSync('git', ['show', `${BASE}:${rel}`], { cwd: ROOT, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { return null; }
 }
 function readWork(rel) { try { return lf(fs.readFileSync(path.join(ROOT, rel), 'utf8')); } catch { return null; } }
 function sliceBetween(src, from, to) { // [from, to) like upstream's own test slices main.js
@@ -330,6 +334,8 @@ function main() {
   console.log('  (7) server.js usageRequest: platform ternary for the curl path (winFindExe("curl.exe"), exact name), env: winSpawnEnv(), windowsHide');
   console.log('  (8) public/i18n-dict.js: new keys + single-line FANBOX_DICT_RULES tuples (additive, position-checked)');
   console.log('  (9) electron/main.js update:download + updateAssetCandidates (pre-existing 2.16.1 rewrite, now listed)');
+  console.log('Classified accepted shared edits (v2.20.1 round):');
+  console.log('  (10) electron/wechat/driver.js claudeWinPerm(): argv twin of upstream claudeCmd()\'s permission slots (Windows-only caller)');
   const results = FILES.map((f) => analyze(f, diffUnified(f)));
   let bad = 0, hard = 0;
   for (const r of results) {

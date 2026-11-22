@@ -93,22 +93,30 @@ async function run(cmd, stdinText, cwd, opts = {}, onLine = null) {
       // Windows：argv 数组直达 CLI 本体（见 resolveWinCli），不经 PowerShell——
       // PS 5.1 会把 stdin 按控制台代码页重编码（中文变 ???）、给原生子进程重拼参数时拆碎引号，
       // 且 kill 只杀得到 PS 壳，claude 本体成孤儿继续烧 token
-      const [name, ...rest] = Array.isArray(cmd) ? cmd : [String(cmd)];
       const spawnCwd = cwd || env.HOME || env.USERPROFILE || process.env.USERPROFILE || process.env.HOME;
-      const resolved = resolveWinCli(name, env);
-      if (!resolved) {
-        // D5: no PowerShell string-building fallback (rule 1). Predictable "CLI not found".
-        resolve({
-          ok: false, out: '', err: `CLI not found: ${name} — install it with npm i -g ${name === 'codex' ? '@openai/codex' : '@anthropic-ai/claude-code'}`,
-          ms: Date.now() - started,
+      if (!Array.isArray(cmd)) {
+        // 2.20.0 watches (bridge.aoWatch) pass a free-form shell command line, never a CLI name: run it in the
+        // shell the agent wrote it for (Git Bash via stdin, else PowerShell -EncodedCommand; see winShellSpec)
+        const sh = require('../../win-port-helpers').winShellSpec(String(cmd), env);
+        stdinText = sh.stdin;
+        child = spawn(sh.file, sh.args, { cwd: spawnCwd, env, windowsHide: true });
+      } else {
+        const [name, ...rest] = cmd;
+        const resolved = resolveWinCli(name, env);
+        if (!resolved) {
+          // D5: no PowerShell string-building fallback (rule 1). Predictable "CLI not found".
+          resolve({
+            ok: false, out: '', err: `CLI not found: ${name} — install it with npm i -g ${name === 'codex' ? '@openai/codex' : '@anthropic-ai/claude-code'}`,
+            ms: Date.now() - started,
+          });
+          return;
+        }
+        child = spawn(resolved.file, [...resolved.preArgs, ...rest], {
+          cwd: spawnCwd,
+          env: resolved.extraEnv ? { ...env, ...resolved.extraEnv } : env,
+          windowsHide: true,
         });
-        return;
       }
-      child = spawn(resolved.file, [...resolved.preArgs, ...rest], {
-        cwd: spawnCwd,
-        env: resolved.extraEnv ? { ...env, ...resolved.extraEnv } : env,
-        windowsHide: true,
-      });
     } else {
       child = spawn(loginShell(), ['-lc', cmd], {
         cwd: cwd || env.HOME || process.env.HOME,

@@ -102,6 +102,16 @@ function writeHookFiles() {
       } catch (e) { winStatusLineBridge = { ready: false, reason: '状态栏桥准备失败' }; console.error('[fanbox] status-line bridge skipped:', e.message); }
       fs.writeFileSync(path.join(dir, 'claude-settings.json'), JSON.stringify(winHelpers.claudeHttpHookSettings(PORT, { statusLine }), null, 2) + '\n');
       fs.writeFileSync(path.join(dir, 'codex-notify.js'), winHelpers.buildCodexNotifyJs());
+      // 2.20.0 fanbox-notify (upstream writes a POSIX sh script below, which Windows never reaches): the Node
+      // implementation plus a .cmd launcher (PowerShell / cmd) and an extensionless sh launcher (Git Bash) in
+      // ~/.fanbox/bin, which pty:spawn appends to the terminal PATH. A failure here only loses fanbox-notify.
+      try {
+        const binDir = BIN_DIR();
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.writeFileSync(path.join(binDir, 'fanbox-notify.cjs'), fs.readFileSync(path.join(__dirname, '..', 'lib', 'win-fanbox-notify.cjs')));
+        fs.writeFileSync(path.join(binDir, 'fanbox-notify.cmd'), winHelpers.buildFanboxNotifyCmd());
+        fs.writeFileSync(path.join(binDir, 'fanbox-notify'), winHelpers.buildFanboxNotifySh());
+      } catch (e) { console.error('[fanbox] fanbox-notify skipped:', e.message); }
       if (statusLine) winStatusLineBridge = { ready: true, reason: null };
       return;
     }
@@ -1321,6 +1331,11 @@ ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme, shell, agent, extr
     // 用户在自己 shell 里跑裸命令时行为与系统一致。
     delete env.NoDefaultCurrentDirectoryInExePath;
     Object.assign(env, winHelpers.appendNoProxy(env));
+    // 2.20.0 fanbox-notify: upstream appends ~/.fanbox/bin with ':' to env.PATH on POSIX only. Windows keeps the
+    // existing key's case (Path), uses ';', and tells the launchers which executable to run as Node.
+    const pathKey = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') || 'Path';
+    env[pathKey] = (env[pathKey] ? env[pathKey] + ';' : '') + BIN_DIR();
+    env.FANBOX_EXE = process.execPath;
   }
   if (spawnExtraEnv && Object.keys(spawnExtraEnv).length) Object.assign(env, spawnExtraEnv);
   let p;
