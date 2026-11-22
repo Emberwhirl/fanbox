@@ -3373,11 +3373,11 @@ const agentsPop = {
       if (window.fanboxWin && window.fanboxWin.notifySet) await window.fanboxWin.notifySet(on).catch(() => {});
       else try { on ? localStorage.removeItem('fb_notify_off') : localStorage.setItem('fb_notify_off', '1'); } catch { /* */ }
       flag.textContent = on ? '' : '已关';
-      if (!on) { toast('系统通知已关，提醒只留在应用内（提示音、红点、Dock 角标）'); return; }
+      if (!on) { toast(isWindows() ? '系统通知已关，提醒只留在应用内（提示音、红点、任务栏图标红点）' : '系统通知已关，提醒只留在应用内（提示音、红点、Dock 角标）'); return; }
       if (Notification.permission === 'default') await Notification.requestPermission().catch(() => {}); // 你亲手点的，此刻问才合理
       if (Notification.permission !== 'granted') { cb.checked = false; flag.textContent = '被拒'; toast('浏览器拒绝了通知权限，去站点设置里放行后再开', true); return; }
       try { new Notification('FanBox 系统通知已开启', { body: 'agent 收工或等你确认、而你没看着时，会这样提醒你' }); } catch { /* */ }
-      toast('已发一条测试通知；没看到就去「系统设置 › 通知」里找 FanBox');
+      toast(isWindows() ? '已发一条测试通知；没看到就去 Windows「设置 › 系统 › 通知」里找 FanBox' : '已发一条测试通知；没看到就去「系统设置 › 通知」里找 FanBox');
     };
   },
   // 内置 skill 安装状态：未装 →「安装」可点；装过但内容旧 →「可更新」可点；最新 →「已装 ✓」
@@ -4989,7 +4989,7 @@ const term = {
       if (typeof Notification === 'undefined') return;
       const st = await notifyState();
       if (!st.on) {
-        if (st.pref === null && !this._notifyHinted && document.hasFocus()) { this._notifyHinted = true; toast('系统通知没开：提醒挂在「终端」红点和 Dock 角标上，可在 agent 按钮旁的滑杆设置里开启'); }
+        if (st.pref === null && !this._notifyHinted && document.hasFocus()) { this._notifyHinted = true; toast(isWindows() ? '系统通知没开：提醒挂在「终端」红点和任务栏图标红点上，可在 agent 按钮旁的滑杆设置里开启' : '系统通知没开：提醒挂在「终端」红点和 Dock 角标上，可在 agent 按钮旁的滑杆设置里开启'); }
         return;
       }
       const n = new Notification(title, { body });
